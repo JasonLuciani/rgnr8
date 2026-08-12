@@ -1,0 +1,18 @@
+{
+  "name": "@rgnr8/subledger",
+  "version": "0.1.0",
+  "description": "RGNR8 AR/AP subledgers — invoices and bills with open balances, aging, control-account reconciliation, customer payment histories, and forecast-input emission.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": { "@rgnr8/ledger-kernel": "^0.1.0" },
+  "devDependencies": { "@types/node": "^22.20.1", "tsx": "^4.19.2", "typescript": "^5.6.3" }
+}

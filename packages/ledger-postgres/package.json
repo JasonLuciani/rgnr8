@@ -1,0 +1,33 @@
+{
+  "name": "@rgnr8/ledger-postgres",
+  "version": "0.1.0",
+  "description": "PostgreSQL LedgerStore adapter for the RGNR8 accounting kernel — atomic per-tenant sequencing, idempotency, and tenant isolation (RLS).",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {
+    "@rgnr8/ledger-kernel": "^0.1.0",
+    "pg": "^8.13.1",
+    "@rgnr8/migrations": "^0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "@types/pg": "^8.11.10",
+    "pg-mem": "^3.0.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

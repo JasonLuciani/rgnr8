@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RGNR8 — UI prototype</title>
+<style>
+  :root{
+    --forest:#0E241E; --ivory:#F2EFE6; --sage:#5E7F63; --sage-deep:#42604A;
+    --ink:#0E241E; --ink2:#2C3B33; --muted:#6E7A70; --paper:#FFFFFF; --line:#E2DFD3;
+    --pos:#3E7C5A; --watch:#B7791F; --risk:#B4443C;
+    --radius:12px; --shadow:0 1px 2px rgba(14,36,30,.07),0 1px 3px rgba(14,36,30,.05);
+    --serif:ui-serif,Georgia,"Times New Roman",serif;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ivory);color:var(--ink);font:400 15px/1.55 var(--sans);-webkit-font-smoothing:antialiased}
+  button{font:inherit;cursor:pointer}
+  a{color:var(--sage-deep)}
+  .wordmark{font:600 18px/1 var(--sans);letter-spacing:.2em;text-transform:uppercase;display:inline-flex;align-items:center;gap:10px}
+  .wordmark .eight{color:var(--sage)}
+  /* login */
+  #login{min-height:100vh;display:flex;align-items:center;justify-content:center;background:
+     radial-gradient(1200px 500px at 50% -10%, #12352b 0%, var(--forest) 60%)}
+  .card-login{background:var(--paper);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);
+     width:min(420px,92vw);padding:32px 30px}
+  .card-login .wordmark{color:var(--forest);font-size:22px;justify-content:center;margin-bottom:6px}
+  .card-login .tag{text-align:center;color:var(--muted);font-size:12px;letter-spacing:.16em;text-transform:uppercase;margin-bottom:22px}
+  label{display:block;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:14px 0 6px}
+  input,select{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:10px;font:inherit;background:#fff;color:var(--ink)}
+  .btn{background:var(--forest);color:var(--ivory);border:none;border-radius:10px;padding:11px 16px;font-weight:700;letter-spacing:.02em}
+  .btn.block{width:100%;margin-top:20px}
+  .btn.ghost{background:transparent;color:var(--forest);border:1px solid var(--line)}
+  .btn.sage{background:var(--sage)}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .hint{color:var(--muted);font-size:12px;margin-top:14px;text-align:center}
+  /* app */
+  #app{display:none;min-height:100vh}
+  .topbar{display:flex;align-items:center;justify-content:space-between;background:var(--forest);color:var(--ivory);padding:0 20px;height:56px}
+  .topbar .wordmark{color:#fff;font-size:16px}
+  .nav{display:flex;gap:4px;flex-wrap:wrap}
+  .nav button{background:transparent;color:#CBD8CC;border:none;padding:8px 12px;border-radius:8px;font-size:13px;font-weight:600;letter-spacing:.02em}
+  .nav button.active{background:rgba(255,255,255,.10);color:#fff}
+  .nav button:hover{color:#fff}
+  .who{display:flex;align-items:center;gap:10px;font-size:13px}
+  .chip{background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.14);border-radius:999px;padding:3px 10px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#DDE6DD}
+  .who .role{color:var(--sage);font-weight:700}
+  .shell{max-width:1080px;margin:0 auto;padding:26px 22px 64px}
+  h1{font-family:var(--serif);font-size:26px;font-weight:700;letter-spacing:-.01em;margin:0 0 4px}
+  h2{font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:26px 0 12px}
+  .sub{color:var(--muted);margin:0 0 16px;font-size:13px}
+  .card{background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px 22px;margin-bottom:16px}
+  .hero{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap}
+  .big{font-family:var(--serif);font-size:44px;font-weight:700;letter-spacing:-.01em;font-variant-numeric:tabular-nums;line-height:1}
+  .eyebrow{font-size:11px;font-weight:700;letter-spacing:.11em;text-transform:uppercase;color:var(--muted)}
+  .badge{display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:4px 12px;font-weight:700;font-size:12px;letter-spacing:.04em;text-transform:uppercase}
+  .tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+  .tile{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:14px 15px}
+  .tile .l{color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+  .tile .v{font-size:22px;font-weight:800;margin-top:6px;font-variant-numeric:tabular-nums}
+  table{border-collapse:separate;border-spacing:0;width:100%;background:var(--paper);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:var(--shadow)}
+  th,td{text-align:left;padding:10px 13px;border-bottom:1px solid var(--line);font-size:13.5px}
+  thead th{background:var(--ivory);font-weight:700;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+  tbody tr:last-child td{border-bottom:none}
+  .num{text-align:right;font-variant-numeric:tabular-nums;font-weight:700}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;vertical-align:middle;margin-right:7px}
+  .muted{color:var(--muted)}
+  .banner{padding:12px 15px;border-radius:12px;font-weight:700;font-size:13px;border:1px solid transparent;margin-bottom:14px}
+  .banner.good{background:#E7F6EF;color:#0A6E4B;border-color:#BFE7D6}
+  .banner.warn{background:#FDF3E4;color:#8A5A00;border-color:#F3DCA6}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .grow{flex:1}
+  .right{margin-left:auto}
+  .pill{border-radius:999px;padding:3px 10px;font-size:12px;font-weight:700;border:1px solid var(--line);background:#fff}
+  .democtl{position:fixed;right:14px;bottom:14px;background:var(--paper);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:10px 12px;font-size:12px;display:flex;gap:8px;align-items:center;z-index:20}
+  .democtl select{width:auto;padding:6px 8px}
+  .locked{opacity:.5}
+  .kbar{display:flex;gap:6px;flex-wrap:wrap}
+  .kbar .pill{cursor:default}
+  .empty{color:var(--muted);font-size:13px;padding:14px}
+  svg .grid{stroke:var(--line)} svg .series{fill:none;stroke:var(--sage);stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round}
+  svg .floor{stroke:var(--muted);stroke-dasharray:5 4} svg text{fill:var(--muted);font-size:11px}
+  svg .danger{fill:var(--risk);opacity:.06}
+</style></head>
+<body>
+
+<!-- LOGIN -->
+<div id="login">
+  <div class="card-login">
+    <div class="wordmark">
+      <svg viewBox="0 0 40 24" height="26" aria-label="RGNR8"><path d="M8 12 C8 5.5 16 5.5 20 12 C24 18.5 32 18.5 32 12 C32 5.5 24 5.5 20 12 C16 18.5 8 18.5 8 12 Z" fill="none" stroke="#5E7F63" stroke-width="3.2" stroke-linecap="round"/></svg>
+      RGNR<span class="eight">8</span>
+    </div>
+    <div class="tag">Bold · Timeless · Endless potential</div>
+    <label>Work email</label>
+    <input id="loginEmail" value="owner@northwind.com" autocomplete="username">
+    <label>Sign in as (demo)</label>
+    <select id="loginRole">
+      <option value="owner">Owner — Northwind LLC</option>
+      <option value="controller">Controller — Northwind LLC</option>
+      <option value="bookkeeper">Bookkeeper — Northwind LLC</option>
+      <option value="accountant">Accountant (external) — Northwind LLC</option>
+      <option value="viewer">Viewer — Northwind LLC</option>
+      <option value="operator">RGNR8 Operator — all clients</option>
+    </select>
+    <button class="btn block" onclick="signIn()">Sign in</button>
+    <div class="hint">Prototype — pick a role to see how the app changes.<br>In production this is your IdP (SSO) or a magic link.</div>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="app">
+  <div class="topbar">
+    <div class="wordmark">
+      <svg viewBox="0 0 40 24" height="20"><path d="M8 12 C8 5.5 16 5.5 20 12 C24 18.5 32 18.5 32 12 C32 5.5 24 5.5 20 12 C16 18.5 8 18.5 8 12 Z" fill="none" stroke="#5E7F63" stroke-width="3.2" stroke-linecap="round"/></svg>
+      RGNR<span class="eight">8</span>
+    </div>
+    <div class="nav" id="nav"></div>
+    <div class="who">
+      <span id="whoName"></span>
+      <span class="chip">Northwind LLC</span>
+      <span class="chip role" id="whoRole"></span>
+      <button class="nav" style="color:#CBD8CC" onclick="signOut()">Sign out</button>
+    </div>
+  </div>
+  <div class="shell" id="screen"></div>
+</div>
+
+<div class="democtl">
+  <span class="muted">Demo role:</span>
+  <select id="roleSwitch" onchange="switchRole(this.value)">
+    <option value="owner">Owner</option>
+    <option value="controller">Controller</option>
+    <option value="bookkeeper">Bookkeeper</option>
+    <option value="accountant">Accountant</option>
+    <option value="viewer">Viewer</option>
+    <option value="operator">Operator</option>
+  </select>
+</div>
+
+<script>
+// --- RBAC mirror of rgnr8_web.rbac (roles → permissions) --------------------
+const PERM = {
+  VIEW_CASH:'view_cash', VIEW_BRIEFING:'view_briefing', ASK_CFO:'ask_cfo', VIEW_PACKAGE:'view_package',
+  EDIT_ASSUMPTIONS:'edit_assumptions', RECORD_DECISION:'record_decision',
+  MANAGE_CLOSE:'manage_close', PUBLISH_CLOSE:'publish_close', MANAGE_CONNECTORS:'manage_connectors',
+  MANAGE_SUBSCRIPTIONS:'manage_subscriptions', MANAGE_USERS:'manage_users',
+  VIEW_FLEET:'view_fleet', ONBOARD_TENANT:'onboard_tenant'
+};
+const VIEW = [PERM.VIEW_CASH,PERM.VIEW_BRIEFING,PERM.ASK_CFO,PERM.VIEW_PACKAGE];
+const ROLE_PERMS = {
+  owner: [...VIEW,PERM.EDIT_ASSUMPTIONS,PERM.RECORD_DECISION,PERM.MANAGE_CLOSE,PERM.PUBLISH_CLOSE,PERM.MANAGE_CONNECTORS,PERM.MANAGE_SUBSCRIPTIONS,PERM.MANAGE_USERS],
+  controller: [...VIEW,PERM.EDIT_ASSUMPTIONS,PERM.RECORD_DECISION,PERM.MANAGE_CLOSE,PERM.PUBLISH_CLOSE,PERM.MANAGE_SUBSCRIPTIONS],
+  bookkeeper: [...VIEW,PERM.RECORD_DECISION,PERM.MANAGE_CLOSE,PERM.MANAGE_CONNECTORS],
+  accountant: [...VIEW,PERM.RECORD_DECISION,PERM.MANAGE_CLOSE,PERM.PUBLISH_CLOSE],
+  viewer: [...VIEW],
+  operator: [...VIEW,PERM.VIEW_FLEET,PERM.ONBOARD_TENANT,PERM.MANAGE_CONNECTORS],
+};
+const ROLE_LABEL = {owner:'Owner',controller:'Controller',bookkeeper:'Bookkeeper',accountant:'Accountant',viewer:'Viewer',operator:'Operator'};
+function can(p){ return (ROLE_PERMS[state.role]||[]).includes(p); }
+
+// --- demo data --------------------------------------------------------------
+const state = { role:'owner', email:'owner@northwind.com', screen:'cash' };
+const cash = { today:'$63,210.55', floor:'$20,000.00', trough:'$18,400.00', troughDate:'wk6',
+  status:'WATCH', headline:'Cash dips below your floor in week 6 — a $1,600 gap.',
+  weeks:[63210,61200,55400,49800,34200,24100,18400,26900,38200,44100,52300,58800,61200,64000] };
+const tiles = [['Cash today','$63,210.55'],['Minimum-cash floor','$20,000.00'],['Projected low point','$18,400.00'],['Cushion at low','−$1,600.00']];
+const drivers = [['Payroll','$48,000',72],['Rent','$7,000',10],['Vendors','$6,000',9]];
+let team = [
+  {email:'owner@northwind.com', name:'Ada Owner', role:'owner'},
+  {email:'book@northwind.com', name:'Ben Books', role:'bookkeeper'},
+  {email:'cpa@ext-cpa.com', name:'Cara CPA', role:'accountant'},
+];
+const closeTasks = [
+  ['Import bank + card feeds','system','done'],
+  ['Reconcile all bank accounts','bookkeeper','overdue'],
+  ['Reconcile AR / AP subledgers','bookkeeper','due_today'],
+  ['Review flux vs prior month','controller','upcoming'],
+  ['Owner sign-off','owner','blocked'],
+  ['Seal financial package','controller','upcoming'],
+];
+const fleet = [
+  ['Brightwork Studio','AT_RISK','$38,000','wk3 · short $9k','1 reconnect','2026-08 4/7 · 1 overdue'],
+  ['Nimbus Agency','WATCH','$72,000','—','2 ok','2026-08 closed'],
+  ['Harbor Supply Co','STABLE','$180,000','—','2 ok','2026-08 closed'],
+];
+const STATUS_COLOR = {STABLE:'var(--pos)',WATCH:'var(--watch)',AT_RISK:'var(--risk)',
+  done:'var(--pos)',overdue:'var(--risk)',due_today:'var(--watch)',blocked:'var(--muted)',upcoming:'var(--sage)'};
+
+// --- nav (role-aware) -------------------------------------------------------
+function navItems(){
+  const items = [['cash','Cash'],['briefing','Briefing']];
+  if(can(PERM.MANAGE_CLOSE)) items.push(['close','Close']);
+  items.push(['package','Package']);
+  if(can(PERM.MANAGE_USERS)) items.push(['team','Team']);
+  if(can(PERM.VIEW_FLEET)) items.push(['fleet','Fleet'],['onboard','Onboard']);
+  return items;
+}
+function renderNav(){
+  const items = navItems();
+  if(!items.find(i=>i[0]===state.screen)) state.screen = items[0][0];
+  document.getElementById('nav').innerHTML = items.map(([k,l])=>
+    `<button class="${state.screen===k?'active':''}" onclick="go('${k}')">${l}</button>`).join('');
+  document.getElementById('whoRole').textContent = ROLE_LABEL[state.role];
+  document.getElementById('whoName').textContent = state.email;
+}
+function go(s){ state.screen=s; renderNav(); renderScreen(); }
+
+// --- screens ----------------------------------------------------------------
+function chart(){
+  const W=680,H=200,L=40,R=12,T=12,B=24, vals=cash.weeks, floor=20000;
+  const lo=Math.min(...vals,floor)*0.95, hi=Math.max(...vals)*1.03;
+  const x=i=>L+i*((W-L-R)/(vals.length-1)), y=v=>T+(hi-v)*((H-T-B)/(hi-lo));
+  const pts=vals.map((v,i)=>`${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+  const fy=y(floor);
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="13-week cash">
+    <rect class="danger" x="${L}" y="${fy}" width="${W-L-R}" height="${H-B-fy}"/>
+    <line class="grid" x1="${L}" y1="${H-B}" x2="${W-R}" y2="${H-B}"/>
+    <line class="floor" x1="${L}" y1="${fy}" x2="${W-R}" y2="${fy}"/>
+    <text x="${W-R}" y="${fy-5}" text-anchor="end">floor $20k</text>
+    <polyline class="series" points="${pts}"/>
+    <text x="${x(0)}" y="${H-8}" text-anchor="middle">now</text>
+    <text x="${x(6)}" y="${H-8}" text-anchor="middle">wk6</text>
+    <text x="${x(13)}" y="${H-8}" text-anchor="middle">wk13</text>
+  </svg>`;
+}
+function screenCash(){
+  const col = STATUS_COLOR[cash.status];
+  return `<h1>Northwind LLC — cash</h1><p class="sub">as of Sep 2 · week of Aug 31</p>
+  <div class="card"><div class="hero">
+    <div><div class="eyebrow">Cash today</div><div class="big">${cash.today}</div></div>
+    <div style="text-align:right">
+      <span class="badge" style="color:${col};background:#00000008;border:1px solid ${col}33">▲ ${cash.status.replace('_',' ')}</span>
+      <div style="margin-top:8px;max-width:34ch;color:var(--ink2);font-size:14px">${cash.headline}</div>
+    </div>
+  </div></div>
+  <div class="tiles">${tiles.map(([l,v])=>`<div class="tile"><div class="l">${l}</div><div class="v">${v}</div></div>`).join('')}</div>
+  <div class="card" style="margin-top:16px"><h2 style="margin-top:0">Next 13 weeks — projected cash</h2>${chart()}</div>
+  <div class="card"><h2 style="margin-top:0">What's using your cash</h2>
+    ${drivers.map(([l,v,p])=>`<div style="margin-bottom:10px"><div class="row"><span>${l}</span><span class="right num">${v}</span></div>
+      <div style="height:8px;background:var(--line);border-radius:5px;margin-top:5px"><div style="height:100%;width:${p}%;background:var(--sage);border-radius:5px"></div></div></div>`).join('')}</div>
+  <div class="card"><h2 style="margin-top:0">Recommended action</h2>
+    <div class="row"><div class="grow">Delay the wk-5 vendor run by 6 days to hold the floor, or pull $10k from the line.</div>
+    ${actionBtn(PERM.RECORD_DECISION,'Record decision')}${actionBtn(PERM.EDIT_ASSUMPTIONS,'Adjust assumptions','ghost')}</div></div>`;
+}
+function actionBtn(perm,label,cls='sage'){
+  const ok = can(perm);
+  return `<button class="btn ${cls}" ${ok?'':'disabled title="Your role can’t do this"'} onclick="toast('${label} — done (demo)')">${label}</button>`;
+}
+function screenBriefing(){
+  return `<h1>Weekly briefing</h1><p class="sub">Delivered Mondays 8:00 MT · confidence 82/100</p>
+  <div class="card" style="max-width:680px">
+    <div class="badge" style="color:var(--watch)">▲ Watch</div>
+    <h2 style="margin:12px 0 6px;color:var(--ink);font-size:18px;letter-spacing:0;text-transform:none;font-family:var(--serif)">${cash.headline}</h2>
+    <p class="muted" style="font-size:14px">You have $63,210.55 today. Payroll on Sep 3 and rent on Sep 1 pull you to a low of $18,400 in week 6 — $1,600 under your floor. Two invoices totaling $27,500 are due before then; if they land on time you clear it.</p>
+    <h2>The numbers</h2>
+    <table><tbody>
+      <tr><td>Cash today</td><td class="num">$63,210.55</td></tr>
+      <tr><td>Projected low (wk6)</td><td class="num">$18,400.00</td></tr>
+      <tr><td>Expected inflows</td><td class="num">$27,500.00</td></tr></tbody></table>
+    <h2>Ask your CFO</h2>
+    <div class="kbar">${['When do I dip below my floor?','Which invoices are at risk?','Can I make payroll?'].map(q=>`<span class="pill" onclick="toast('Answer shown (demo)')" style="cursor:pointer">${q}</span>`).join('')}</div>
+  </div>`;
+}
+function screenClose(){
+  return `<h1>Month-end close — August 2026</h1><p class="sub">5 of 6 remaining · 1 overdue · owner sign-off blocked</p>
+  ${can(PERM.PUBLISH_CLOSE)?'':'<div class="banner warn">Your role can run the close, but only an Owner/Controller/Accountant can seal the financial package.</div>'}
+  <table><thead><tr><th>Task</th><th>Owner</th><th>Status</th><th></th></tr></thead><tbody>
+  ${closeTasks.map(([t,o,s])=>`<tr><td>${t}</td><td class="muted">${o}</td>
+    <td><span class="dot" style="background:${STATUS_COLOR[s]}"></span>${s.replace('_',' ')}</td>
+    <td class="num">${s==='done'?'✓':`<button class="btn sage" style="padding:5px 10px" ${can(PERM.MANAGE_CLOSE)?'':'disabled'} onclick="toast('Marked done (demo)')">Mark done</button>`}</td></tr>`).join('')}
+  </tbody></table>
+  <div class="row" style="margin-top:16px"><div class="grow muted">Sealing produces the immutable, fingerprinted financial package.</div>
+  <button class="btn" ${can(PERM.PUBLISH_CLOSE)?'':'disabled title="Needs publish_close"'} onclick="toast('Package sealed + fingerprinted (demo)')">Seal &amp; publish package</button></div>`;
+}
+function screenPackage(){
+  return `<h1>Financial package — 2026-08 <span class="badge" style="color:#0A6E4B;background:#E7F6EF">✓ verified</span></h1>
+  <p class="sub">Published record · sealed Sep 5 by Cara CPA · USD · fingerprint re-verified in-app</p>
+  <h2>Income statement</h2>
+  <table><tbody><tr><td>Revenue</td><td class="num">$142,300.00</td></tr><tr><td>Expenses</td><td class="num">$118,900.00</td></tr>
+  <tr><td><strong>Net income</strong></td><td class="num"><strong>$23,400.00</strong></td></tr></tbody></table>
+  <h2>Balance sheet</h2>
+  <table><tbody><tr><td>Total assets</td><td class="num">$486,200.00</td></tr><tr><td>Total liabilities + equity</td><td class="num">$486,200.00</td></tr></tbody></table>
+  <p class="muted" style="font-size:12px;font-family:ui-monospace,Menlo,monospace;margin-top:12px">fingerprint (sha256): 0446e7fd06d1…472122fc5</p>`;
+}
+function screenTeam(){
+  const roles=['owner','controller','bookkeeper','accountant','viewer'];
+  return `<h1>Team &amp; roles</h1><p class="sub">Who can see and do what in Northwind LLC. Role changes take effect immediately.</p>
+  <table><thead><tr><th>Member</th><th>Email</th><th>Role</th><th></th></tr></thead><tbody>
+  ${team.map((m,i)=>`<tr><td><strong>${m.name||'—'}</strong></td><td class="muted">${m.email}</td>
+    <td><select onchange="setRole(${i},this.value)" ${m.role==='owner'?'disabled title="the owner"':''}>
+      ${roles.map(r=>`<option value="${r}" ${m.role===r?'selected':''}>${ROLE_LABEL[r]}</option>`).join('')}</select></td>
+    <td class="num">${m.role==='owner'?'':`<button class="btn ghost" style="padding:5px 10px" onclick="removeMember(${i})">Remove</button>`}</td></tr>`).join('')}
+  </tbody></table>
+  <div class="card" style="margin-top:16px"><h2 style="margin-top:0">Invite a teammate</h2>
+    <div class="row"><input id="invEmail" placeholder="name@company.com" class="grow" style="min-width:220px">
+    <select id="invRole">${roles.filter(r=>r!=='owner').map(r=>`<option value="${r}">${ROLE_LABEL[r]}</option>`).join('')}</select>
+    <button class="btn" onclick="invite()">Send invite</button></div>
+    <div class="muted" style="font-size:12px;margin-top:10px">Owner &amp; Controller can publish the close · Bookkeeper reconciles but can’t seal · Accountant is your external CPA (co-delivery) · Viewer is read-only.</div>
+  </div>`;
+}
+function screenFleet(){
+  return `<h1>Beta fleet</h1><p class="sub">Operator view · 3 clients · 1 at risk · 1 with books behind</p>
+  <div class="banner warn">1 of 3 clients AT RISK · 1 with books behind</div>
+  <table><thead><tr><th>Client</th><th>Status</th><th class="num">Cash</th><th>Breach</th><th>Books</th><th>Close</th></tr></thead><tbody>
+  ${fleet.map(([n,s,c,b,books,close])=>`<tr><td><strong>${n}</strong></td>
+    <td><span class="dot" style="background:${STATUS_COLOR[s]}"></span>${s.replace('_',' ')}</td>
+    <td class="num">${c}</td><td>${b}</td>
+    <td><span class="dot" style="background:${books.includes('reconnect')?'var(--risk)':'var(--pos)'}"></span>${books}</td>
+    <td>${close}</td></tr>`).join('')}
+  </tbody></table>`;
+}
+function screenOnboard(){
+  return `<h1>Onboard a client</h1><p class="sub">Two stages, one contract. Overlay first (QBO stays system of record), migrate when ready.</p>
+  <div class="card"><h2 style="margin-top:0">Stage 1 — Overlay</h2>
+    <p class="muted" style="font-size:14px">Pull the client's QBO bank balances + open AR/AP into a verified 13-week cash outlook. QBO stays the system of record. Live in minutes.</p>
+    <div class="row"><input placeholder="QuickBooks realm id" class="grow"><button class="btn sage" onclick="toast('Connect QBO (OAuth) — demo')">Connect QuickBooks</button></div></div>
+  <div class="card"><h2 style="margin-top:0">Stage 2 — Migration</h2>
+    <p class="muted" style="font-size:14px">Import the full GeneralLedger into the RGNR8 ledger, verify it against QBO's trial balance to the penny, and become the system of record.</p>
+    <button class="btn" onclick="toast('Run migration — demo')">Run migration &amp; parallel close</button></div>`;
+}
+function renderScreen(){
+  const s = {cash:screenCash,briefing:screenBriefing,close:screenClose,package:screenPackage,team:screenTeam,fleet:screenFleet,onboard:screenOnboard}[state.screen];
+  document.getElementById('screen').innerHTML = s ? s() : '<div class="empty">Nothing here.</div>';
+}
+
+// --- team actions -----------------------------------------------------------
+function setRole(i,r){ team[i].role=r; toast(team[i].email+' is now '+ROLE_LABEL[r]); }
+function removeMember(i){ toast('Removed '+team[i].email); team.splice(i,1); renderScreen(); }
+function invite(){ const e=document.getElementById('invEmail').value.trim(), r=document.getElementById('invRole').value;
+  if(!e.includes('@')){ toast('Enter a valid email'); return; } team.push({email:e,name:'',role:r}); toast('Invited '+e+' as '+ROLE_LABEL[r]); renderScreen(); }
+
+// --- session ----------------------------------------------------------------
+function signIn(){ state.role=document.getElementById('loginRole').value; state.email=document.getElementById('loginEmail').value||'owner@northwind.com';
+  document.getElementById('roleSwitch').value = state.role;
+  document.getElementById('login').style.display='none'; document.getElementById('app').style.display='block';
+  state.screen = navItems()[0][0]; renderNav(); renderScreen(); }
+function signOut(){ document.getElementById('app').style.display='none'; document.getElementById('login').style.display='flex'; }
+function switchRole(r){ state.role=r; renderNav(); renderScreen(); }
+let toastT; function toast(m){ let el=document.getElementById('toast'); if(!el){el=document.createElement('div');el.id='toast';
+  el.style.cssText='position:fixed;left:50%;bottom:70px;transform:translateX(-50%);background:var(--forest);color:var(--ivory);padding:10px 16px;border-radius:10px;font-size:13px;z-index:30;box-shadow:var(--shadow)';document.body.appendChild(el);}
+  el.textContent=m; el.style.opacity='1'; clearTimeout(toastT); toastT=setTimeout(()=>el.style.opacity='0',1600); }
+</script>
+</body></html>

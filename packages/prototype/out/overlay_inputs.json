@@ -1,0 +1,68 @@
+{
+  "contract": "forecast-inputs/1",
+  "currency": "USD",
+  "opening": {
+    "as_of": "2026-08-31",
+    "available": {
+      "minor": 6321055,
+      "currency": "USD"
+    },
+    "restricted": {
+      "minor": 0,
+      "currency": "USD"
+    },
+    "verified": false
+  },
+  "invoices": [
+    {
+      "id": "INV-101",
+      "customer_id": "C-7",
+      "issue_date": "2026-07-20",
+      "due_date": "2026-08-19",
+      "open_amount": {
+        "minor": 1800000,
+        "currency": "USD"
+      },
+      "status": "OPEN"
+    },
+    {
+      "id": "INV-102",
+      "customer_id": "C-9",
+      "issue_date": "2026-08-01",
+      "due_date": "2026-08-31",
+      "open_amount": {
+        "minor": 950000,
+        "currency": "USD"
+      },
+      "status": "OPEN"
+    }
+  ],
+  "customer_histories": [],
+  "bills": [
+    {
+      "id": "BILL-201",
+      "vendor_id": "V-3",
+      "due_date": "2026-08-14",
+      "amount": {
+        "minor": 600000,
+        "currency": "USD"
+      },
+      "scheduled_date": null
+    },
+    {
+      "id": "BILL-202",
+      "vendor_id": "V-8",
+      "due_date": "2026-09-04",
+      "amount": {
+        "minor": 145000,
+        "currency": "USD"
+      },
+      "scheduled_date": null
+    }
+  ],
+  "recurring": [],
+  "payroll": [],
+  "debt": [],
+  "one_time": [],
+  "pipeline": []
+}

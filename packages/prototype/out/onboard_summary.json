@@ -1,0 +1,27 @@
+{
+  "generatedFrom": "packages/prototype/onboard.ts",
+  "overlay": {
+    "stage": "overlay (QBO stays system of record)",
+    "opening": {
+      "minor": 6321055,
+      "currency": "USD"
+    },
+    "openingVerified": false,
+    "invoices": 2,
+    "bills": 2
+  },
+  "migration": {
+    "stage": "migration (RGNR8 becomes system of record)",
+    "posted": 3,
+    "opening": {
+      "minor": 6321055,
+      "currency": "USD"
+    },
+    "openingVerified": true,
+    "parallelClose": "VERIFIED",
+    "matched": 4,
+    "mismatches": 0,
+    "invoices": 2,
+    "bills": 2
+  }
+}

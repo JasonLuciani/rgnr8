@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>RGNR8 — Northwind LLC</title><style>
+:root{
+  --rg-forest:#0E241E; --rg-ivory:#F2EFE6; --rg-sage:#5E7F63;
+  --rg-ink:#0E241E; --rg-ink-2:#2C3B33; --rg-muted:#616D66;
+  --rg-paper:#FFFFFF; --rg-surface:#F2EFE6; --rg-line:#E2DFD3;
+  --rg-accent:#5E7F63; --rg-accent-deep:#42604A;
+  --rg-pos:#3E7C5A; --rg-watch:#B7791F; --rg-risk:#B4443C;
+  --rg-radius:12px; --rg-pill:999px;
+  --rg-shadow:0 1px 2px rgba(14,36,30,.07),0 1px 3px rgba(14,36,30,.05);
+  --rg-serif:ui-serif,Georgia,"Times New Roman",serif;
+  --rg-sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--rg-surface);color:var(--rg-ink);
+  font:400 15px/1.55 var(--rg-sans);-webkit-font-smoothing:antialiased}
+h1{font-family:var(--rg-serif)}
+.rg-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;
+  background:var(--rg-forest);color:var(--rg-ivory);padding:14px 22px}
+.rg-lockup{display:inline-flex;align-items:center;gap:11px}
+.rg-wordmark{font:600 18px/1 var(--rg-sans);
+  letter-spacing:.22em;text-transform:uppercase;color:var(--rg-ivory)}
+.rg-wordmark .rg-8{color:var(--rg-sage)}
+.rg-ctx{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#A9B7AC;
+  font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rg-shell{max-width:960px;margin:0 auto;padding:24px 20px 56px}
+.rg-eyebrow{font-size:11px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:var(--rg-muted)}
+.rg-badge{display:inline-flex;align-items:center;gap:7px;border-radius:var(--rg-pill);
+  padding:4px 12px;font-weight:700;font-size:12px;letter-spacing:.05em;text-transform:uppercase}
+.rg-dot{display:inline-block;width:9px;height:9px;border-radius:50%;vertical-align:middle;margin-right:7px}
+.rg-foot{color:var(--rg-muted);font-size:12px;margin-top:14px}
+:focus-visible{outline:2px solid var(--rg-sage);outline-offset:2px}
+/* Shared component layer — the single source for card/table/banner/btn/tile/dot,
+   so no renderer redeclares (or drifts from) these. */
+.card{background:var(--rg-paper);border:1px solid var(--rg-line);border-radius:var(--rg-radius);
+  box-shadow:var(--rg-shadow);padding:20px 22px;margin-bottom:16px}
+.muted{color:var(--rg-muted)}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.neg{color:var(--rg-risk)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:middle}
+.table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{border-collapse:separate;border-spacing:0;width:100%;background:var(--rg-paper);
+  border:1px solid var(--rg-line);border-radius:var(--rg-radius);overflow:hidden;box-shadow:var(--rg-shadow)}
+th,td{text-align:left;padding:11px 13px;border-bottom:1px solid var(--rg-line);font-size:13.5px}
+thead th{background:var(--rg-ivory);font-weight:700;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--rg-muted)}
+tbody tr:last-child td{border-bottom:none}
+.btn{background:var(--rg-forest);color:var(--rg-ivory);border:none;border-radius:10px;
+  padding:10px 15px;font-weight:700;cursor:pointer;font:inherit}
+.btn.sage{background:var(--rg-accent-deep)}
+.btn.ghost{background:transparent;color:var(--rg-forest);border:1px solid var(--rg-line)}
+.banner{padding:12px 16px;border-radius:var(--rg-radius);margin-bottom:16px;font-weight:700;font-size:13px;border:1px solid transparent}
+.banner.good{background:color-mix(in srgb, var(--rg-pos) 14%, var(--rg-paper));
+  color:color-mix(in srgb, var(--rg-pos) 78%, black);border-color:color-mix(in srgb, var(--rg-pos) 32%, transparent)}
+.banner.warn{background:color-mix(in srgb, var(--rg-risk) 14%, var(--rg-paper));
+  color:color-mix(in srgb, var(--rg-risk) 78%, black);border-color:color-mix(in srgb, var(--rg-risk) 32%, transparent)}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:8px}
+.tile{background:var(--rg-paper);border:1px solid var(--rg-line);border-radius:12px;padding:15px 16px}
+.tile .k{color:var(--rg-muted);font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+.tile .v{font-size:23px;font-weight:800;margin-top:6px;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.pill{display:inline-flex;align-items:center;gap:7px;border-radius:var(--rg-pill);padding:4px 12px;
+  font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  .rg-nav{display:flex;gap:2px;flex-wrap:wrap}
+  .rg-nav a{color:#CBD8CC;text-decoration:none;padding:8px 12px;border-radius:8px;font-size:13px;font-weight:600;letter-spacing:.02em}
+  .rg-nav a.active,.rg-nav a:hover{background:rgba(255,255,255,.10);color:#fff}
+  .rg-who{display:flex;align-items:center;gap:10px;color:#DDE6DD;font-size:13px}
+  .rg-rolechip{background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.16);border-radius:999px;
+    padding:3px 10px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--rg-sage)}
+  .rg-who a{color:#CBD8CC;text-decoration:none;font-size:12px}
+  .shell{max-width:1040px;margin:0 auto;padding:24px 20px 60px}
+  h1{font-size:24px;font-weight:700;letter-spacing:-.01em;margin:0 0 4px}
+  .sub{color:var(--rg-muted);margin:0 0 16px;font-size:13px}
+  label{display:block;font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--rg-muted);margin:14px 0 6px}
+  input,select{width:100%;padding:11px 12px;border:1px solid var(--rg-line);border-radius:10px;font:inherit;background:#fff;color:var(--rg-ink)}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center} .grow{flex:1;min-width:200px}
+  h2{font-size:15px;font-weight:700;letter-spacing:-.01em;margin:22px 0 10px}
+  .bar{height:9px;background:var(--rg-ivory);border:1px solid var(--rg-line);border-radius:6px;overflow:hidden}
+  .bar>span{display:block;height:100%;background:var(--rg-sage)}
+  .drv{margin-bottom:11px} .drv .t{display:flex;justify-content:space-between;font-size:14px}
+  .drv .track{height:8px;background:var(--rg-ivory);border-radius:5px;margin:5px 0 2px;overflow:hidden}
+  .drv .fill{height:100%;background:var(--rg-sage);border-radius:5px} .drv .s{color:var(--rg-muted);font-size:12px}
+  .chip{font:inherit;font-size:13px;color:var(--rg-ink);background:var(--rg-ivory);border:1px solid var(--rg-line);border-radius:999px;padding:7px 13px;cursor:pointer}
+  .chip:hover{border-color:var(--rg-sage);color:var(--rg-forest)}
+  .empty{text-align:center;padding:32px 24px}
+  @media(max-width:640px){
+    .rg-nav{display:none}
+    table{font-size:12.5px}
+    th,td{padding:9px 10px}
+  }
+</style></head><body><header class="rg-bar"><span class="rg-lockup"><svg viewBox="0 0 40 24" height="20" width="33" role="img" aria-label="RGNR8" style="vertical-align:middle;flex:none"><path d="M8 12 C8 5.5 16 5.5 20 12 C24 18.5 32 18.5 32 12 C32 5.5 24 5.5 20 12 C16 18.5 8 18.5 8 12 Z" fill="none" stroke="#F2EFE6" stroke-width="3.2" stroke-linecap="round"/></svg><span class="rg-wordmark" style="font-size:16px">RGNR<span class="rg-8">8</span></span></span><nav class="rg-nav"><a class="" href="/t/northwind">Cash</a><a class="" href="/t/northwind/transactions">Transactions</a><a class="active" href="/t/northwind/briefing">Briefing</a><a class="" href="/t/northwind/close">Close</a><a class="" href="/t/northwind/packages">Package</a><a class="" href="/t/northwind/team">Team</a></nav><span class="rg-who"><span>owner@northwind.com</span><span class="rg-rolechip">Owner</span><a href="/logout">Sign out</a></span></header><div class="shell"><h1>This week's briefing</h1>
+    <p class="sub">Northwind LLC · 2026-08-31 – 2026-11-29 · as of 2026-08-31</p>
+    <div class="card"><div class="row" style="justify-content:space-between">
+      <span class="pill" role="status" aria-label="Status: At risk" style="color:var(--rg-risk);border:1px solid color-mix(in srgb, var(--rg-risk) 20%, transparent)"><span aria-hidden="true">▲</span> At risk</span>
+      <span class="muted" style="font-size:12px">Confidence 96/100</span></div>
+      <div style="font-family:var(--rg-serif);font-size:22px;margin:10px 0 4px">Cash is projected to fall below your USD 25000.00 floor in week 7 (around 2026-10-15), short by up to USD 185200.00.</div>
+      <p class="muted" style="margin:0">Projected to fall below the USD 25000.00 floor in week 7.</p><div class="banner warn" style="background:var(--rg-ivory);color:var(--rg-ink);border-color:var(--rg-line)"><strong>Do this — </strong>Cover the projected shortfall of up to USD 185200.00 before 2026-10-15 — delay non-critical outflows or arrange a short-term draw.</div></div>
+    <h2>The numbers</h2>
+    <table><thead><tr><th>Fact</th><th class="num">Amount</th><th>Backed by</th></tr></thead><tbody><tr><td>Cash available today</td><td class="num">$128,400.00</td><td class="muted" style="font-size:12px">opening_available</td></tr><tr><td>Your minimum-cash floor</td><td class="num">$25,000.00</td><td class="muted" style="font-size:12px">effective_floor</td></tr><tr><td>Projected low point</td><td class="num">-$160,200.00</td><td class="muted" style="font-size:12px">trough_balance</td></tr><tr><td>Cushion at the low point</td><td class="num">-$185,200.00</td><td class="muted" style="font-size:12px">cushion_at_trough</td></tr><tr><td>Money in over 13 weeks</td><td class="num">$60,500.00</td><td class="muted" style="font-size:12px">total_inflows</td></tr><tr><td>Money out over 13 weeks</td><td class="num">$349,100.00</td><td class="muted" style="font-size:12px">total_outflows</td></tr><tr><td>Largest projected shortfall</td><td class="num">$185,200.00</td><td class="muted" style="font-size:12px">worst_shortfall</td></tr><tr><td>Largest upcoming receipt</td><td class="num">$42,000.00</td><td class="muted" style="font-size:12px">forecast</td></tr><tr><td>Largest upcoming outflow</td><td class="num">$36,000.00</td><td class="muted" style="font-size:12px">forecast</td></tr></tbody></table>
+    <h2>What's moving cash</h2><div class="card"><div class="drv"><div class="t"><span>Payroll Net</span><span class="num">$252,000.00</span></div><div class="track"><div class="fill" style="width:100%"></div></div></div><div class="drv"><div class="t"><span>Payroll Tax</span><span class="num">$64,400.00</span></div><div class="track"><div class="fill" style="width:26%"></div></div></div><div class="drv"><div class="t"><span>Rent</span><span class="num">$23,400.00</span></div><div class="track"><div class="fill" style="width:9%"></div></div></div></div>
+    <h2>13-week glance</h2>
+    <table><thead><tr><th>Week</th><th>Starting</th><th class="num">Closing</th><th>Status</th></tr></thead><tbody><tr><td>Week 1</td><td class="muted">2026-08-31</td><td class="num">$72,300.00</td><td><span class="dot" style="background:var(--rg-pos)"></span>STABLE</td></tr><tr><td>Week 2</td><td class="muted">2026-09-07</td><td class="num">$72,300.00</td><td><span class="dot" style="background:var(--rg-pos)"></span>STABLE</td></tr><tr><td>Week 3</td><td class="muted">2026-09-14</td><td class="num">$69,100.00</td><td><span class="dot" style="background:var(--rg-pos)"></span>STABLE</td></tr><tr><td>Week 4</td><td class="muted">2026-09-21</td><td class="num">$69,100.00</td><td><span class="dot" style="background:var(--rg-pos)"></span>STABLE</td></tr><tr><td>Week 5</td><td class="muted">2026-09-28</td><td class="num">$34,600.00</td><td><span class="dot" style="background:var(--rg-pos)"></span>STABLE</td></tr><tr><td>Week 6</td><td class="muted">2026-10-05</td><td class="num">$31,500.00</td><td><span class="dot" style="background:var(--rg-pos)"></span>STABLE</td></tr><tr><td>Week 7</td><td class="muted">2026-10-12</td><td class="num">-$13,700.00</td><td><span class="dot" style="background:var(--rg-risk)"></span>AT_RISK</td></tr><tr><td>Week 8</td><td class="muted">2026-10-19</td><td class="num">-$13,700.00</td><td><span class="dot" style="background:var(--rg-risk)"></span>AT_RISK</td></tr><tr><td>Week 9</td><td class="muted">2026-10-26</td><td class="num">-$66,700.00</td><td><span class="dot" style="background:var(--rg-risk)"></span>AT_RISK</td></tr><tr><td>Week 10</td><td class="muted">2026-11-02</td><td class="num">-$69,800.00</td><td><span class="dot" style="background:var(--rg-risk)"></span>AT_RISK</td></tr><tr><td>Week 11</td><td class="muted">2026-11-09</td><td class="num">-$115,000.00</td><td><span class="dot" style="background:var(--rg-risk)"></span>AT_RISK</td></tr><tr><td>Week 12</td><td class="muted">2026-11-16</td><td class="num">-$115,000.00</td><td><span class="dot" style="background:var(--rg-risk)"></span>AT_RISK</td></tr><tr><td>Week 13</td><td class="muted">2026-11-23</td><td class="num">-$160,200.00</td><td><span class="dot" style="background:var(--rg-risk)"></span>AT_RISK</td></tr></tbody></table>
+    <h2>Heads-up</h2><div class="card"><ul style="margin:0;padding-left:18px;color:var(--rg-ink-2)"><li>2 customer(s) have no payment history; default timing used</li></ul></div>
+    <h2>Ask your CFO</h2>
+    <div class="card"><div class="row"><button class="chip" onclick="ans('CASH_TODAY')">How much cash do I have right now?</button><button class="chip" onclick="ans('WHEN_LOW')">When will my cash be at its lowest?</button><button class="chip" onclick="ans('WILL_I_BREACH')">Am I going to run short of cash?</button><button class="chip" onclick="ans('BIGGEST_COST')">What&#x27;s my biggest cost over the next 13 weeks?</button><button class="chip" onclick="ans('TOP_RECEIVABLE')">Which upcoming customer payment matters most?</button><button class="chip" onclick="ans('MONEY_IN_OUT')">How much is coming in versus going out?</button></div>
+      <div id="answer" class="banner" style="display:none;margin-top:14px;background:var(--rg-ivory);color:var(--rg-ink);border-color:var(--rg-line)">
+        <div id="aq" class="muted" style="font-size:12px"></div><div id="at" style="font-weight:400"></div></div></div>
+    <script>
+      const A={"CASH_TODAY": {"t": "You have USD 128400.00 available today.", "q": "How much cash do I have right now?"}, "WHEN_LOW": {"t": "Your projected low point is USD -160200.00 around 2026-11-29.", "q": "When will my cash be at its lowest?"}, "WILL_I_BREACH": {"t": "Yes \u2014 cash is projected to dip below your USD 25000.00 floor around 2026-10-15 (week 7), short by up to USD 185200.00.", "q": "Am I going to run short of cash?"}, "BIGGEST_COST": {"t": "Your biggest cost is payroll net at USD 252000.00 over 13 weeks (72% of all outflows).", "q": "What's my biggest cost over the next 13 weeks?"}, "TOP_RECEIVABLE": {"t": "The receipt that matters most is INV-88 for USD 42000.00, expected 2026-09-17.", "q": "Which upcoming customer payment matters most?"}, "MONEY_IN_OUT": {"t": "Over the next 13 weeks: USD 60500.00 in, USD 349100.00 out \u2014 a net of USD -288600.00.", "q": "How much is coming in versus going out?"}};
+      function ans(k){const a=A[k];const box=document.getElementById('answer');
+        document.getElementById('aq').textContent=a.q;document.getElementById('at').textContent=a.t;
+        box.style.display='block';}
+    </script></div></body></html>

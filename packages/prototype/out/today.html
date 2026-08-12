@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RGNR8 — Today</title>
+<style>
+  :root {
+    --plane:#F2EFE6; --surface:#FFFFFF; --ink:#0E241E; --ink2:#2C3B33; --muted:#6E7A70;
+    --grid:#E2DFD3; --axis:#C7C3B4; --series:#5E7F63; --border:#E2DFD3; --ivory:#F2EFE6;
+    --serif:ui-serif,Georgia,"Times New Roman",serif;
+    --status:#B4443C;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--plane); color:var(--ink);
+    font:400 15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased; }
+  .rg-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;
+    background:var(--ink);color:var(--ivory);padding:14px 22px}
+  .rg-lockup{display:inline-flex;align-items:center;gap:11px}
+  .rg-wordmark{font:600 18px/1 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    letter-spacing:.22em;text-transform:uppercase;color:var(--ivory)}
+  .rg-wordmark .rg-8{color:var(--series)}
+  .rg-ctx{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#A9B7AC;font-weight:600}
+  .wrap { max-width:900px; margin:0 auto; padding:24px 16px 56px; }
+  .head { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:14px; }
+  .head h1 { font-size:15px; margin:0; font-weight:700; letter-spacing:.02em; color:var(--ink2); }
+  .head .as-of { color:var(--muted); font-size:13px; }
+  .hero { background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:22px 24px; margin-bottom:16px;
+    box-shadow:0 1px 2px rgba(14,36,30,.07),0 1px 3px rgba(14,36,30,.05); }
+  .badge { display:inline-flex; align-items:center; gap:7px; color:var(--status); font-weight:800;
+    text-transform:uppercase; letter-spacing:.06em; font-size:12px; }
+  .badge svg { width:18px; height:18px; }
+  .hero h2 { font-family:var(--serif); font-size:27px; margin:10px 0 4px; font-weight:700; letter-spacing:-.01em; line-height:1.18; }
+  .hero .reason { color:var(--ink2); font-size:14px; margin:0; }
+  .action { margin-top:14px; background:color-mix(in srgb, var(--status) 10%, var(--surface));
+    border:1px solid color-mix(in srgb, var(--status) 35%, var(--border)); border-radius:10px; padding:11px 13px; font-size:14px; }
+  .action .do { display:block; font-weight:700; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--status); margin-bottom:3px; }
+  .tiles { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:16px; }
+  .tile { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:15px 16px; }
+  .tile-label { color:var(--muted); font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
+  .tile-value { font-size:23px; font-weight:800; margin-top:6px; font-variant-numeric:tabular-nums; letter-spacing:-.01em; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:18px 20px; margin-bottom:16px; }
+  .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 12px; }
+  .drv { margin-bottom:12px; } .drv-top { display:flex; justify-content:space-between; font-size:14px; }
+  .drv-amt { font-variant-numeric:tabular-nums; }
+  .drv-bar { height:8px; background:var(--grid); border-radius:5px; margin:5px 0 2px; overflow:hidden; }
+  .drv-fill { height:100%; background:var(--series); border-radius:5px; }
+  .drv-sub { color:var(--muted); font-size:12px; }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; }
+  .chip { font:inherit; font-size:13px; color:var(--ink); background:var(--plane); border:1px solid var(--border);
+    border-radius:999px; padding:7px 13px; cursor:pointer; }
+  .chip:hover { border-color:var(--series); color:var(--series); }
+  .answer { margin-top:12px; padding:12px 14px; background:var(--plane); border:1px solid var(--border);
+    border-radius:10px; font-size:14px; display:none; }
+  .answer.show { display:block; } .answer .q { color:var(--muted); font-size:12px; margin-bottom:3px; }
+  .dq { margin:0; padding-left:18px; color:var(--ink2); font-size:13px; }
+  .foot { color:var(--muted); font-size:12px; text-align:center; margin-top:8px; }
+  .chart-wrap { position:relative; }
+  .tt { position:absolute; pointer-events:none; background:var(--ink); color:var(--surface); font-size:12px;
+    padding:5px 8px; border-radius:6px; transform:translate(-50%,-130%); white-space:nowrap; opacity:0; transition:opacity .08s; }
+  svg .grid { stroke:var(--grid); stroke-width:1; } svg .axis { stroke:var(--axis); stroke-width:1; }
+  svg .floor { stroke:var(--muted); stroke-width:1.5; stroke-dasharray:5 4; }
+  svg .series { fill:none; stroke:var(--series); stroke-width:2; stroke-linejoin:round; stroke-linecap:round; }
+  svg .danger { fill:var(--status); opacity:.07; }
+  svg text { fill:var(--muted); font-size:11px; }
+  @media(max-width:640px){ .tiles{grid-template-columns:repeat(2,1fr);} }
+</style></head>
+<body>
+<header class="rg-bar"><span class="rg-lockup"><svg viewBox="0 0 40 24" height="22" width="37" role="img" aria-label="RGNR8" style="vertical-align:middle;flex:none"><path d="M8 12 C8 5.5 16 5.5 20 12 C24 18.5 32 18.5 32 12 C32 5.5 24 5.5 20 12 C16 18.5 8 18.5 8 12 Z" fill="none" stroke="#F2EFE6" stroke-width="3.2" stroke-linecap="round"/></svg><span class="rg-wordmark">RGNR<span class="rg-8">8</span></span></span><span class="rg-ctx">Cash outlook</span></header>
+<div class="wrap">
+  <div class="head"><h1>Bright Agency — cash</h1>
+    <span class="as-of">as of 2026-08-31 · 2026-08-31 – 2026-11-29</span></div>
+
+  <div class="hero">
+    <span class="badge"><svg viewBox="0 0 20 20"><path d="M10 3l8 14H2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M10 8v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="10" cy="15" r="1.1" fill="currentColor"/></svg>At risk</span>
+    <h2>Cash is projected to fall below your USD 15000.00 floor in week 7 (around 2026-10-15), short by up to USD 80400.00.</h2>
+    <p class="reason">Projected to fall below the USD 15000.00 floor in week 7.</p>
+    <div class="action"><span class="do">Do this</span>Cover the projected shortfall of up to USD 80400.00 before 2026-10-15 — delay non-critical outflows or arrange a short-term draw.</div>
+  </div>
+
+  <div class="tiles"><div class="tile"><div class="tile-label">Cash today</div><div class="tile-value">$71,000.00</div></div><div class="tile"><div class="tile-label">Minimum-cash floor</div><div class="tile-value">$15,000.00</div></div><div class="tile"><div class="tile-label">Projected low point</div><div class="tile-value">-$65,400.00</div></div><div class="tile"><div class="tile-label">Cushion at low point</div><div class="tile-value">-$80,400.00</div></div></div>
+
+  <section class="card">
+    <h2>Next 13 weeks — projected cash</h2>
+    <div class="chart-wrap"><svg id="cashsvg" viewBox="0 0 720 260" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Projected cash for the next 13 weeks"><line class="grid" x1="64" y1="16.0" x2="704" y2="16.0"/><text x="56" y="20.0" text-anchor="end">$77,820</text><line class="grid" x1="64" y1="70.0" x2="704" y2="70.0"/><text x="56" y="74.0" text-anchor="end">$40,310</text><line class="grid" x1="64" y1="124.0" x2="704" y2="124.0"/><text x="56" y="128.0" text-anchor="end">$2,800</text><line class="grid" x1="64" y1="178.0" x2="704" y2="178.0"/><text x="56" y="182.0" text-anchor="end">-$34,710</text><line class="grid" x1="64" y1="232.0" x2="704" y2="232.0"/><text x="56" y="236.0" text-anchor="end">-$72,220</text><rect class="danger" x="64" y="106.4" width="640" height="125.6"/><line class="floor" x1="64" y1="106.4" x2="704" y2="106.4"/><line class="axis" x1="64" y1="232" x2="704" y2="232"/><polyline class="series" points="64.0,25.8 113.2,62.1 162.5,62.1 211.7,91.2 260.9,62.4 310.2,98.7 359.4,98.7 408.6,127.7 457.8,127.7 507.1,164.0 556.3,164.0 605.5,193.1 654.8,193.1 704.0,222.2"/><circle cx="704.0" cy="222.2" r="3.5" fill="var(--status)"/><text x="704" y="101.4" text-anchor="end">floor $15,000</text><text x="64.0" y="252" text-anchor="middle">now</text><text x="162.5" y="252" text-anchor="middle">wk2</text><text x="260.9" y="252" text-anchor="middle">wk4</text><text x="359.4" y="252" text-anchor="middle">wk6</text><text x="457.8" y="252" text-anchor="middle">wk8</text><text x="556.3" y="252" text-anchor="middle">wk10</text><text x="654.8" y="252" text-anchor="middle">wk12</text><circle id="hoverdot" r="4" fill="var(--series)" style="opacity:0"/></svg><div class="tt" id="tt"></div></div>
+  </section>
+
+  <section class="card"><h2>What's using your cash</h2><div class="drv"><div class="drv-top"><span>Payroll Net</span><span class="drv-amt">$112,000.00</span></div><div class="drv-bar"><div class="drv-fill" style="width:100%"></div></div><div class="drv-sub">72% of outflows</div></div><div class="drv"><div class="drv-top"><span>Payroll Tax</span><span class="drv-amt">$29,400.00</span></div><div class="drv-bar"><div class="drv-fill" style="width:26%"></div></div><div class="drv-sub">19% of outflows</div></div><div class="drv"><div class="drv-top"><span>Rent</span><span class="drv-amt">$15,000.00</span></div><div class="drv-bar"><div class="drv-fill" style="width:13%"></div></div><div class="drv-sub">10% of outflows</div></div></section>
+
+  <section class="card">
+    <h2>Ask your CFO</h2>
+    <div class="chips"><button class="chip" onclick="ans('CASH_TODAY')">How much cash do I have right now?</button><button class="chip" onclick="ans('WHEN_LOW')">When will my cash be at its lowest?</button><button class="chip" onclick="ans('WILL_I_BREACH')">Am I going to run short of cash?</button><button class="chip" onclick="ans('BIGGEST_COST')">What&#x27;s my biggest cost over the next 13 weeks?</button><button class="chip" onclick="ans('TOP_RECEIVABLE')">Which upcoming customer payment matters most?</button><button class="chip" onclick="ans('MONEY_IN_OUT')">How much is coming in versus going out?</button></div>
+    <div class="answer" id="answer"><div class="q" id="aq"></div><div id="at"></div></div>
+  </section>
+
+  <section class="card subtle"><h2>Heads-up</h2><ul class="dq"><li>1 customer(s) have no payment history; default timing used</li></ul></section>
+
+  <div class="foot">Confidence 97/100 · every figure is traceable to the forecast · version 0.1.0+base.af8aa705486e</div>
+</div>
+<script>
+  const ANSWERS = {"CASH_TODAY": {"text": "You have USD 71000.00 available today.", "q": "How much cash do I have right now?"}, "WHEN_LOW": {"text": "Your projected low point is USD -65400.00 around 2026-11-29.", "q": "When will my cash be at its lowest?"}, "WILL_I_BREACH": {"text": "Yes \u2014 cash is projected to dip below your USD 15000.00 floor around 2026-10-15 (week 7), short by up to USD 80400.00.", "q": "Am I going to run short of cash?"}, "BIGGEST_COST": {"text": "Your biggest cost is payroll net at USD 112000.00 over 13 weeks (72% of all outflows).", "q": "What's my biggest cost over the next 13 weeks?"}, "TOP_RECEIVABLE": {"text": "The receipt that matters most is INV-1002 for USD 20000.00, expected 2026-09-23.", "q": "Which upcoming customer payment matters most?"}, "MONEY_IN_OUT": {"text": "Over the next 13 weeks: USD 20000.00 in, USD 156400.00 out \u2014 a net of USD -136400.00.", "q": "How much is coming in versus going out?"}};
+  function ans(k){ const a=ANSWERS[k]; const box=document.getElementById('answer');
+    document.getElementById('aq').textContent=a.q; document.getElementById('at').textContent=a.text;
+    box.classList.add('show'); }
+  (function(){
+    const pts = [{"x": 64.0, "y": 25.8, "label": "now: $71,000.00"}, {"x": 113.2, "y": 62.1, "label": "wk1: $45,800.00"}, {"x": 162.5, "y": 62.1, "label": "wk2: $45,800.00"}, {"x": 211.7, "y": 91.2, "label": "wk3: $25,600.00"}, {"x": 260.9, "y": 62.4, "label": "wk4: $45,600.00"}, {"x": 310.2, "y": 98.7, "label": "wk5: $20,400.00"}, {"x": 359.4, "y": 98.7, "label": "wk6: $20,400.00"}, {"x": 408.6, "y": 127.7, "label": "wk7: $200.00"}, {"x": 457.8, "y": 127.7, "label": "wk8: $200.00"}, {"x": 507.1, "y": 164.0, "label": "wk9: -$25,000.00"}, {"x": 556.3, "y": 164.0, "label": "wk10: -$25,000.00"}, {"x": 605.5, "y": 193.1, "label": "wk11: -$45,200.00"}, {"x": 654.8, "y": 193.1, "label": "wk12: -$45,200.00"}, {"x": 704.0, "y": 222.2, "label": "wk13: -$65,400.00"}];
+    const svg=document.getElementById('cashsvg'); const tt=document.getElementById('tt');
+    if(!svg) return;
+    const dot=svg.querySelector('#hoverdot');
+    svg.addEventListener('mousemove', e=>{
+      const r=svg.getBoundingClientRect(); const x=(e.clientX-r.left)/r.width*720;
+      let best=pts[0], bd=1e9; for(const p of pts){ const d=Math.abs(p.x-x); if(d<bd){bd=d;best=p;} }
+      dot.setAttribute('cx',best.x); dot.setAttribute('cy',best.y); dot.style.opacity=1;
+      tt.style.left=(best.x/720*r.width)+'px'; tt.style.top=(best.y/260*r.height)+'px';
+      tt.textContent=best.label; tt.style.opacity=1;
+    });
+    svg.addEventListener('mouseleave', ()=>{ tt.style.opacity=0; dot.style.opacity=0; });
+  })();
+</script>
+</body></html>

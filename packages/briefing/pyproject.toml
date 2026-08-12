@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rgnr8-briefing"
+version = "0.1.0"
+description = "RGNR8 weekly owner briefing — evidence-backed summary of the cash forecast, with an unsupported-number validator and a constrained ask-your-CFO answerer."
+requires-python = ">=3.11"
+dependencies = ["rgnr8-forecast>=0.1.0"]
+license = { text = "UNLICENSED" }
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "mypy>=1.8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# In this monorepo the forecast package is a sibling; add both srcs for local runs.
+pythonpath = ["src", "../forecast/src"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+mypy_path = "src:../forecast/src"

@@ -1,0 +1,9 @@
+{
+  "payroll_id": "g1",
+  "account_id": "chk",
+  "pay_date": "2026-08-07",
+  "net_pay": "16000.00",
+  "employer_taxes": "3200.00",
+  "employee_taxes": "1000.00",
+  "tax_settlement_date": "2026-08-10"
+}

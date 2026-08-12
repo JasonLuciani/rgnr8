@@ -1,0 +1,307 @@
+"""The authenticated OPERATOR HTTP surface — RGNR8 staff only.
+
+Where `rgnr8_web.WebApp` is the *client* surface (a business's own owners and
+members, tenant-scoped), `OperatorApp` is *our* surface: the RGNR8-staff control
+plane that runs the beta fleet. It reuses the framework-free
+`rgnr8_web.Request`/`Response` shape (a pure `handle(Request) -> Response`, no
+sockets), verifies the same HS256 session JWTs through the same `verify_jwt`
+path, and gates every route on a **platform role** held in the shared
+`UserDirectory`:
+
+* **support** — read-only: view the fleet console + the audit log.
+* **operator** — everything support can, plus onboard/provision a new business.
+
+Onboarding runs through `PlatformAdmin` (provision the billing account if it's
+new, then attach the business entitlement-checked and seat its owner), so the
+operator surface and the platform admin API stay one code path. Every mutating
+action is audited. `operator_wsgi` wraps it as a WSGI callable, mirroring
+`rgnr8_web.wsgi_app`.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable, Iterable
+from datetime import datetime
+
+from rgnr8_forecast import Money
+from rgnr8_billing import BillingError, BillingService, EntitlementError, Tier
+from rgnr8_web import (
+    AuditSink,
+    JwtError,
+    Request,
+    Response,
+    Role,
+    UserDirectory,
+    verify_jwt,
+)
+
+from .console import render_operator_console
+from .fleet import BetaTenant, Fleet
+from .platform import PlatformAdmin, PlatformError
+from .report import build_ops_report
+
+
+def _json(status: int, payload: object) -> Response:
+    return Response(status, json.dumps(payload), "application/json")
+
+
+def _html(status: int, body: str) -> Response:
+    return Response(status, body, "text/html; charset=utf-8")
+
+
+class OperatorApp:
+    """A framework-free, JWT-authenticated operator surface for RGNR8 staff.
+
+    Auth: a bearer HS256 JWT is verified through the same `verify_jwt` the web
+    app uses; its `sub` must resolve to a **platform role** in the directory
+    (operator/support) or the request is rejected. `support` is read-only;
+    `operator` may onboard/provision. `clock` returns the current
+    (timezone-aware) `datetime` — the fleet report reads it directly and JWT
+    expiry is checked against its epoch, so the whole surface stays
+    deterministic under test.
+    """
+
+    def __init__(
+        self,
+        fleet: Fleet,
+        billing: BillingService,
+        users: UserDirectory,
+        audit: AuditSink,
+        jwt_secret: str,
+        *,
+        clock: Callable[[], datetime],
+    ) -> None:
+        self._fleet = fleet
+        self._billing = billing
+        self._dir = users
+        self._audit = audit
+        self._secret = jwt_secret
+        self._clock = clock
+        # One shared admin path with the platform API: provision + entitlement-
+        # checked onboarding + owner seating + audit, all in PlatformAdmin.
+        self._admin = PlatformAdmin(
+            billing, fleet, users, audit, clock=lambda: self._epoch()
+        )
+
+    # --- clock ---------------------------------------------------------------
+    def _epoch(self) -> int:
+        return int(self._clock().timestamp())
+
+    # --- auth ----------------------------------------------------------------
+    def _staff(self, req: Request) -> "tuple[str, Role] | Response":
+        """Resolve the authenticated RGNR8-staff principal, or a 401/403.
+
+        Verifies the bearer JWT, reads `sub`, and requires that subject to hold a
+        platform role in the directory. Returns `(subject, platform_role)` on
+        success, else the error `Response` to return."""
+        auth = req.headers.get("authorization", "")
+        if not auth.lower().startswith("bearer "):
+            return _json(401, {"error": "missing bearer token"})
+        token = auth[7:].strip()
+        try:
+            claims = verify_jwt(token, self._secret, now=self._epoch())
+        except JwtError:
+            return _json(401, {"error": "invalid or expired token"})
+        sub = claims.get("sub")
+        if not isinstance(sub, str) or not sub:
+            return _json(401, {"error": "token carries no subject"})
+        role = self._dir.platform_role(sub)
+        if role is None or not role.is_platform:
+            return _json(403, {"error": "not RGNR8 staff"})
+        return (sub, role)
+
+    # --- routing -------------------------------------------------------------
+    def handle(self, req: Request) -> Response:
+        route = req.route
+
+        # health is unauthenticated (load balancers / deploy checks)
+        if route == "/health":
+            return _json(200, {"status": "ok"})
+
+        principal = self._staff(req)
+        if isinstance(principal, Response):
+            return principal
+        subject, role = principal
+
+        if route == "/operator" and req.method == "GET":
+            return self._console(subject)
+
+        if route == "/operator/onboard" and req.method == "POST":
+            # provisioning is operator-only; support is read-only.
+            if role is not Role.OPERATOR:
+                return _json(403, {"error": "onboarding requires the operator role"})
+            return self._onboard(req, subject)
+
+        if route == "/operator/audit" and req.method == "GET":
+            return self._audit_json(req)
+
+        return _json(404, {"error": "not found"})
+
+    # --- handlers ------------------------------------------------------------
+    def _console(self, operator: str) -> Response:
+        report = build_ops_report(self._fleet, self._clock())
+        return _html(200, render_operator_console(report, operator=operator))
+
+    def _onboard(self, req: Request, operator: str) -> Response:
+        try:
+            data = json.loads(req.body) if req.body else {}
+        except json.JSONDecodeError:
+            return _json(400, {"error": "invalid JSON body"})
+        if not isinstance(data, dict):
+            return _json(400, {"error": "body must be a JSON object"})
+
+        try:
+            account_id = str(data["account_id"])
+            tenant_id = str(data["tenant_id"])
+            name = str(data["name"])
+            recipient = str(data["recipient"])
+            owner_email = str(data["owner_email"])
+            dto = data["dto"]
+        except KeyError as exc:
+            return _json(400, {"error": f"missing required field {exc.args[0]!r}"})
+        if not isinstance(dto, (dict, str)):
+            return _json(400, {"error": "dto must be a forecast-inputs/1 object or JSON string"})
+
+        try:
+            minimum_cash = Money.from_decimal(str(data.get("minimum_cash")))
+        except ValueError:
+            return _json(400, {"error": "minimum_cash is not a valid amount"})
+
+        try:
+            # Provision the billing account first if it doesn't exist yet, then
+            # attach the business (entitlement-checked in billing) and seat its
+            # owner — the same path PlatformAdmin exposes to the platform API.
+            if self._billing.get_account(account_id) is None:
+                tier = self._resolve_tier(data.get("tier"))
+                self._admin.provision_account(
+                    account_id, name, owner_email, tier, operator=operator
+                )
+            bt = self._admin.onboard_business(
+                account_id, tenant_id, name, recipient, dto, minimum_cash,
+                owner_email, operator=operator,
+            )
+        except EntitlementError as exc:
+            # the plan forbids another business — a clean, retryable 402, never a 500
+            return _json(402, {"error": str(exc)})
+        except PlatformError as exc:
+            return _json(403, {"error": str(exc)})
+        except BillingError as exc:
+            return _json(409, {"error": str(exc)})
+        except (ValueError, KeyError, TypeError) as exc:
+            # a malformed DTO / bad amount surfaces as a 400, not a 500
+            return _json(400, {"error": f"could not onboard: {exc}"})
+
+        return _json(201, self._summary(bt, account_id, owner_email))
+
+    def _resolve_tier(self, raw: object) -> Tier:
+        if raw is None:
+            return Tier.SELF_SERVE
+        try:
+            return Tier(str(raw))
+        except ValueError:
+            raise ValueError(f"unknown tier {raw!r}")
+
+    @staticmethod
+    def _summary(bt: BetaTenant, account_id: str, owner_email: str) -> dict[str, object]:
+        return {
+            "tenant_id": bt.tenant_id,
+            "account_id": account_id,
+            "name": bt.name,
+            "recipient": bt.recipient,
+            "owner_email": owner_email,
+            "minimum_cash": bt.config.minimum_cash.to_decimal_string(),
+            "cash_today": bt.inputs.opening.available.to_decimal_string(),
+        }
+
+    def _audit_json(self, req: Request) -> Response:
+        q = req.query
+        tenant = q.get("tenant") or None
+        account = q.get("account") or None
+        events = self._audit.events(tenant_id=tenant, account_id=account)
+        return _json(200, {
+            "tenant": tenant,
+            "account": account,
+            "events": [
+                {
+                    "seq": e.seq,
+                    "actor": e.actor,
+                    "action": e.action,
+                    "at": e.at,
+                    "tenant_id": e.tenant_id,
+                    "account_id": e.account_id,
+                    "target": e.target,
+                    "detail": e.detail,
+                }
+                for e in events
+            ],
+        })
+
+
+# --- WSGI adapter ------------------------------------------------------------
+
+WsgiEnviron = dict[str, object]
+StartResponse = Callable[[str, list[tuple[str, str]]], object]
+
+_STATUS_TEXT = {
+    200: "OK", 201: "Created", 400: "Bad Request", 401: "Unauthorized",
+    402: "Payment Required", 403: "Forbidden", 404: "Not Found",
+    405: "Method Not Allowed", 409: "Conflict", 413: "Payload Too Large",
+    500: "Internal Server Error",
+}
+
+MAX_BODY_BYTES = 1_048_576  # 1 MiB — cap bodies before reading into memory
+
+
+def _headers_from_environ(environ: WsgiEnviron) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for key, value in environ.items():
+        if key.startswith("HTTP_"):
+            headers[key[5:].replace("_", "-").lower()] = str(value)
+    if "CONTENT_TYPE" in environ:
+        headers["content-type"] = str(environ["CONTENT_TYPE"])
+    return headers
+
+
+def _read_body(environ: WsgiEnviron) -> str:
+    try:
+        length = int(str(environ.get("CONTENT_LENGTH") or "0"))
+    except (TypeError, ValueError):
+        length = 0
+    if length <= 0:
+        return ""
+    stream = environ.get("wsgi.input")
+    if stream is None or not hasattr(stream, "read"):
+        return ""
+    raw = stream.read(min(length, MAX_BODY_BYTES))
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", "replace")
+    return str(raw)
+
+
+def request_from_environ(environ: WsgiEnviron) -> Request:
+    method = str(environ.get("REQUEST_METHOD", "GET")).upper()
+    path = str(environ.get("PATH_INFO", "/")) or "/"
+    query = str(environ.get("QUERY_STRING", ""))
+    if query:
+        path = f"{path}?{query}"
+    return Request(method=method, path=path,
+                   headers=_headers_from_environ(environ), body=_read_body(environ))
+
+
+def operator_wsgi(app: OperatorApp) -> Callable[[WsgiEnviron, StartResponse], Iterable[bytes]]:
+    """Wrap an `OperatorApp` as a WSGI callable (mirrors `rgnr8_web.wsgi_app`)."""
+
+    def application(environ: WsgiEnviron, start_response: StartResponse) -> Iterable[bytes]:
+        try:
+            resp = app.handle(request_from_environ(environ))
+        except Exception:
+            # never leak a stack trace to a client
+            resp = Response(500, '{"error":"internal server error"}')
+        status_line = f"{resp.status} {_STATUS_TEXT.get(resp.status, 'OK')}"
+        body = resp.body.encode("utf-8")
+        headers = [*resp.headers.items(), ("Content-Length", str(len(body)))]
+        start_response(status_line, headers)
+        return [body]
+
+    return application

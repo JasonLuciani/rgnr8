@@ -1,0 +1,125 @@
+"""The operator console — the RGNR8-staff surface for running the beta fleet.
+
+`render_ops_html` is the read-only fleet dashboard; the console wraps that same
+worst-first fleet view in operator chrome and adds the two things an operator
+actually *does*: onboard a new business, and drill into any client. It reads from
+the same `OpsReport` (so the numbers match the dashboard) and stays self-contained
+— the onboarding form posts a `forecast-inputs/1` DTO to the operator API, which
+lands on `Fleet.onboard_from_dto`, the one provisioning seam both onboarding
+stages share.
+"""
+
+from __future__ import annotations
+
+from rgnr8_forecast.brand import POSITIVE, RG_BASE_CSS, RG_TOKENS_CSS, RISK, WATCH, mark_svg
+
+from .report import OpsReport, TenantOpsRow
+
+_STATUS_COLOR = {"AT_RISK": RISK, "WATCH": WATCH, "STABLE": POSITIVE}
+
+
+def _esc(s: object) -> str:
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _row(r: TenantOpsRow) -> str:
+    breach = f"week {r.weeks_until_breach} · short {_esc(r.shortfall)}" if r.breached else "—"
+    if r.books_current is None:
+        books = '<span class="muted">—</span>'
+    else:
+        books = f'<span class="dot" style="background:{POSITIVE if r.books_current else RISK}"></span>{_esc(r.connector_summary)}'
+    if r.close_complete is None:
+        close = '<span class="muted">—</span>'
+    else:
+        close = f'<span class="dot" style="background:{POSITIVE if r.close_complete else WATCH}"></span>{_esc(r.close_summary)}'
+    deliv = "✓ this week" if r.delivered_this_period else (
+        f"last {_esc(r.last_delivered)}" if r.last_delivered else "not yet")
+    return f"""<tr>
+      <td><strong>{_esc(r.name)}</strong><br><span class="muted">{_esc(r.recipient)}</span></td>
+      <td><span class="dot" style="background:{_STATUS_COLOR.get(r.status, '#888')}"></span>{_esc(r.status)}</td>
+      <td class="num">{_esc(r.cash_today)}</td>
+      <td class="num">{_esc(r.floor)}</td>
+      <td class="num">{_esc(r.trough)}<br><span class="muted">{_esc(r.trough_date)}</span></td>
+      <td>{breach}</td><td>{books}</td><td>{close}</td>
+      <td>{deliv}<br><span class="muted">next {_esc(r.next_due[:16])}</span></td>
+    </tr>"""
+
+
+def render_operator_console(
+    report: OpsReport,
+    *,
+    operator: str = "operator@rgnr8.co",
+    onboard_action: str = "/operator/onboard",
+) -> str:
+    """The full operator console page: forest chrome + operator identity, a fleet
+    health banner, the onboarding panel, and the worst-first fleet table."""
+    rows = "\n".join(_row(r) for r in report.rows)
+    banner_cls = "warn" if (report.at_risk or report.books_not_current) else "good"
+    if report.at_risk:
+        banner = f"{report.at_risk} of {report.total} client(s) AT RISK"
+        if report.books_not_current:
+            banner += f" · {report.books_not_current} with books behind"
+    elif report.books_not_current:
+        banner = f"{report.books_not_current} of {report.total} client(s) have books behind"
+    else:
+        banner = f"All {report.total} client(s) steady"
+    empty = '<tr><td colspan="9" class="muted" style="text-align:center;padding:26px">No clients onboarded yet — add the first one above.</td></tr>'
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RGNR8 — operator console</title>
+<style>
+{RG_TOKENS_CSS}
+{RG_BASE_CSS}
+  .rg-rolechip{{background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.16);border-radius:999px;
+    padding:3px 10px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--rg-sage)}}
+  .rg-who{{display:flex;align-items:center;gap:10px;color:#DDE6DD;font-size:13px}}
+  .wrap{{max-width:1120px;margin:0 auto;padding:24px 20px 56px}}
+  h1{{font-size:22px;margin:0 0 2px;font-weight:800;letter-spacing:-.01em}}
+  h2{{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--rg-muted);margin:0 0 12px}}
+  .sub{{color:var(--rg-muted);margin:0 0 14px;font-size:13px}}
+  label{{display:block;font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--rg-muted);margin:12px 0 6px}}
+  input,textarea{{width:100%;padding:11px 12px;border:1px solid var(--rg-line);border-radius:10px;font:inherit;background:#fff;color:var(--rg-ink)}}
+  textarea{{min-height:82px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}}
+  .grid{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}}
+  .btn{{padding:11px 16px;margin-top:14px}}
+  th,td{{vertical-align:top}}
+  .num{{font-weight:700}}
+  .muted{{font-size:12px}}
+  .note{{color:var(--rg-muted);font-size:12px;margin-top:8px}}
+  @media(max-width:640px){{.grid{{grid-template-columns:1fr}}}}
+</style></head>
+<body>
+<header class="rg-bar">
+  <span class="rg-lockup">{mark_svg(22, "#F2EFE6")}<span class="rg-wordmark">RGNR<span class="rg-8">8</span></span></span>
+  <span class="rg-who"><span>{_esc(operator)}</span><span class="rg-rolechip">Operator</span></span>
+</header>
+<div class="wrap">
+  <h1>Operator console</h1>
+  <p class="sub">as of {_esc(report.as_of[:16])} · {report.delivered}/{report.total} briefed this week · {report.closes_done}/{report.total} closed</p>
+  <div class="banner {banner_cls}">{banner}</div>
+
+  <div class="card">
+    <h2>Onboard a client</h2>
+    <form method="post" action="{_esc(onboard_action)}">
+      <div class="grid">
+        <div><label>Business name</label><input name="name" placeholder="Northwind LLC"></div>
+        <div><label>Briefing recipient</label><input name="recipient" placeholder="owner@northwind.com"></div>
+        <div><label>Minimum-cash floor (USD)</label><input name="minimum_cash" placeholder="25000.00"></div>
+      </div>
+      <label>forecast-inputs/1 DTO</label>
+      <textarea name="dto" placeholder='{{"opening":{{"as_of":"2026-08-31","available":"90000.00","currency":"USD"}}, ...}}'></textarea>
+      <p class="note">Both onboarding paths land here: the <strong>overlay</strong> (bank balances + open AR/AP on top of QBO) and the full <strong>migration</strong> (QBO ledger imported into RGNR8) each emit this same DTO. Connect a live source at onboarding to fill it automatically.</p>
+      <button class="btn" type="submit">Onboard client</button>
+    </form>
+  </div>
+
+  <h2>Fleet — worst first</h2>
+  <div class="table-scroll"><table>
+    <thead><tr><th>Client</th><th>Status</th><th class="num">Cash</th><th class="num">Floor</th><th class="num">Trough</th><th>Breach</th><th>Books</th><th>Close</th><th>Briefing</th></tr></thead>
+    <tbody>
+{rows or empty}
+    </tbody>
+  </table></div>
+</div>
+</body></html>"""

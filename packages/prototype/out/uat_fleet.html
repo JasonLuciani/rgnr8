@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RGNR8 — beta fleet</title>
+<style>
+:root{
+  --rg-forest:#0E241E; --rg-ivory:#F2EFE6; --rg-sage:#5E7F63;
+  --rg-ink:#0E241E; --rg-ink-2:#2C3B33; --rg-muted:#6E7A70;
+  --rg-paper:#FFFFFF; --rg-surface:#F2EFE6; --rg-line:#E2DFD3;
+  --rg-accent:#5E7F63; --rg-accent-deep:#42604A;
+  --rg-pos:#3E7C5A; --rg-watch:#B7791F; --rg-risk:#B4443C;
+  --rg-radius:12px; --rg-pill:999px;
+  --rg-shadow:0 1px 2px rgba(14,36,30,.07),0 1px 3px rgba(14,36,30,.05);
+  --rg-serif:ui-serif,Georgia,"Times New Roman",serif;
+  --rg-sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--rg-surface);color:var(--rg-ink);
+  font:400 15px/1.55 var(--rg-sans);-webkit-font-smoothing:antialiased}
+h1{font-family:var(--rg-serif)}
+.rg-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;
+  background:var(--rg-forest);color:var(--rg-ivory);padding:14px 22px}
+.rg-lockup{display:inline-flex;align-items:center;gap:11px}
+.rg-wordmark{font:600 18px/1 var(--rg-sans);
+  letter-spacing:.22em;text-transform:uppercase;color:var(--rg-ivory)}
+.rg-wordmark .rg-8{color:var(--rg-sage)}
+.rg-ctx{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#A9B7AC;
+  font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rg-shell{max-width:960px;margin:0 auto;padding:24px 20px 56px}
+.rg-eyebrow{font-size:11px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:var(--rg-muted)}
+.rg-badge{display:inline-flex;align-items:center;gap:7px;border-radius:var(--rg-pill);
+  padding:4px 12px;font-weight:700;font-size:12px;letter-spacing:.05em;text-transform:uppercase}
+.rg-dot{display:inline-block;width:9px;height:9px;border-radius:50%;vertical-align:middle;margin-right:7px}
+.rg-foot{color:var(--rg-muted);font-size:12px;margin-top:14px}
+  .wrap{max-width:1080px;margin:0 auto;padding:24px 20px 56px}
+  h1{font-size:22px;margin:0 0 2px;font-weight:800;letter-spacing:-.01em}
+  .sub{color:var(--rg-muted);margin:0 0 14px;font-size:13px}
+  .banner{padding:12px 16px;border-radius:var(--rg-radius);margin-bottom:14px;font-weight:700;font-size:13px;
+    letter-spacing:.01em;border:1px solid transparent}
+  .good{background:#E7F6EF;color:#0A6E4B;border-color:#BFE7D6}
+  .warn{background:#FDECEC;color:#B02A2F;border-color:#F5C4C6}
+  table{border-collapse:separate;border-spacing:0;width:100%;background:var(--rg-paper);
+    border:1px solid var(--rg-line);border-radius:var(--rg-radius);overflow:hidden;box-shadow:var(--rg-shadow)}
+  th,td{text-align:left;padding:11px 13px;border-bottom:1px solid var(--rg-line);vertical-align:top;font-size:13.5px}
+  thead th{background:var(--rg-surface);font-weight:700;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--rg-muted)}
+  tbody tr:last-child td{border-bottom:none}
+  .num{text-align:right;font-variant-numeric:tabular-nums;font-weight:700}
+  .muted{color:var(--rg-muted);font-size:12px}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:middle}
+</style></head>
+<body>
+<header class="rg-bar"><span class="rg-lockup"><svg viewBox="0 0 40 24" height="22" width="37" role="img" aria-label="RGNR8" style="vertical-align:middle;flex:none"><path d="M8 12 C8 5.5 16 5.5 20 12 C24 18.5 32 18.5 32 12 C32 5.5 24 5.5 20 12 C16 18.5 8 18.5 8 12 Z" fill="none" stroke="#F2EFE6" stroke-width="3.2" stroke-linecap="round"/></svg><span class="rg-wordmark">RGNR<span class="rg-8">8</span></span></span><span class="rg-ctx">Beta fleet</span></header>
+<div class="wrap">
+  <h1>Beta fleet</h1>
+  <p class="sub">as of 2026-09-02T12:00 · 0/3 delivered this week · 2/3 closed</p>
+  <div class="banner warn">2 of 3 client(s) AT RISK · 1 with books behind</div>
+  <table>
+    <thead><tr><th>Client</th><th>Status</th><th class="num">Cash</th><th class="num">Floor</th><th class="num">Trough</th><th>Breach</th><th>Books</th><th>Close</th><th>Briefing</th></tr></thead>
+    <tbody>
+<tr>
+        <td><strong>Brightwork Studio</strong><br><span class="muted">owner@brightwork.com</span></td>
+        <td><span class="dot" style="background:#B4443C"></span>AT_RISK</td>
+        <td class="num">38000.00</td>
+        <td class="num">15000.00</td>
+        <td class="num">-193700.00<br><span class="muted">2026-11-29</span></td>
+        <td>week 1 · short 208700.00</td>
+        <td><span class="dot" style="background:#3E7C5A"></span>3 ok</td>
+        <td><span class="dot" style="background:#B7791F"></span>2026-08 4/7 · 1 overdue</td>
+        <td>not yet<br><span class="muted">next 2026-09-07T08:00</span></td>
+      </tr>
+<tr>
+        <td><strong>Nimbus Agency</strong><br><span class="muted">owner@nimbus.com</span></td>
+        <td><span class="dot" style="background:#B4443C"></span>AT_RISK</td>
+        <td class="num">72000.00</td>
+        <td class="num">12000.00</td>
+        <td class="num">-105700.00<br><span class="muted">2026-11-29</span></td>
+        <td>week 5 · short 117700.00</td>
+        <td><span class="dot" style="background:#B4443C"></span>1 reconnect</td>
+        <td><span class="dot" style="background:#3E7C5A"></span>2026-08 closed</td>
+        <td>not yet<br><span class="muted">next 2026-09-07T08:00</span></td>
+      </tr>
+<tr>
+        <td><strong>Harbor Supply Co</strong><br><span class="muted">owner@harbor.com</span></td>
+        <td><span class="dot" style="background:#B7791F"></span>WATCH</td>
+        <td class="num">180000.00</td>
+        <td class="num">20000.00</td>
+        <td class="num">175000.00<br><span class="muted">2026-09-01</span></td>
+        <td>—</td>
+        <td><span class="dot" style="background:#3E7C5A"></span>2 ok</td>
+        <td><span class="dot" style="background:#3E7C5A"></span>2026-08 closed</td>
+        <td>not yet<br><span class="muted">next 2026-09-07T08:00</span></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+</body></html>

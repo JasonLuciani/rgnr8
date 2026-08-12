@@ -1,0 +1,54 @@
+# Local/UAT stack: Postgres + migrate (one-shot) + web + a delivery worker.
+# Copy .env.example to .env and fill it in first.  `docker compose up --build`.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: rgnr8
+      POSTGRES_PASSWORD: rgnr8
+      POSTGRES_DB: rgnr8
+    ports: ["5432:5432"]
+    volumes: ["rgnr8_pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rgnr8"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Release phase: create/upgrade the Python-owned schema (incl. RLS on Postgres).
+  # (The TypeScript ledger migrations run via @rgnr8/migrations — see DEPLOYMENT.md.)
+  migrate:
+    build: { context: .., dockerfile: deploy/Dockerfile }
+    env_file: .env
+    environment:
+      RGNR8_DATABASE_URL: postgresql://rgnr8:rgnr8@db:5432/rgnr8
+    depends_on:
+      db: { condition: service_healthy }
+    command: ["python", "migrate.py"]
+    restart: "no"
+
+  web:
+    build: { context: .., dockerfile: deploy/Dockerfile }
+    env_file: .env
+    environment:
+      RGNR8_DATABASE_URL: postgresql://rgnr8:rgnr8@db:5432/rgnr8
+      RGNR8_PORT: "8080"
+    ports: ["8080:8080"]
+    depends_on:
+      db: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+
+  # A scheduler (cron/K8s CronJob) would invoke this on a cadence; here it runs
+  # one tick and exits. Swap `command` for your scheduler in production.
+  worker:
+    build: { context: .., dockerfile: deploy/Dockerfile }
+    env_file: .env
+    environment:
+      RGNR8_DATABASE_URL: postgresql://rgnr8:rgnr8@db:5432/rgnr8
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    command: ["python", "worker.py"]
+    restart: "no"
+
+volumes:
+  rgnr8_pgdata:

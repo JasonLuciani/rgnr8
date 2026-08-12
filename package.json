@@ -1,0 +1,9 @@
+{
+  "name": "rgnr8",
+  "version": "0.0.0",
+  "private": true,
+  "description": "RGNR8 Financial OS — monorepo",
+  "workspaces": [
+    "packages/*"
+  ]
+}

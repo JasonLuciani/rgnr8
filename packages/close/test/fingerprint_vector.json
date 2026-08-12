@@ -1,0 +1,47 @@
+{
+  "_comment": "Cross-language fingerprint parity vector. content is canonicalized identically by @rgnr8/close financialPackage.ts (fingerprintContent) and rgnr8_web.financial_package (canonicalize/fingerprint_content). canonical is the byte-exact shared canonical string; sha256 is its SHA-256. Regenerate deliberately if the canonicalization intentionally changes.",
+  "content": {
+    "version": "financial-package/1",
+    "periodKey": "2026-08",
+    "currency": "USD",
+    "note": "Zürich café — closed ☕",
+    "trialBalance": {
+      "inBalance": true,
+      "rows": [
+        {
+          "code": "4000",
+          "name": "Sales — Café",
+          "debitMinor": "0",
+          "creditMinor": "1200000"
+        },
+        {
+          "code": "1000",
+          "name": "Cash",
+          "creditMinor": "0",
+          "debitMinor": "1200000"
+        }
+      ],
+      "totalDebitMinor": "1200000",
+      "totalCreditMinor": "1200000"
+    },
+    "nested": [
+      [
+        1,
+        2
+      ],
+      [
+        3,
+        {
+          "z": true,
+          "a": null
+        }
+      ]
+    ],
+    "counts": {
+      "mismatchCount": 0,
+      "onlyInQboCount": 2
+    }
+  },
+  "canonical": "{\"counts\":{\"mismatchCount\":0,\"onlyInQboCount\":2},\"currency\":\"USD\",\"nested\":[[1,2],[3,{\"a\":null,\"z\":true}]],\"note\":\"Zürich café — closed ☕\",\"periodKey\":\"2026-08\",\"trialBalance\":{\"inBalance\":true,\"rows\":[{\"code\":\"4000\",\"creditMinor\":\"1200000\",\"debitMinor\":\"0\",\"name\":\"Sales — Café\"},{\"code\":\"1000\",\"creditMinor\":\"0\",\"debitMinor\":\"1200000\",\"name\":\"Cash\"}],\"totalCreditMinor\":\"1200000\",\"totalDebitMinor\":\"1200000\"},\"version\":\"financial-package/1\"}",
+  "sha256": "663f3bbca384975d2660d8381afd3bbdc503c9a923caa0948bdf0e434b39d884"
+}

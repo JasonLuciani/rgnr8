@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>RGNR8 — Northwind LLC</title><style>
+:root{
+  --rg-forest:#0E241E; --rg-ivory:#F2EFE6; --rg-sage:#5E7F63;
+  --rg-ink:#0E241E; --rg-ink-2:#2C3B33; --rg-muted:#616D66;
+  --rg-paper:#FFFFFF; --rg-surface:#F2EFE6; --rg-line:#E2DFD3;
+  --rg-accent:#5E7F63; --rg-accent-deep:#42604A;
+  --rg-pos:#3E7C5A; --rg-watch:#B7791F; --rg-risk:#B4443C;
+  --rg-radius:12px; --rg-pill:999px;
+  --rg-shadow:0 1px 2px rgba(14,36,30,.07),0 1px 3px rgba(14,36,30,.05);
+  --rg-serif:ui-serif,Georgia,"Times New Roman",serif;
+  --rg-sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--rg-surface);color:var(--rg-ink);
+  font:400 15px/1.55 var(--rg-sans);-webkit-font-smoothing:antialiased}
+h1{font-family:var(--rg-serif)}
+.rg-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;
+  background:var(--rg-forest);color:var(--rg-ivory);padding:14px 22px}
+.rg-lockup{display:inline-flex;align-items:center;gap:11px}
+.rg-wordmark{font:600 18px/1 var(--rg-sans);
+  letter-spacing:.22em;text-transform:uppercase;color:var(--rg-ivory)}
+.rg-wordmark .rg-8{color:var(--rg-sage)}
+.rg-ctx{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#A9B7AC;
+  font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rg-shell{max-width:960px;margin:0 auto;padding:24px 20px 56px}
+.rg-eyebrow{font-size:11px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:var(--rg-muted)}
+.rg-badge{display:inline-flex;align-items:center;gap:7px;border-radius:var(--rg-pill);
+  padding:4px 12px;font-weight:700;font-size:12px;letter-spacing:.05em;text-transform:uppercase}
+.rg-dot{display:inline-block;width:9px;height:9px;border-radius:50%;vertical-align:middle;margin-right:7px}
+.rg-foot{color:var(--rg-muted);font-size:12px;margin-top:14px}
+:focus-visible{outline:2px solid var(--rg-sage);outline-offset:2px}
+/* Shared component layer — the single source for card/table/banner/btn/tile/dot,
+   so no renderer redeclares (or drifts from) these. */
+.card{background:var(--rg-paper);border:1px solid var(--rg-line);border-radius:var(--rg-radius);
+  box-shadow:var(--rg-shadow);padding:20px 22px;margin-bottom:16px}
+.muted{color:var(--rg-muted)}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.neg{color:var(--rg-risk)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:middle}
+.table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{border-collapse:separate;border-spacing:0;width:100%;background:var(--rg-paper);
+  border:1px solid var(--rg-line);border-radius:var(--rg-radius);overflow:hidden;box-shadow:var(--rg-shadow)}
+th,td{text-align:left;padding:11px 13px;border-bottom:1px solid var(--rg-line);font-size:13.5px}
+thead th{background:var(--rg-ivory);font-weight:700;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--rg-muted)}
+tbody tr:last-child td{border-bottom:none}
+.btn{background:var(--rg-forest);color:var(--rg-ivory);border:none;border-radius:10px;
+  padding:10px 15px;font-weight:700;cursor:pointer;font:inherit}
+.btn.sage{background:var(--rg-accent-deep)}
+.btn.ghost{background:transparent;color:var(--rg-forest);border:1px solid var(--rg-line)}
+.banner{padding:12px 16px;border-radius:var(--rg-radius);margin-bottom:16px;font-weight:700;font-size:13px;border:1px solid transparent}
+.banner.good{background:color-mix(in srgb, var(--rg-pos) 14%, var(--rg-paper));
+  color:color-mix(in srgb, var(--rg-pos) 78%, black);border-color:color-mix(in srgb, var(--rg-pos) 32%, transparent)}
+.banner.warn{background:color-mix(in srgb, var(--rg-risk) 14%, var(--rg-paper));
+  color:color-mix(in srgb, var(--rg-risk) 78%, black);border-color:color-mix(in srgb, var(--rg-risk) 32%, transparent)}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:8px}
+.tile{background:var(--rg-paper);border:1px solid var(--rg-line);border-radius:12px;padding:15px 16px}
+.tile .k{color:var(--rg-muted);font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+.tile .v{font-size:23px;font-weight:800;margin-top:6px;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.pill{display:inline-flex;align-items:center;gap:7px;border-radius:var(--rg-pill);padding:4px 12px;
+  font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  .rg-nav{display:flex;gap:2px;flex-wrap:wrap}
+  .rg-nav a{color:#CBD8CC;text-decoration:none;padding:8px 12px;border-radius:8px;font-size:13px;font-weight:600;letter-spacing:.02em}
+  .rg-nav a.active,.rg-nav a:hover{background:rgba(255,255,255,.10);color:#fff}
+  .rg-who{display:flex;align-items:center;gap:10px;color:#DDE6DD;font-size:13px}
+  .rg-rolechip{background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.16);border-radius:999px;
+    padding:3px 10px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--rg-sage)}
+  .rg-who a{color:#CBD8CC;text-decoration:none;font-size:12px}
+  .shell{max-width:1040px;margin:0 auto;padding:24px 20px 60px}
+  h1{font-size:24px;font-weight:700;letter-spacing:-.01em;margin:0 0 4px}
+  .sub{color:var(--rg-muted);margin:0 0 16px;font-size:13px}
+  label{display:block;font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--rg-muted);margin:14px 0 6px}
+  input,select{width:100%;padding:11px 12px;border:1px solid var(--rg-line);border-radius:10px;font:inherit;background:#fff;color:var(--rg-ink)}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center} .grow{flex:1;min-width:200px}
+  h2{font-size:15px;font-weight:700;letter-spacing:-.01em;margin:22px 0 10px}
+  .bar{height:9px;background:var(--rg-ivory);border:1px solid var(--rg-line);border-radius:6px;overflow:hidden}
+  .bar>span{display:block;height:100%;background:var(--rg-sage)}
+  .drv{margin-bottom:11px} .drv .t{display:flex;justify-content:space-between;font-size:14px}
+  .drv .track{height:8px;background:var(--rg-ivory);border-radius:5px;margin:5px 0 2px;overflow:hidden}
+  .drv .fill{height:100%;background:var(--rg-sage);border-radius:5px} .drv .s{color:var(--rg-muted);font-size:12px}
+  .chip{font:inherit;font-size:13px;color:var(--rg-ink);background:var(--rg-ivory);border:1px solid var(--rg-line);border-radius:999px;padding:7px 13px;cursor:pointer}
+  .chip:hover{border-color:var(--rg-sage);color:var(--rg-forest)}
+  .empty{text-align:center;padding:32px 24px}
+  @media(max-width:640px){
+    .rg-nav{display:none}
+    table{font-size:12.5px}
+    th,td{padding:9px 10px}
+  }
+</style></head><body><header class="rg-bar"><span class="rg-lockup"><svg viewBox="0 0 40 24" height="20" width="33" role="img" aria-label="RGNR8" style="vertical-align:middle;flex:none"><path d="M8 12 C8 5.5 16 5.5 20 12 C24 18.5 32 18.5 32 12 C32 5.5 24 5.5 20 12 C16 18.5 8 18.5 8 12 Z" fill="none" stroke="#F2EFE6" stroke-width="3.2" stroke-linecap="round"/></svg><span class="rg-wordmark" style="font-size:16px">RGNR<span class="rg-8">8</span></span></span><nav class="rg-nav"><a class="" href="/t/northwind">Cash</a><a class="" href="/t/northwind/transactions">Transactions</a><a class="" href="/t/northwind/briefing">Briefing</a><a class="" href="/t/northwind/close">Close</a><a class="" href="/t/northwind/packages">Package</a></nav><span class="rg-who"><span>book@northwind.com</span><span class="rg-rolechip">Bookkeeper</span><a href="/logout">Sign out</a></span></header><div class="shell"><h1>Welcome back</h1>
+    <p class="sub">Northwind LLC · you're signed in as <strong>Bookkeeper</strong></p>
+    <div class="card"><div style="display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap">
+      <div><div style="font-size:11px;font-weight:700;letter-spacing:.11em;text-transform:uppercase;color:var(--rg-muted)">Cash today</div>
+        <div style="font-size:40px;font-weight:800;letter-spacing:-.01em;font-variant-numeric:tabular-nums">$128,400.00</div></div>
+      <div style="text-align:right;max-width:36ch">
+        <span role="status" aria-label="Status: AT RISK" style="display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:4px 12px;font-weight:700;font-size:12px;text-transform:uppercase;color:var(--rg-risk);border:1px solid color-mix(in srgb, var(--rg-risk) 20%, transparent)"><span aria-hidden="true">▲</span> AT RISK</span>
+        <div style="margin-top:8px;color:var(--rg-ink-2);font-size:14px">Cash is projected to fall below your USD 25000.00 floor in week 7 (around 2026-10-15), short by up to USD 185200.00.</div></div>
+    </div>
+    <div class="row" style="margin-top:18px"><a class="btn sage" style="text-decoration:none" href="/t/northwind/transactions">Review bank transactions</a>
+      <a class="btn ghost" style="text-decoration:none" href="/t/northwind/briefing">This week's briefing</a></div></div>
+    <div class="card"><h2 style="margin-top:0;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--rg-muted)">Records</h2>
+      <div class="row"><div class="grow">Latest sealed financial package</div><span class="muted">No published package yet</span></div></div></div></body></html>

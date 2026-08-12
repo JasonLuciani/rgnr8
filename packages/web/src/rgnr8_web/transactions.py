@@ -1,0 +1,144 @@
+"""The bank transactions register — the accountant/bookkeeper's daily surface.
+
+A QuickBooks-style feed view: the raw bank/card activity RGNR8 ingests
+(`@rgnr8/ingestion` canonical transactions, or the statement-import path, or a
+QBO overlay), each row categorized to an account and matched against the books.
+It leads with a **For review** queue (uncategorized or unmatched lines the
+bookkeeper needs to action) and then the full register. Categorize/match actions
+are gated on `CATEGORIZE_TXNS`; viewing is `VIEW_TRANSACTIONS` (everyone).
+
+Money is signed: positive = money **in** (a deposit/received), negative = money
+**out** (spent). This module only renders + summarizes — the matching engine is
+`@rgnr8/reconciliation`; here `status` is the already-computed outcome.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+from html import escape
+
+from rgnr8_forecast import Money
+from rgnr8_forecast.brand import format_money as _money  # the one shared money formatter
+
+# The chart of accounts a bookkeeper categorizes into (demo default; production
+# pulls the tenant's real chart). Kept short + familiar.
+DEFAULT_CATEGORIES = (
+    "Uncategorized", "Sales income", "Payroll", "Rent", "Software & SaaS",
+    "Contractors", "Bank fees", "Owner draw", "Transfer", "Taxes",
+)
+
+# review = needs a human (uncategorized OR no book match); matched = tied to the
+# books; unmatched = on the feed but not yet in the books (a missing entry).
+_STATUS_LABEL = {"matched": "Matched", "review": "For review", "unmatched": "Unmatched"}
+_STATUS_COLOR = {"matched": "var(--rg-pos)", "review": "var(--rg-watch)", "unmatched": "var(--rg-risk)"}
+
+
+@dataclass(frozen=True, slots=True)
+class BankTransaction:
+    id: str
+    date: str  # ISO YYYY-MM-DD
+    description: str
+    amount: Money  # signed: + in, - out
+    category: str = "Uncategorized"
+    status: str = "review"  # matched | review | unmatched
+    counterparty: str = ""
+    account: str = "Checking"  # which bank/card account the line is on
+
+    @property
+    def needs_review(self) -> bool:
+        return self.status != "matched" or self.category == "Uncategorized"
+
+
+@dataclass(frozen=True, slots=True)
+class RegisterSummary:
+    total: int
+    matched: int
+    review: int
+    unmatched: int
+    inflow: Money
+    outflow: Money
+
+
+def summarize(txns: Sequence[BankTransaction], currency: str = "USD") -> RegisterSummary:
+    matched = sum(1 for t in txns if t.status == "matched" and t.category != "Uncategorized")
+    unmatched = sum(1 for t in txns if t.status == "unmatched")
+    review = sum(1 for t in txns if t.needs_review and t.status != "unmatched")
+    ccy: str = txns[0].amount.currency if txns else currency
+    inflow = Money(0, ccy)
+    outflow = Money(0, ccy)
+    for t in txns:
+        if t.amount.minor_units >= 0:
+            inflow = inflow + t.amount
+        else:
+            outflow = outflow + t.amount
+    return RegisterSummary(len(txns), matched, review, unmatched, inflow, outflow)
+
+
+def _cat_select(t: BankTransaction, can_categorize: bool, categories: Sequence[str]) -> str:
+    if not can_categorize:
+        return escape(t.category)
+    opts = "".join(
+        f'<option value="{escape(c)}"{" selected" if c == t.category else ""}>{escape(c)}</option>'
+        for c in categories
+    )
+    return f"<select data-txn='{escape(t.id)}' onchange='categorize(this)'>{opts}</select>"
+
+
+def _row(t: BankTransaction, can_categorize: bool, categories: Sequence[str]) -> str:
+    spent = _money(t.amount) if t.amount.minor_units < 0 else ""
+    recd = _money(t.amount) if t.amount.minor_units >= 0 else ""
+    desc = escape(t.description) + (
+        f"<br><span class='muted' style='font-size:12px'>{escape(t.counterparty)}</span>" if t.counterparty else ""
+    )
+    dot = _STATUS_COLOR.get(t.status, "var(--rg-muted)")
+    action = ""
+    if can_categorize and t.needs_review:
+        action = ("<button class='btn sage' style='padding:5px 10px' "
+                  f"onclick=\"accept('{escape(t.id)}')\">Accept</button>")
+    return (
+        f"<tr><td class='muted'>{escape(t.date)}</td><td>{desc}</td>"
+        f"<td>{_cat_select(t, can_categorize, categories)}</td>"
+        f"<td class='num'>{spent}</td><td class='num'>{recd}</td>"
+        f"<td><span class='dot' style='background:{dot}'></span>{_STATUS_LABEL.get(t.status, t.status)}</td>"
+        f"<td style='text-align:right'>{action}</td></tr>"
+    )
+
+
+def render_transactions(
+    tenant: str,
+    account_name: str,
+    txns: Sequence[BankTransaction],
+    *,
+    can_categorize: bool,
+    categories: Sequence[str] = DEFAULT_CATEGORIES,
+) -> str:
+    """The register body (wrap in `render_shell`). Leads with the For-review queue
+    then the full feed. `can_categorize` toggles the interactive controls."""
+    s = summarize(txns)
+    review_rows = "".join(_row(t, can_categorize, categories) for t in txns if t.needs_review)
+    all_rows = "".join(_row(t, can_categorize, categories) for t in txns)
+    review_block = ""
+    if review_rows:
+        review_block = f"""<h2>For review <span class="muted" style="text-transform:none;letter-spacing:0">— {s.review + s.unmatched} to action</span></h2>
+        <div class="table-scroll"><table><thead><tr><th>Date</th><th>Description</th><th>Category</th><th class="num">Spent</th><th class="num">Received</th><th>Status</th><th></th></tr></thead>
+        <tbody>{review_rows}</tbody></table></div>"""
+    banner_cls = "warn" if (s.review + s.unmatched) else "good"
+    banner = (
+        f"{s.matched} matched · {s.review} to categorize · {s.unmatched} unmatched"
+        if (s.review + s.unmatched) else f"All {s.matched} transactions reconciled — books are current."
+    )
+    js = f"""<script>
+      const T={tenant!r};
+      function post(body){{ return fetch('/api/'+T+'/transactions', {{method:'POST', headers:{{'content-type':'application/json'}}, body:JSON.stringify(body), credentials:'same-origin'}}); }}
+      async function categorize(sel){{ await post({{id: sel.dataset.txn, category: sel.value}}); location.reload(); }}
+      async function accept(id){{ await post({{id, accept:true}}); location.reload(); }}
+    </script>""" if can_categorize else ""
+    return f"""<h1>Bank transactions</h1>
+    <p class="sub">{escape(account_name)} · {escape(tenant)} · the feed RGNR8 ingests, categorized and matched to your books</p>
+    <div class="banner {banner_cls}">{banner}</div>
+    {review_block}
+    <h2>All transactions</h2>
+    <div class="table-scroll"><table><thead><tr><th>Date</th><th>Description</th><th>Category</th><th class="num">Spent</th><th class="num">Received</th><th>Status</th><th></th></tr></thead>
+    <tbody>{all_rows}</tbody></table></div>
+    {js}"""

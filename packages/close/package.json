@@ -1,0 +1,33 @@
+{
+  "name": "@rgnr8/close",
+  "version": "0.1.0",
+  "description": "RGNR8 close management — a month-end close checklist that gates the kernel period lock on clean reconciliations, control accounts, and a balanced trial balance.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {
+    "@rgnr8/ledger-kernel": "^0.1.0",
+    "@rgnr8/migrations": "^0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "@rgnr8/statements": "^0.1.0",
+    "@rgnr8/ledger-kernel": "^0.1.0",
+    "pg-mem": "^3.0.5"
+  }
+}

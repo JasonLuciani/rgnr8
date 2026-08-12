@@ -1,0 +1,43 @@
+[ AT RISK ]  RGNR8 weekly cash briefing — 2026-08-31 – 2026-11-29
+========================================================================
+Cash is projected to fall below your USD 15000.00 floor in week 7 (around 2026-10-15), short by up to USD 80400.00.
+(Projected to fall below the USD 15000.00 floor in week 7.)
+
+DO THIS:
+  Cover the projected shortfall of up to USD 80400.00 before 2026-10-15 — delay non-critical outflows or arrange a short-term draw.
+
+THE NUMBERS
+  Cash available today         USD 71000.00
+  Your minimum-cash floor      USD 15000.00
+  Projected low point          USD -65400.00  (around 2026-11-29)
+  Cushion at the low point     USD -80400.00
+  Money in over 13 weeks       USD 20000.00
+  Money out over 13 weeks      USD 156400.00
+  Largest projected shortfall  USD 80400.00  (first around 2026-10-15 (week 7))
+  Largest upcoming receipt     USD 20000.00  (INV-1002 on 2026-09-23)
+  Largest upcoming outflow     USD 16000.00  (PAYROLL_NET on 2026-09-03)
+
+WHAT'S USING YOUR CASH
+  Payroll Net              USD    112000.00  (72% of outflows)
+  Payroll Tax              USD     29400.00  (19% of outflows)
+  Rent                     USD     15000.00  (10% of outflows)
+
+13-WEEK GLANCE (closing balance)
+  wk1  2026-08-31  USD     45800.00   
+  wk2  2026-09-07  USD     45800.00   
+  wk3  2026-09-14  USD     25600.00   
+  wk4  2026-09-21  USD     45600.00   
+  wk5  2026-09-28  USD     20400.00   
+  wk6  2026-10-05  USD     20400.00   
+  wk7  2026-10-12  USD       200.00  !
+  wk8  2026-10-19  USD       200.00  !
+  wk9  2026-10-26  USD    -25000.00  !
+  wk10 2026-11-02  USD    -25000.00  !
+  wk11 2026-11-09  USD    -45200.00  !
+  wk12 2026-11-16  USD    -45200.00  !
+  wk13 2026-11-23  USD    -65400.00  !
+
+HEADS-UP (data quality)
+  - 1 customer(s) have no payment history; default timing used
+
+confidence 97/100 · version 0.1.0+base.af8aa705486e
