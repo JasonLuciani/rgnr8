@@ -13,7 +13,13 @@ from .middleware import (
     security_headers,
     with_security_headers,
 )
-from .shell import render_app_home, render_login_html, render_shell, render_users_admin
+from .shell import (
+    render_app_home,
+    render_audit_log,
+    render_login_html,
+    render_shell,
+    render_users_admin,
+)
 from .transactions import BankTransaction, DEFAULT_CATEGORIES, render_transactions, summarize
 from .screens import (
     CloseBoard,
@@ -72,6 +78,7 @@ from .webhooks_out import (
     cash_at_risk_event,
     close_sealed_event,
     sign as sign_webhook,
+    validate_target,
 )
 from .invitations import (
     Invitation,
@@ -81,6 +88,20 @@ from .invitations import (
     InvitationStore,
     InMemoryInvitationStore,
     SqlInvitationStore,
+)
+from .credentials import (
+    AuthError,
+    AuthService,
+    Credential,
+    CredentialStore,
+    InMemoryCredentialStore,
+    InMemoryVerificationTokenStore,
+    PasswordHasher,
+    SqlCredentialStore,
+    SqlVerificationTokenStore,
+    TokenPurpose,
+    VerificationToken,
+    VerificationTokenStore,
 )
 from .rbac import (
     AccessPolicy,
@@ -115,6 +136,7 @@ __all__ = [
     "render_shell",
     "render_app_home",
     "render_users_admin",
+    "render_audit_log",
     "render_transactions",
     "BankTransaction",
     "DEFAULT_CATEGORIES",
@@ -172,6 +194,18 @@ __all__ = [
     "InvitationStore",
     "InMemoryInvitationStore",
     "InvitationError",
+    "AuthError",
+    "AuthService",
+    "Credential",
+    "CredentialStore",
+    "InMemoryCredentialStore",
+    "InMemoryVerificationTokenStore",
+    "PasswordHasher",
+    "SqlCredentialStore",
+    "SqlVerificationTokenStore",
+    "TokenPurpose",
+    "VerificationToken",
+    "VerificationTokenStore",
     "ApiKey",
     "ApiKeyService",
     "ApiKeyStore",
@@ -190,4 +224,5 @@ __all__ = [
     "cash_at_risk_event",
     "close_sealed_event",
     "briefing_sent_event",
+    "validate_target",
 ]

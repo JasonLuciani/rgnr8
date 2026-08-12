@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rgnr8-analytics"
+version = "0.1.0"
+description = "RGNR8 product analytics — the funnel-instrumentation seam wired at signup/checkout/onboarding/activation so acquisition→activation conversion is measurable from day one."
+requires-python = ">=3.11"
+dependencies = []
+license = { text = "UNLICENSED" }
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "mypy>=1.8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+mypy_path = "src"

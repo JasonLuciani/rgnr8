@@ -24,6 +24,7 @@ from rgnr8_forecast import (
     run_forecast,
 )
 from rgnr8_briefing import (
+    WeeklyBriefing,
     ask,
     build_briefing,
     render_text,
@@ -39,9 +40,17 @@ from .financial_package import (
 )
 from .auth import Authenticator, JwtError, StaticTokenAuthenticator, sign_jwt, verify_jwt
 from .apikeys import ApiKeyService
+from .audit import AuditSink
+from .credentials import AuthError, AuthService, CredentialStore
 from .openapi import build_openapi
 from .rbac import AccessPolicy, Permission, Role, User, UserDirectory
-from .shell import render_app_home, render_login_html, render_shell, render_users_admin
+from .shell import (
+    render_app_home,
+    render_audit_log,
+    render_login_html,
+    render_shell,
+    render_users_admin,
+)
 from .transactions import BankTransaction, render_transactions
 from .screens import (
     CloseBoard,
@@ -96,6 +105,12 @@ class _Tenant:
     state: TenantState = field(default_factory=TenantState)
     _cache: ForecastResult | None = None
     _dirty: bool = False
+    # the built briefing, cached alongside the ForecastResult it was derived from.
+    # Keyed on the forecast's object identity so it invalidates automatically the
+    # moment the forecast is recomputed (on `_dirty`, an assumption change, or an
+    # erasure) — no separate flag to keep in sync.
+    _briefing_cache: WeeklyBriefing | None = None
+    _briefing_for: ForecastResult | None = None
 
     @property
     def min_cash_override(self) -> Money | None:
@@ -146,6 +161,10 @@ class WebApp:
         api_keys: ApiKeyService | None = None,
         require_rbac: bool = False,
         usage_recorder: "Callable[[str, str, int], None] | None" = None,
+        credentials: CredentialStore | None = None,
+        auth_service: AuthService | None = None,
+        audit: AuditSink | None = None,
+        emailer: "Callable[[str, str, str], None] | None" = None,
     ) -> None:
         self._tenants: dict[str, _Tenant] = {}
         self._tokens: dict[str, str] = {}  # bearer token -> tenant_id (default auth)
@@ -180,6 +199,18 @@ class WebApp:
         self._accounts: dict[str, str] = {}  # tenant -> bank account label
         # month-end close board per tenant (mirrors the @rgnr8/close calendar)
         self._close: dict[str, CloseBoard] = {}
+        # real end-user password auth (public track). With a credential store or an
+        # AuthService, POST /login authenticates a password + verified email and
+        # /signup, /verify and the reset endpoints come alive. None → today's
+        # dev/static/SSO login is unchanged (back-compat).
+        self._auth_service = auth_service
+        if self._auth_service is None and credentials is not None:
+            self._auth_service = AuthService(credentials=credentials, audit=audit)
+        # audit sink for auth events + the data-export bundle (None → no log)
+        self._audit = audit
+        # emailer seam: (email, purpose, token). In prod the verify/reset token is
+        # emailed here; in dev (no emailer) it is returned in the response body.
+        self._emailer = emailer
 
     def add_tenant(
         self,
@@ -245,6 +276,17 @@ class WebApp:
             t._cache = run_forecast(self._effective_inputs(t), self._effective_config(t))
             t._dirty = False
         return t._cache
+
+    def _briefing(self, t: _Tenant) -> WeeklyBriefing:
+        """The built briefing for the tenant's current forecast, cached so repeated
+        GETs don't rebuild it. Recomputed only when the underlying forecast changes
+        (the cache is tied to the ForecastResult's identity, which the `_dirty`
+        invalidation replaces)."""
+        fc = self._forecast(t)
+        if t._briefing_cache is None or t._briefing_for is not fc:
+            t._briefing_cache = build_briefing(fc)
+            t._briefing_for = fc
+        return t._briefing_cache
 
     def _record_usage(self, tenant_id: str, kind: str, quantity: int) -> None:
         """Emit a metered-usage event via the injected recorder (wired to billing
@@ -343,6 +385,15 @@ class WebApp:
             return _html(200, render_login_html(sso=self._sso_mode()))
         if route == "/login" and req.method == "POST":
             return self._login_post(req)
+        # --- public end-user auth (self-service signup / verify / reset) ---
+        if route == "/signup" and req.method == "POST":
+            return self._signup_post(req)
+        if route == "/verify" and req.method == "POST":
+            return self._verify_post(req)
+        if route == "/password/reset-request" and req.method == "POST":
+            return self._password_reset_request_post(req)
+        if route == "/password/reset" and req.method == "POST":
+            return self._password_reset_post(req)
         if route == "/logout":
             return _redirect("/login", (("Set-Cookie", "rgnr8_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"),))
 
@@ -382,6 +433,11 @@ class WebApp:
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "packages":
             return self._require(subject, token_tenant, parts[1], P.VIEW_PACKAGE,
                                  lambda t: self._packages_page(subject, t))
+
+        # /t/<tenant>/audit  -> the who-did-what audit log (shell page, owner-gated)
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "audit":
+            return self._require(subject, token_tenant, parts[1], P.MANAGE_USERS,
+                                 lambda t: self._audit_page(subject, t))
 
         # /t/<tenant>  -> Cash outlook (shell page)
         if len(parts) == 2 and parts[0] == "t":
@@ -432,6 +488,19 @@ class WebApp:
             if resource == "close" and req.method == "POST":
                 return self._require(subject, token_tenant, tenant, P.MANAGE_CLOSE,
                                      lambda t: self._close_advance(t, req.body))
+            # owner-gated GDPR/CCPA data-portability export (MANAGE_USERS is
+            # owner-only among tenant roles).
+            if resource == "export" and req.method == "GET":
+                return self._require(subject, token_tenant, tenant, P.MANAGE_USERS, self._export)
+            # owner-gated GDPR/CCPA right-to-delete — the export's twin. POST or
+            # DELETE both erase; idempotent.
+            if resource == "erase" and req.method in ("POST", "DELETE"):
+                return self._require(subject, token_tenant, tenant, P.MANAGE_USERS,
+                                     lambda t: self._erase(subject, t))
+            # owner-gated audit-log viewer (JSON), most-recent-first, optional ?actor=
+            if resource == "audit" and req.method == "GET":
+                return self._require(subject, token_tenant, tenant, P.MANAGE_USERS,
+                                     lambda t: self._audit_json(t, req.query.get("actor")))
 
         # /api/<tenant>/close/publish  -> seal the period (PUBLISH_CLOSE)
         if (len(parts) == 4 and parts[0] == "api" and parts[2] == "close"
@@ -602,6 +671,12 @@ class WebApp:
         if "@" not in email:
             return _html(400, render_login_html(error="Enter a valid work email."))
         role_raw = str(data.get("role", "owner"))
+        # Real credential login (public track): verify the password + verified email
+        # via the AuthService. On any failure, respond without distinguishing why.
+        if self._auth_service is not None:
+            authed = self._auth_service.login(email, str(data.get("password", "")))
+            if authed is None:
+                return self._login_failure(req)
         tenant = self._resolve_login_tenant(email, data.get("tenant"))
         if tenant is None:
             return _html(400, render_login_html(error="No business is provisioned to sign into yet."))
@@ -623,6 +698,80 @@ class WebApp:
         )
         cookie = f"rgnr8_session={token}; Path=/; Max-Age=28800; HttpOnly; SameSite=Lax"
         return _redirect("/app", (("Set-Cookie", cookie),))
+
+    @staticmethod
+    def _wants_json(req: Request) -> bool:
+        ct = req.headers.get("content-type", "").lower()
+        if "application/json" in ct:
+            return True
+        return req.body.lstrip().startswith("{")
+
+    def _login_failure(self, req: Request) -> Response:
+        """A single, non-committal login rejection — never reveals whether the email
+        is unknown, the password wrong, or the account unverified."""
+        if self._wants_json(req):
+            return _json(401, {"error": "invalid email or password"})
+        return _html(401, render_login_html(error="Invalid email or password."))
+
+    # --- public end-user auth (self-service) --------------------------------
+    def _signup_post(self, req: Request) -> Response:
+        """Create an unverified credential and issue an email-verification token.
+        Body (form or JSON): {email, password}. In dev the token is returned in the
+        body; with an `emailer` seam it is sent and withheld from the response."""
+        if self._auth_service is None:
+            return _json(501, {"error": "signup is not configured"})
+        data = self._form_or_json(req.body)
+        email = str(data.get("email", "")).strip()
+        password = str(data.get("password", ""))
+        try:
+            cred, token = self._auth_service.signup(email, password)
+        except AuthError as exc:
+            return _json(400, {"error": str(exc)})
+        body: dict[str, object] = {"user_id": cred.user_id, "email": cred.email,
+                                   "verified": cred.verified}
+        if self._emailer is not None:
+            self._emailer(cred.email, "verify_email", token)
+        else:
+            body["verify_token"] = token
+        return _json(201, body)
+
+    def _verify_post(self, req: Request) -> Response:
+        """Consume an email-verification token (single-use). Body: {token}."""
+        if self._auth_service is None:
+            return _json(501, {"error": "signup is not configured"})
+        data = self._form_or_json(req.body)
+        if not self._auth_service.verify_email(str(data.get("token", ""))):
+            return _json(400, {"error": "invalid or expired verification token"})
+        return _json(200, {"verified": True})
+
+    def _password_reset_request_post(self, req: Request) -> Response:
+        """Request a password-reset token. Always answers 202 so it can't be used to
+        probe which emails are registered; a token is minted only if the email is
+        known (returned in dev, or emailed via the seam)."""
+        if self._auth_service is None:
+            return _json(501, {"error": "signup is not configured"})
+        data = self._form_or_json(req.body)
+        email = str(data.get("email", "")).strip()
+        token = self._auth_service.request_password_reset(email)
+        body: dict[str, object] = {"status": "ok"}
+        if token is not None:
+            if self._emailer is not None:
+                self._emailer(email, "password_reset", token)
+            else:
+                body["reset_token"] = token
+        return _json(202, body)
+
+    def _password_reset_post(self, req: Request) -> Response:
+        """Set a new password from a reset token (single-use + expiring). Body:
+        {token, password}."""
+        if self._auth_service is None:
+            return _json(501, {"error": "signup is not configured"})
+        data = self._form_or_json(req.body)
+        token = str(data.get("token", ""))
+        new_password = str(data.get("password", "") or data.get("new_password", ""))
+        if not self._auth_service.reset_password(token, new_password):
+            return _json(400, {"error": "invalid or expired token, or password too weak"})
+        return _json(200, {"reset": True})
 
     def _resolve_login_tenant(self, email: str, requested: object) -> str | None:
         if isinstance(requested, str) and requested in self._tenants:
@@ -650,7 +799,7 @@ class WebApp:
             return _html(403, render_login_html(error="You don't have access to this business."))
         t = self._tenants[tenant]
         fc = self._forecast(t)
-        b = build_briefing(fc)
+        b = self._briefing(t)
         body = render_app_home(
             tenant=tenant, display_name=t.name, role=role, permissions=perms,
             cash_today=self._money_str(fc.projection.opening_available),
@@ -808,7 +957,7 @@ class WebApp:
 
     def _today_json(self, t: _Tenant) -> Response:
         fc = self._forecast(t)
-        b = build_briefing(fc)
+        b = self._briefing(t)
         if validate_briefing(b, fc):
             return _json(500, {"error": "briefing failed number validation"})
         p = fc.projection
@@ -842,7 +991,7 @@ class WebApp:
         )
 
     def _briefing_text(self, t: _Tenant) -> Response:
-        return Response(200, render_text(build_briefing(self._forecast(t))), "text/plain; charset=utf-8")
+        return Response(200, render_text(self._briefing(t)), "text/plain; charset=utf-8")
 
     def _ask(self, t: _Tenant, body: str) -> Response:
         try:
@@ -935,6 +1084,123 @@ class WebApp:
         if pkg is None:
             return _json(404, {"error": f"no published package for {period}"})
         return _json(200, pkg)
+
+    # --- data portability (GDPR/CCPA export) --------------------------------
+    def _export(self, t: _Tenant) -> Response:
+        """The tenant's full data bundle as JSON — for a data-portability request.
+        Owner-gated. Summarizes forecast inputs and includes decisions, the bank
+        register, the close board, and (if a sink is wired) this tenant's audit
+        events."""
+        fc = self._forecast(t)
+        p = fc.projection
+        inp = t.inputs
+        txns = self._txns.get(t.tenant_id, [])
+        board = self._close.get(t.tenant_id)
+        audit_events = self._audit.events(tenant_id=t.tenant_id) if self._audit is not None else []
+        bundle: dict[str, object] = {
+            "tenant": t.tenant_id,
+            "name": t.name,
+            "generated_at": self._session_clock(),
+            "forecast_inputs": {
+                "as_of": inp.opening.as_of.isoformat(),
+                "opening_available": inp.opening.available.to_decimal_string(),
+                "minimum_cash": self._effective_config(t).minimum_cash.to_decimal_string(),
+                "invoices": len(inp.invoices),
+                "payroll_schedules": len(inp.payroll),
+                "recurring_items": len(inp.recurring),
+                "customer_histories": len(inp.customer_histories),
+                "payment_overrides": dict(t.payment_overrides),
+            },
+            "cash_today": p.opening_available.to_decimal_string(),
+            "decisions": list(t.decisions),
+            "transactions": [
+                {"id": r.id, "date": r.date, "description": r.description,
+                 "amount": r.amount.to_decimal_string(), "category": r.category,
+                 "status": r.status, "counterparty": r.counterparty}
+                for r in txns
+            ],
+            "close_board": None if board is None else {
+                "period": board.period, "sealed": board.sealed,
+                "tasks": [{"key": tk.key, "label": tk.label, "status": tk.status,
+                           "owner": tk.owner, "due": tk.due} for tk in board.tasks],
+            },
+            "audit_events": [
+                {"seq": e.seq, "actor": e.actor, "action": e.action, "at": e.at,
+                 "target": e.target, "detail": e.detail}
+                for e in audit_events
+            ],
+        }
+        return _json(200, bundle)
+
+    # --- right-to-delete (GDPR/CCPA erasure — the export's twin) --------------
+    def _erase(self, subject: str, t: _Tenant) -> Response:
+        """Purge the tenant's owner-facing data the web app holds: the bank
+        register feed, the month-end close board, the decisions + assumption
+        overrides in TenantState, and the cached forecast/briefing. Idempotent —
+        a second call clears nothing and reports zeros. Writes a `data.erased`
+        audit event. Returns a JSON summary of what was cleared."""
+        txns = self._txns.get(t.tenant_id, [])
+        had_close = t.tenant_id in self._close
+        decisions_n = len(t.state.decisions)
+        overrides_n = len(t.state.payment_overrides)
+        had_min_cash = t.state.min_cash_override_dto is not None
+
+        # bank register feed
+        self._txns[t.tenant_id] = []
+        self._accounts.pop(t.tenant_id, None)
+        # month-end close board
+        self._close.pop(t.tenant_id, None)
+        # mutable owner state (decisions + assumption overrides), then persist
+        t.state.decisions.clear()
+        t.state.payment_overrides.clear()
+        t.state.min_cash_override_dto = None
+        self._store.save(t.tenant_id, t.state)
+        # cached forecast + briefing — recompute clean on next read
+        t._cache = None
+        t._briefing_cache = None
+        t._briefing_for = None
+        t._dirty = True
+
+        summary = {
+            "transactions": len(txns),
+            "decisions": decisions_n,
+            "payment_overrides": overrides_n,
+            "min_cash_override": had_min_cash,
+            "close_board": had_close,
+            "forecast_cache_cleared": True,
+        }
+        if self._audit is not None:
+            self._audit.record(subject, "data.erased", self._session_clock(),
+                               tenant_id=t.tenant_id, target=t.tenant_id,
+                               detail=json.dumps(summary, sort_keys=True))
+        return _json(200, {"tenant": t.tenant_id, "erased": summary})
+
+    # --- audit-log viewer (who-did-what) ------------------------------------
+    def _audit_json(self, t: _Tenant, actor: str | None) -> Response:
+        if self._audit is None:
+            return _json(501, {"error": "audit log is not configured"})
+        events = self._audit.events(tenant_id=t.tenant_id, actor=actor)
+        events = sorted(events, key=lambda e: e.seq, reverse=True)
+        return _json(200, {
+            "tenant": t.tenant_id,
+            "actor": actor,
+            "events": [
+                {"seq": e.seq, "actor": e.actor, "action": e.action, "at": e.at,
+                 "target": e.target, "detail": e.detail}
+                for e in events
+            ],
+        })
+
+    def _audit_page(self, subject: str, t: _Tenant) -> Response:
+        perms, role = self._perms_role(subject, t.tenant_id)
+        if self._audit is None:
+            body = render_audit_log(t.tenant_id, [], configured=False)
+        else:
+            events = sorted(self._audit.events(tenant_id=t.tenant_id),
+                            key=lambda e: e.seq, reverse=True)
+            body = render_audit_log(t.tenant_id, events, configured=True)
+        return _html(200, render_shell(tenant=t.tenant_id, display_name=t.name, role=role,
+                                       permissions=perms, active="audit", body_html=body, subject=subject))
 
     def _package_html(self, t: _Tenant, period: str) -> Response:
         if self._packages is None:

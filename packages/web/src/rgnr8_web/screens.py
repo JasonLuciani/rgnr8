@@ -240,10 +240,10 @@ def render_close_body(board: CloseBoard, tenant: str, *, can_manage: bool, can_p
         advance = ""
         if can_manage and not board.sealed and t.status != "done":
             advance = ('<button class="btn sage" style="padding:5px 10px" '
-                       f"onclick=\"advance('{escape(t.key)}')\">Mark done</button>")
+                       f"onclick=\"advance(this,'{escape(t.key)}')\">Mark done</button>")
         elif can_manage and not board.sealed and t.status == "done":
             advance = ('<button class="btn ghost" style="padding:5px 10px" '
-                       f"onclick=\"reopen('{escape(t.key)}')\">Reopen</button>")
+                       f"onclick=\"reopen(this,'{escape(t.key)}')\">Reopen</button>")
         rows += (f'<tr><td><strong>{escape(t.label)}</strong>'
                  + (f'<br><span class="muted" style="font-size:12px">{escape(t.note)}</span>' if t.note else "")
                  + f'</td><td class="muted">{escape(t.owner or "—")}</td>'
@@ -260,21 +260,35 @@ def render_close_body(board: CloseBoard, tenant: str, *, can_manage: bool, can_p
     seal = ""
     if not board.sealed:
         if board.complete and can_publish:
-            seal = ('<button class="btn" onclick="publish()">Seal &amp; publish package</button>')
+            seal = ('<button id="sealBtn" class="btn" onclick="publish(this)">Seal &amp; publish package</button>')
         elif board.complete and not can_publish:
             seal = '<span class="muted">Ready to seal — an owner, controller, or accountant must publish.</span>'
         else:
             seal = '<span class="muted">Finish every task to seal the period.</span>'
+    err_block = ('<div id="rgErr" class="banner warn" role="alert" style="display:none;margin:12px 0"></div>'
+                 if (can_manage or can_publish) else "")
     js = f"""<script>
       const T={tenant!r};
+      function rgErr(m){{ var b=document.getElementById('rgErr'); if(b){{ b.textContent=m||''; b.style.display=m?'block':'none'; }} }}
+      function rgBusy(el,on,label){{ if(!el)return; el.disabled=on; if(el.tagName==='BUTTON'){{ if(on){{ el.dataset.rgPrev=el.dataset.rgPrev||el.textContent; el.textContent=label||'Working…'; }} else if(el.dataset.rgPrev!=null){{ el.textContent=el.dataset.rgPrev; }} }} }}
       function post(u,b){{return fetch(u,{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify(b||{{}}),credentials:'same-origin'}});}}
-      async function advance(id){{await post('/api/'+T+'/close',{{id,status:'done'}});location.reload();}}
-      async function reopen(id){{await post('/api/'+T+'/close',{{id,status:'open'}});location.reload();}}
-      async function publish(){{await post('/api/'+T+'/close/publish',{{}});location.reload();}}
+      async function run(ctl,label,u,b){{
+        rgErr(''); rgBusy(ctl, true, label);
+        try{{
+          const r = await post(u,b);
+          if(!r.ok){{ rgErr('Could not complete that action (HTTP '+r.status+').'); rgBusy(ctl, false); return; }}
+          location.reload();
+        }} catch(e){{ rgErr('Network error — please try again.'); rgBusy(ctl, false); }}
+      }}
+      function advance(ctl,id){{ return run(ctl, 'Saving…', '/api/'+T+'/close', {{id,status:'done'}}); }}
+      function reopen(ctl,id){{ return run(ctl, 'Saving…', '/api/'+T+'/close', {{id,status:'open'}}); }}
+      function publish(ctl){{ if(!confirm('Seal '+T+' and publish the financial package? This is permanent and cannot be undone.')) return;
+        return run(ctl, 'Sealing…', '/api/'+T+'/close/publish', {{}}); }}
     </script>""" if (can_manage or can_publish) else ""
     return f"""<h1>Month-end close</h1>
     <p class="sub">{escape(board.period)} · the checklist that has to clear before the books are sealed</p>
     <div class="banner {banner_cls}">{banner}</div>
+    {err_block}
     <div class="card"><div class="row" style="justify-content:space-between"><span class="muted" style="font-size:12px">Progress</span>
       <span class="muted" style="font-size:12px">{board.done}/{board.total}</span></div>
       <div class="bar" style="margin-top:6px"><span style="width:{pct}%"></span></div></div>

@@ -11,10 +11,14 @@ from .scheduler import (
     BriefingDispatchJob,
     Dispatcher,
     InMemoryJobRunStore,
+    InMemoryLeaseStore,
     IntervalJob,
     Job,
     JobResult,
     JobRunStore,
+    LeasedDispatcher,
+    LeaseStore,
+    SqlLeaseStore,
 )
 from .status import ConnectorHealth, CloseProgress, TenantOpsStatus
 from .store import FleetStore, FleetTenantRecord, InMemoryFleetStore, SqlFleetStore
@@ -58,6 +62,10 @@ __all__ = [
     "InMemoryJobRunStore",
     "IntervalJob",
     "BriefingDispatchJob",
+    "LeaseStore",
+    "InMemoryLeaseStore",
+    "SqlLeaseStore",
+    "LeasedDispatcher",
     "ConnectorHealth",
     "CloseProgress",
     "TenantOpsStatus",

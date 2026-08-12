@@ -95,7 +95,7 @@ def _row(t: BankTransaction, can_categorize: bool, categories: Sequence[str]) ->
     action = ""
     if can_categorize and t.needs_review:
         action = ("<button class='btn sage' style='padding:5px 10px' "
-                  f"onclick=\"accept('{escape(t.id)}')\">Accept</button>")
+                  f"onclick=\"accept(this,'{escape(t.id)}')\">Accept</button>")
     return (
         f"<tr><td class='muted'>{escape(t.date)}</td><td>{desc}</td>"
         f"<td>{_cat_select(t, can_categorize, categories)}</td>"
@@ -128,15 +128,28 @@ def render_transactions(
         f"{s.matched} matched · {s.review} to categorize · {s.unmatched} unmatched"
         if (s.review + s.unmatched) else f"All {s.matched} transactions reconciled — books are current."
     )
+    err_block = ('<div id="rgErr" class="banner warn" role="alert" style="display:none;margin:12px 0"></div>'
+                 if can_categorize else "")
     js = f"""<script>
       const T={tenant!r};
+      function rgErr(m){{ var b=document.getElementById('rgErr'); if(b){{ b.textContent=m||''; b.style.display=m?'block':'none'; }} }}
+      function rgBusy(el,on,label){{ if(!el)return; el.disabled=on; if(el.tagName==='BUTTON'){{ if(on){{ el.dataset.rgPrev=el.dataset.rgPrev||el.textContent; el.textContent=label||'Saving…'; }} else if(el.dataset.rgPrev!=null){{ el.textContent=el.dataset.rgPrev; }} }} }}
       function post(body){{ return fetch('/api/'+T+'/transactions', {{method:'POST', headers:{{'content-type':'application/json'}}, body:JSON.stringify(body), credentials:'same-origin'}}); }}
-      async function categorize(sel){{ await post({{id: sel.dataset.txn, category: sel.value}}); location.reload(); }}
-      async function accept(id){{ await post({{id, accept:true}}); location.reload(); }}
+      async function run(ctl, label, body){{
+        rgErr(''); rgBusy(ctl, true, label);
+        try{{
+          const r = await post(body);
+          if(!r.ok){{ rgErr('Could not save this change (HTTP '+r.status+'). No changes were saved.'); rgBusy(ctl, false); return; }}
+          location.reload();
+        }} catch(e){{ rgErr('Network error — please try again.'); rgBusy(ctl, false); }}
+      }}
+      function categorize(sel){{ return run(sel, null, {{id: sel.dataset.txn, category: sel.value}}); }}
+      function accept(btn, id){{ return run(btn, 'Accepting…', {{id, accept:true}}); }}
     </script>""" if can_categorize else ""
     return f"""<h1>Bank transactions</h1>
     <p class="sub">{escape(account_name)} · {escape(tenant)} · the feed RGNR8 ingests, categorized and matched to your books</p>
     <div class="banner {banner_cls}">{banner}</div>
+    {err_block}
     {review_block}
     <h2>All transactions</h2>
     <div class="table-scroll"><table><thead><tr><th>Date</th><th>Description</th><th>Category</th><th class="num">Spent</th><th class="num">Received</th><th>Status</th><th></th></tr></thead>

@@ -187,3 +187,78 @@ def test_outbound_webhook_retries_then_reports_failure() -> None:
     disp = WebhookDispatcher(store, FailHttp(), clock=lambda: NOW, max_attempts=3)
     r = disp.dispatch(close_sealed_event("e", "acme", NOW, period="2026-08"))[0]
     assert r.ok is False and r.attempts == 3 and attempts["n"] == 3
+
+
+# --- SSRF hardening ----------------------------------------------------------
+
+
+class _RecordingHttp:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def post_json(self, url: str, body: str, headers: dict[str, str]) -> HttpResponse:
+        self.calls.append(url)
+        return HttpResponse(200)
+
+
+def _dispatch_one(url: str, *, allow_hosts: list[str] | None = None) -> tuple[Any, list[str]]:
+    store = InMemoryWebhookEndpointStore()
+    store.save(WebhookEndpoint("ep1", "acme", url, "whsec", events=("close.sealed",)))
+    http = _RecordingHttp()
+    disp = WebhookDispatcher(store, http, clock=lambda: NOW, allow_hosts=allow_hosts)
+    res = disp.dispatch(close_sealed_event("evt", "acme", NOW, period="2026-08"))[0]
+    return res, http.calls
+
+
+def test_webhook_ssrf_blocks_non_public_targets() -> None:
+    blocked_urls = [
+        "http://hooks.acme.com/x",        # non-https
+        "https://localhost/x",            # loopback name
+        "https://127.0.0.1/x",            # loopback IPv4
+        "https://169.254.169.254/latest", # cloud metadata / link-local
+        "https://10.0.0.5/x",             # private 10/8
+        "https://172.16.0.1/x",           # private 172.16/12
+        "https://192.168.1.10/x",         # private 192.168/16
+        "https://[::1]/x",                # loopback IPv6
+        "https://[fc00::1]/x",            # unique-local IPv6 (fc00::/7)
+    ]
+    for url in blocked_urls:
+        res, calls = _dispatch_one(url)
+        assert res.ok is False, url
+        assert res.attempts == 0 and res.status == 0, url
+        assert res.error.startswith("blocked:"), url
+        assert calls == [], f"no request should be made for {url}"
+
+
+def test_webhook_ssrf_allows_public_https_target() -> None:
+    res, calls = _dispatch_one("https://hooks.acme.com/rgnr8")
+    assert res.ok is True and res.attempts == 1
+    assert calls == ["https://hooks.acme.com/rgnr8"]
+
+
+def test_webhook_host_allowlist() -> None:
+    # allowlisted host is delivered
+    ok, ok_calls = _dispatch_one("https://hooks.acme.com/rgnr8", allow_hosts=["hooks.acme.com"])
+    assert ok.ok is True and ok_calls == ["https://hooks.acme.com/rgnr8"]
+    # a public host NOT on the allowlist is blocked without a request
+    bad, bad_calls = _dispatch_one("https://evil.example/x", allow_hosts=["hooks.acme.com"])
+    assert bad.ok is False and bad.error.startswith("blocked:") and bad_calls == []
+
+
+def test_webhook_dedupe_within_and_across_runs() -> None:
+    ep = WebhookEndpoint("ep1", "acme", "https://hooks.acme.com/rgnr8", "whsec",
+                         events=("close.sealed",))
+
+    class DupStore:
+        def save(self, endpoint: WebhookEndpoint) -> None: ...
+        def for_tenant(self, tenant_id: str) -> list[WebhookEndpoint]:
+            return [ep, ep]  # same endpoint returned twice in one run
+
+    http = _RecordingHttp()
+    disp = WebhookDispatcher(DupStore(), http, clock=lambda: NOW)
+    evt = close_sealed_event("evt_1", "acme", NOW, period="2026-08")
+    first = disp.dispatch(evt)
+    assert len(first) == 1 and len(http.calls) == 1     # deduped within the run
+    # re-dispatching the same event delivers nothing new (idempotent)
+    second = disp.dispatch(evt)
+    assert second == [] and len(http.calls) == 1

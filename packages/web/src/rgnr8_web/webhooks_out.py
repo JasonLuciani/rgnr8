@@ -14,14 +14,56 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
+from urllib.parse import urlsplit
 
 # the canonical outbound event catalog
 EVENTS = ("cash.at_risk", "close.sealed", "briefing.sent")
+
+# hostnames that always resolve to the loopback interface — rejected by name so a
+# blocked target can't slip through when we don't resolve DNS.
+_LOOPBACK_NAMES = frozenset({"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"})
+
+
+def _parse_ip(host: str) -> "ipaddress.IPv4Address | ipaddress.IPv6Address | None":
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        return None
+
+
+def validate_target(url: str, *, allow_hosts: "Sequence[str] | None" = None) -> str | None:
+    """SSRF guard for an outbound webhook target. Returns an error string when the
+    URL must NOT be requested, or ``None`` when it is a safe public https target.
+
+    Blocks: non-https schemes; loopback/localhost; and any URL whose host is an IP
+    literal in a private, loopback, link-local (incl. the 169.254.169.254 cloud
+    metadata address), reserved, multicast, or unspecified range (covers 10/8,
+    172.16/12, 192.168/16, ::1, and fc00::/7). An optional explicit ``allow_hosts``
+    list further restricts delivery to named hosts."""
+    parts = urlsplit(url)
+    if parts.scheme != "https":
+        return f"blocked: scheme {parts.scheme or '(none)'!r} is not https"
+    host = parts.hostname
+    if not host:
+        return "blocked: URL has no host"
+    h = host.lower()
+    if allow_hosts is not None and h not in {a.lower() for a in allow_hosts}:
+        return f"blocked: host {host!r} is not in the allowlist"
+    if h in _LOOPBACK_NAMES or h.endswith(".localhost"):
+        return f"blocked: loopback host {host!r}"
+    ip = _parse_ip(host)
+    if ip is not None and (
+        ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved
+        or ip.is_multicast or ip.is_unspecified
+    ):
+        return f"blocked: non-public address {host}"
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,25 +142,46 @@ class WebhookDispatcher:
         *,
         clock: Callable[[], int] | None = None,
         max_attempts: int = 3,
+        allow_hosts: "Sequence[str] | None" = None,
     ) -> None:
         self._store = store
         self._http = http
         self._clock = clock if clock is not None else (lambda: int(time.time()))
         self._max = max_attempts
+        # optional explicit host allowlist — when set, only these hosts are targets
+        self._allow_hosts = tuple(allow_hosts) if allow_hosts is not None else None
+        # server-side idempotency: (endpoint_id, event_id) pairs already delivered
+        # OK, so re-dispatching the same event never double-delivers to an endpoint.
+        self._delivered: set[tuple[str, str]] = set()
 
     def dispatch(self, event: PlatformEvent) -> list[DeliveryResult]:
         """Deliver an event to every subscribed endpoint for its tenant. Retries up
         to `max_attempts` on transport error / non-2xx; each attempt re-sends the
-        same signed body so consumers can dedupe on `event.id`."""
+        same signed body so consumers can dedupe on `event.id`. Server-side dedupe
+        skips any (endpoint, event) pair already delivered — within this run or a
+        prior one — so the same event isn't POSTed to an endpoint twice."""
         body = event.envelope()
         results: list[DeliveryResult] = []
+        seen: set[tuple[str, str]] = set()
         for ep in self._store.for_tenant(event.tenant_id):
             if not ep.wants(event.type):
                 continue
-            results.append(self._deliver(ep, event.id, body))
+            key = (ep.id, event.id)
+            if key in seen or key in self._delivered:
+                continue
+            seen.add(key)
+            result = self._deliver(ep, event.id, body)
+            if result.ok:
+                self._delivered.add(key)
+            results.append(result)
         return results
 
     def _deliver(self, ep: WebhookEndpoint, event_id: str, body: str) -> DeliveryResult:
+        # SSRF guard: never POST to a non-public / non-https target. A blocked
+        # endpoint yields a failed result with a clear error and makes no request.
+        blocked = validate_target(ep.url, allow_hosts=self._allow_hosts)
+        if blocked is not None:
+            return DeliveryResult(ep.id, event_id, False, 0, 0, blocked)
         headers = {"content-type": "application/json",
                    "X-RGNR8-Signature": sign(body, ep.secret),
                    "X-RGNR8-Event-Id": event_id}

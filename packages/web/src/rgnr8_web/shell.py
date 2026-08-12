@@ -12,11 +12,13 @@ owner lands on cash by default.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime, timezone
 from html import escape
 
 from rgnr8_forecast import brand_bar
 from rgnr8_forecast.brand import IVORY, RG_BASE_CSS, RG_TOKENS_CSS, mark_svg
 
+from .audit import AuditEvent
 from .rbac import Membership, Permission, Role, User
 
 # nav item → (path suffix, label, permission required)
@@ -27,6 +29,7 @@ _NAV: list[tuple[str, str, Permission]] = [
     ("close", "Close", Permission.MANAGE_CLOSE),
     ("packages", "Package", Permission.VIEW_PACKAGE),
     ("team", "Team", Permission.MANAGE_USERS),
+    ("audit", "Audit", Permission.MANAGE_USERS),
 ]
 
 _SHELL_CSS = f"""<style>
@@ -216,19 +219,61 @@ def render_users_admin(tenant: str, members: Sequence[tuple[Membership, User | N
     )
     body = f"""<h1>Team &amp; roles</h1>
     <p class="sub">Who can see and do what in {escape(tenant)}. Changes take effect immediately.</p>
+    <div id="rgErr" class="banner warn" role="alert" style="display:none;margin-bottom:12px"></div>
     <table><thead><tr><th>Member</th><th>Email</th><th>Role</th><th></th></tr></thead><tbody>{rows}</tbody></table>
     <div class="card" style="margin-top:16px"><h2 style="margin-top:0;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--rg-muted)">Invite a teammate</h2>
       <div class="row"><input id="invEmail" class="grow" placeholder="name@company.com">
       <select id="invRole" style="width:auto">{invite_roles}</select>
-      <button class="btn" onclick="invite()">Send invite</button></div>
+      <button id="invBtn" class="btn" onclick="invite()">Send invite</button></div>
       <p class="muted" style="font-size:12px;margin-top:10px">Owner &amp; Controller can publish the close · Bookkeeper reconciles but can't seal · Accountant is your external CPA · Viewer is read-only.</p>
     </div>
     <script>
       const T={tenant!r};
+      function rgErr(m){{ var b=document.getElementById('rgErr'); if(b){{ b.textContent=m||''; b.style.display=m?'block':'none'; }} }}
+      function rgBusy(el,on,label){{ if(!el)return; el.disabled=on; if(el.tagName==='BUTTON'){{ if(on){{ el.dataset.rgPrev=el.dataset.rgPrev||el.textContent; el.textContent=label||'Working…'; }} else if(el.dataset.rgPrev!=null){{ el.textContent=el.dataset.rgPrev; }} }} }}
       function api(method, body){{ return fetch('/api/'+T+'/users', {{method, headers:{{'content-type':'application/json'}}, body: body?JSON.stringify(body):undefined, credentials:'same-origin'}}); }}
-      async function setRole(sel){{ await api('POST', {{email: sel.dataset.user, role: sel.value}}); location.reload(); }}
-      async function removeMember(email){{ await api('POST', {{email, role: null}}); location.reload(); }}
-      async function invite(){{ const e=document.getElementById('invEmail').value.trim(); if(!e.includes('@'))return;
-        await api('POST', {{email:e, role: document.getElementById('invRole').value}}); location.reload(); }}
+      async function run(ctl, label, body){{
+        rgErr(''); rgBusy(ctl, true, label);
+        try{{
+          const r = await api('POST', body);
+          if(!r.ok){{ rgErr('Could not save the change (HTTP '+r.status+'). Nothing was changed.'); rgBusy(ctl, false); return; }}
+          location.reload();
+        }} catch(e){{ rgErr('Network error — please try again.'); rgBusy(ctl, false); }}
+      }}
+      function setRole(sel){{ return run(sel, null, {{email: sel.dataset.user, role: sel.value}}); }}
+      function removeMember(email){{ if(!confirm('Remove '+email+' from the team? They lose access to this business immediately.')) return;
+        return run(null, null, {{email, role: null}}); }}
+      function invite(){{ const e=document.getElementById('invEmail').value.trim();
+        if(!e.includes('@')){{ rgErr('Enter a valid email address.'); return; }}
+        return run(document.getElementById('invBtn'), 'Sending…', {{email:e, role: document.getElementById('invRole').value}}); }}
     </script>"""
     return body
+
+
+def render_audit_log(tenant: str, events: Sequence[AuditEvent], *, configured: bool = True) -> str:
+    """A client-facing 'who did what' view: the tenant's audit trail in a table,
+    most-recent-first (the caller supplies the ordering). Reuses the shell + table
+    CSS; wrap the returned body in `render_shell`."""
+    if not configured:
+        return (f"""<h1>Audit log</h1>
+        <p class="sub">{escape(tenant)} · a record of who did what</p>
+        <div class="banner warn">An audit log isn't configured for this workspace yet.</div>""")
+    if not events:
+        rows_html = '<div class="banner good">No activity has been recorded yet.</div>'
+    else:
+        rows = ""
+        for e in events:
+            when = datetime.fromtimestamp(e.at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            rows += (f'<tr><td class="muted">{escape(when)}</td>'
+                     f'<td>{escape(e.actor or "—")}</td>'
+                     f'<td><strong>{escape(e.action)}</strong></td>'
+                     f'<td class="muted">{escape(e.target or "—")}</td>'
+                     f'<td class="muted" style="font-size:12px">{escape(e.detail or "")}</td></tr>')
+        rows_html = (
+            '<div class="table-scroll"><table><thead><tr><th>When</th><th>Who</th>'
+            '<th>Action</th><th>Target</th><th>Detail</th></tr></thead>'
+            f'<tbody>{rows}</tbody></table></div>'
+        )
+    return f"""<h1>Audit log</h1>
+    <p class="sub">{escape(tenant)} · a record of who did what, most recent first</p>
+    {rows_html}"""

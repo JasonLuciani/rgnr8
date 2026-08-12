@@ -1,0 +1,240 @@
+"""End-to-end public-track auth over the HTTP surface: POST /signup, /verify,
+/login (password), /password/reset-request, /password/reset, and the owner-gated
+data export — plus proof the dev/static login path is untouched when no credential
+store is configured."""
+
+from __future__ import annotations
+
+import json
+from datetime import date
+from typing import Any
+
+from rgnr8_forecast import CashPosition, ForecastConfig, ForecastInputs, Money
+from rgnr8_web import (
+    AuthService,
+    InMemoryAuditLog,
+    InMemoryCredentialStore,
+    InMemoryUserDirectory,
+    InMemoryVerificationTokenStore,
+    Request,
+    Role,
+    User,
+    WebApp,
+)
+
+SECRET = "auth-routes-secret"
+NOW = 1_760_000_000
+HOUR = 3_600
+
+
+def _inputs() -> ForecastInputs:
+    return ForecastInputs(
+        opening=CashPosition(as_of=date(2026, 8, 31), available=Money.from_decimal("50000.00"))
+    )
+
+
+def _make_app(clock_ref: dict[str, int], audit: InMemoryAuditLog | None = None) -> WebApp:
+    seq = {"n": 0}
+
+    def token() -> str:
+        seq["n"] += 1
+        return f"tok-{seq['n']}"
+
+    svc = AuthService(
+        InMemoryCredentialStore(),
+        InMemoryVerificationTokenStore(),
+        audit,
+        clock=lambda: clock_ref["t"],
+        token_factory=token,
+        salt_factory=lambda: b"0123456789abcdef",
+        min_password_length=8,
+        verify_ttl_hours=24,
+        reset_ttl_hours=1,
+    )
+    users = InMemoryUserDirectory()
+    app = WebApp(
+        users=users,
+        session_secret=SECRET,
+        session_clock=lambda: clock_ref["t"],
+        auth_service=svc,
+        audit=audit,
+    )
+    app.add_tenant("acme", "Acme Co", _inputs(),
+                   ForecastConfig(minimum_cash=Money.from_decimal("10000.00")), token="unused")
+    return app
+
+
+def _post(app: WebApp, path: str, payload: dict[str, Any]) -> Any:
+    return app.handle(Request("POST", path, {"content-type": "application/json"}, json.dumps(payload)))
+
+
+def _cookie_from(resp: Any) -> str:
+    return str(resp.headers.get("Set-Cookie", "")).split(";")[0]
+
+
+# --- signup / verify ---------------------------------------------------------
+
+
+def test_signup_returns_201_and_verify_token() -> None:
+    app = _make_app({"t": NOW})
+    r = _post(app, "/signup", {"email": "ada@acme.com", "password": "hunter2222"})
+    assert r.status == 201
+    body = json.loads(r.body)
+    assert body["email"] == "ada@acme.com" and body["verified"] is False
+    assert body["verify_token"] == "tok-1"
+
+
+def test_signup_rejects_weak_and_duplicate() -> None:
+    app = _make_app({"t": NOW})
+    assert _post(app, "/signup", {"email": "ada@acme.com", "password": "x"}).status == 400
+    assert _post(app, "/signup", {"email": "ada@acme.com", "password": "hunter2222"}).status == 201
+    dup = _post(app, "/signup", {"email": "ada@acme.com", "password": "another11"})
+    assert dup.status == 400
+
+
+def test_verify_endpoint_is_single_use() -> None:
+    app = _make_app({"t": NOW})
+    token = json.loads(_post(app, "/signup", {"email": "ada@acme.com", "password": "hunter2222"}).body)["verify_token"]
+    assert _post(app, "/verify", {"token": token}).status == 200
+    assert _post(app, "/verify", {"token": token}).status == 400        # consumed
+
+
+# --- login -------------------------------------------------------------------
+
+
+def test_login_blocked_until_verified_then_sets_cookie() -> None:
+    app = _make_app({"t": NOW})
+    token = json.loads(_post(app, "/signup", {"email": "ada@acme.com", "password": "hunter2222"}).body)["verify_token"]
+    # not verified yet → 401, no cookie
+    pre = _post(app, "/login", {"email": "ada@acme.com", "password": "hunter2222"})
+    assert pre.status == 401 and "Set-Cookie" not in pre.headers
+    # verify, then login succeeds with the same HttpOnly session cookie shape
+    assert _post(app, "/verify", {"token": token}).status == 200
+    ok = _post(app, "/login", {"email": "ada@acme.com", "password": "hunter2222"})
+    assert ok.status == 302 and ok.headers.get("Location") == "/app"
+    assert "rgnr8_session=" in ok.headers.get("Set-Cookie", "")
+    assert "HttpOnly" in ok.headers.get("Set-Cookie", "")
+
+
+def test_login_wrong_password_is_401_indistinguishable() -> None:
+    app = _make_app({"t": NOW})
+    token = json.loads(_post(app, "/signup", {"email": "ada@acme.com", "password": "hunter2222"}).body)["verify_token"]
+    _post(app, "/verify", {"token": token})
+    bad = _post(app, "/login", {"email": "ada@acme.com", "password": "WRONG"})
+    unknown = _post(app, "/login", {"email": "ghost@acme.com", "password": "hunter2222"})
+    assert bad.status == 401 and unknown.status == 401
+    assert bad.body == unknown.body                                    # same message
+    assert "Set-Cookie" not in bad.headers and "Set-Cookie" not in unknown.headers
+
+
+def test_verified_login_can_reach_the_app() -> None:
+    app = _make_app({"t": NOW})
+    token = json.loads(_post(app, "/signup", {"email": "ada@acme.com", "password": "hunter2222"}).body)["verify_token"]
+    _post(app, "/verify", {"token": token})
+    cookie = _cookie_from(_post(app, "/login", {"email": "ada@acme.com", "password": "hunter2222"}))
+    home = app.handle(Request("GET", "/app", {"cookie": cookie}))
+    assert home.status == 200                                          # authenticated session works
+
+
+# --- password reset ----------------------------------------------------------
+
+
+def test_password_reset_flow_over_http() -> None:
+    app = _make_app({"t": NOW})
+    token = json.loads(_post(app, "/signup", {"email": "ada@acme.com", "password": "hunter2222"}).body)["verify_token"]
+    _post(app, "/verify", {"token": token})
+    req = _post(app, "/password/reset-request", {"email": "ada@acme.com"})
+    assert req.status == 202
+    reset_token = json.loads(req.body)["reset_token"]
+    done = _post(app, "/password/reset", {"token": reset_token, "password": "brand-new-pass"})
+    assert done.status == 200
+    # old password no longer works; new one does
+    assert _post(app, "/login", {"email": "ada@acme.com", "password": "hunter2222"}).status == 401
+    assert _post(app, "/login", {"email": "ada@acme.com", "password": "brand-new-pass"}).status == 302
+
+
+def test_reset_request_for_unknown_email_still_202_without_token() -> None:
+    app = _make_app({"t": NOW})
+    r = _post(app, "/password/reset-request", {"email": "ghost@acme.com"})
+    assert r.status == 202
+    assert "reset_token" not in json.loads(r.body)                     # no membership leak
+
+
+def test_reset_with_expired_token_fails() -> None:
+    clock = {"t": NOW}
+    app = _make_app(clock)
+    token = json.loads(_post(app, "/signup", {"email": "ada@acme.com", "password": "hunter2222"}).body)["verify_token"]
+    _post(app, "/verify", {"token": token})
+    reset_token = json.loads(_post(app, "/password/reset-request", {"email": "ada@acme.com"}).body)["reset_token"]
+    clock["t"] = NOW + 2 * HOUR                                        # past the 1h TTL
+    assert _post(app, "/password/reset", {"token": reset_token, "password": "brand-new-pass"}).status == 400
+
+
+# --- audit -------------------------------------------------------------------
+
+
+def test_audit_events_recorded_for_signup_verify_reset() -> None:
+    audit = InMemoryAuditLog()
+    app = _make_app({"t": NOW}, audit=audit)
+    token = json.loads(_post(app, "/signup", {"email": "ada@acme.com", "password": "hunter2222"}).body)["verify_token"]
+    _post(app, "/verify", {"token": token})
+    reset_token = json.loads(_post(app, "/password/reset-request", {"email": "ada@acme.com"}).body)["reset_token"]
+    _post(app, "/password/reset", {"token": reset_token, "password": "brand-new-pass"})
+    actions = [e.action for e in audit.events()]
+    assert actions == ["user.signup", "user.verified", "password.reset"]
+
+
+# --- data export (owner-gated) ----------------------------------------------
+
+
+def _login_cookie(app: WebApp, email: str, password: str) -> str:
+    return _cookie_from(_post(app, "/login", {"email": email, "password": password}))
+
+
+def test_export_is_owner_gated_and_returns_bundle() -> None:
+    audit = InMemoryAuditLog()
+    app = _make_app({"t": NOW}, audit=audit)
+    # sign up + verify two users; make one an owner, leave the other a viewer default
+    for who in ("owner@acme.com", "view@acme.com"):
+        tok = json.loads(_post(app, "/signup", {"email": who, "password": "hunter2222"}).body)["verify_token"]
+        _post(app, "/verify", {"token": tok})
+    # elevate the owner directly in the directory
+    directory = app._users
+    assert directory is not None
+    directory.upsert_user(User("owner@acme.com", "owner@acme.com"))
+    directory.set_membership("owner@acme.com", "acme", Role.OWNER)
+    # a tenant-scoped audit event should appear in the export (auth events are global)
+    audit.record("owner@acme.com", "close.sealed", NOW, tenant_id="acme", detail="2026-08")
+
+    owner_cookie = _login_cookie(app, "owner@acme.com", "hunter2222")
+    view_cookie = _login_cookie(app, "view@acme.com", "hunter2222")
+
+    ok = app.handle(Request("GET", "/api/acme/export", {"cookie": owner_cookie}))
+    assert ok.status == 200
+    bundle = json.loads(ok.body)
+    assert bundle["tenant"] == "acme"
+    assert "forecast_inputs" in bundle and "decisions" in bundle
+    assert "transactions" in bundle and "close_board" in bundle
+    assert any(e["action"] == "close.sealed" for e in bundle["audit_events"])
+
+    # viewer (default role) lacks manage_users → forbidden
+    denied = app.handle(Request("GET", "/api/acme/export", {"cookie": view_cookie}))
+    assert denied.status == 403
+
+
+# --- back-compat: dev/static login unaffected when no credential store -------
+
+
+def test_dev_login_unchanged_without_credential_store() -> None:
+    # No auth_service/credentials configured → the dev email+role login still works
+    # with no password required (the existing behavior).
+    users = InMemoryUserDirectory()
+    users.upsert_user(User("owner@acme.com", "owner@acme.com", "Ada"))
+    users.set_membership("owner@acme.com", "acme", Role.OWNER)
+    app = WebApp(users=users, session_secret=SECRET, session_clock=lambda: NOW)
+    app.add_tenant("acme", "Acme Co", _inputs(),
+                   ForecastConfig(minimum_cash=Money.from_decimal("10000.00")), token="unused")
+    r = app.handle(Request("POST", "/login", {}, "email=owner@acme.com&role=owner"))
+    assert r.status == 302 and "rgnr8_session=" in r.headers.get("Set-Cookie", "")
+    # and the public-track endpoints are inert (501) without a service
+    assert app.handle(Request("POST", "/signup", {}, '{"email":"x@acme.com","password":"hunter2222"}')).status == 501
