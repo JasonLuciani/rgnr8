@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rgnr8-categorize"
+version = "0.1.0"
+description = "RGNR8 auto-categorization — suggest a category + confidence for each bank transaction from deterministic rules and learned history, so the bank-register 'For review' queue arrives pre-triaged and human-review load drops."
+requires-python = ">=3.11"
+dependencies = []
+license = { text = "UNLICENSED" }
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "mypy>=1.8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+mypy_path = "src"
