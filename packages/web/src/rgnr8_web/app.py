@@ -13,7 +13,7 @@ import json
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timezone
 from urllib.parse import parse_qs, urlsplit
 
 from rgnr8_forecast import (
@@ -53,6 +53,21 @@ from rgnr8_briefing import (
     render_today_html,
     validate_briefing,
 )
+from rgnr8_billing import Account, UsageSummary
+from rgnr8_reports import (
+    BASELINE_REPORTS,
+    DataContext,
+    InMemorySavedReportStore,
+    ReportSpec,
+    ReportSpecError,
+    SavedReportStore,
+    Transaction as ReportTransaction,
+    build_report,
+    render as render_report,
+    render_csv,
+    render_html as render_report_html,
+    to_json,
+)
 
 from .store import InMemoryTenantStore, TenantDef, TenantState, TenantStore
 from .financial_package import (
@@ -82,6 +97,7 @@ from .screens import (
     render_cash_body,
     render_close_body,
     render_packages_body,
+    render_reports_list,
     render_scenario_body,
 )
 
@@ -189,6 +205,8 @@ class WebApp:
         auth_service: AuthService | None = None,
         audit: AuditSink | None = None,
         emailer: "Callable[[str, str, str], None] | None" = None,
+        saved_reports: SavedReportStore | None = None,
+        report_clock: "Callable[[], datetime] | None" = None,
     ) -> None:
         self._tenants: dict[str, _Tenant] = {}
         self._tokens: dict[str, str] = {}  # bearer token -> tenant_id (default auth)
@@ -239,6 +257,20 @@ class WebApp:
         # emailer seam: (email, purpose, token). In prod the verify/reset token is
         # emailed here; in dev (no emailer) it is returned in the response body.
         self._emailer = emailer
+        # reporting (rgnr8-reports): per-tenant saved custom report definitions,
+        # plus the optional data sources a report composes that the app doesn't
+        # already hold (financial-statements/1 dict, a budget, a usage summary).
+        # `report_clock` stamps `generated_at` deterministically (never a wall clock).
+        self._saved_reports: SavedReportStore = (
+            saved_reports if saved_reports is not None else InMemorySavedReportStore()
+        )
+        self._report_clock: Callable[[], datetime] = (
+            report_clock if report_clock is not None else (lambda: datetime.now(timezone.utc))
+        )
+        self._financial_statements: dict[str, Mapping[str, object]] = {}
+        self._budgets: dict[str, Mapping[str, Money]] = {}
+        self._usage: dict[str, UsageSummary] = {}
+        self._billing_accounts: dict[str, Account] = {}
 
     def add_tenant(
         self,
@@ -328,6 +360,26 @@ class WebApp:
         """Attach a tenant's month-end close board (mirrors the `@rgnr8/close`
         calendar). Shown on the Close screen; advanced/sealed through the API."""
         self._close[tenant_id] = board
+
+    def add_financial_statements(self, tenant_id: str, statements: Mapping[str, object]) -> None:
+        """Attach a tenant's ``financial-statements/1`` contract (the JSON the TS
+        ``@rgnr8/financial-statements`` package emits). Feeds the P&L / balance-sheet
+        / cash-flow sections of the reporting surface; absent → those degrade."""
+        self._financial_statements[tenant_id] = statements
+
+    def add_budget(self, tenant_id: str, budget: Mapping[str, Money]) -> None:
+        """Attach a tenant's per-category budget (category → budgeted amount). Feeds
+        the Budget vs Actual report; absent → that report degrades gracefully."""
+        self._budgets[tenant_id] = dict(budget)
+
+    def add_usage(
+        self, tenant_id: str, usage: UsageSummary, account: Account | None = None
+    ) -> None:
+        """Attach a tenant's metered-usage summary (and optionally its billing
+        account, for the invoice preview). Feeds the Usage & Billing report."""
+        self._usage[tenant_id] = usage
+        if account is not None:
+            self._billing_accounts[tenant_id] = account
 
     def add_tenant_def(self, td: TenantDef) -> None:
         """Register a tenant from a definition whose inputs came from a
@@ -526,6 +578,11 @@ class WebApp:
             return self._require(subject, token_tenant, parts[1], P.VIEW_CASH,
                                  lambda t: self._receivables_page(subject, t))
 
+        # /t/<tenant>/reports  -> baseline + saved reports index (shell page)
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "reports":
+            return self._require(subject, token_tenant, parts[1], P.VIEW_CASH,
+                                 lambda t: self._reports_page(subject, t))
+
         # /t/<tenant>/packages  -> sealed financial-package records (shell page)
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "packages":
             return self._require(subject, token_tenant, parts[1], P.VIEW_PACKAGE,
@@ -546,6 +603,12 @@ class WebApp:
             period = parts[3]
             return self._require(subject, token_tenant, parts[1], P.VIEW_PACKAGE,
                                  lambda t: self._package_html(t, period))
+
+        # /t/<tenant>/reports/<report_id>  -> render a baseline or saved report in-shell
+        if len(parts) == 4 and parts[0] == "t" and parts[2] == "reports":
+            report_id = parts[3]
+            return self._require(subject, token_tenant, parts[1], P.VIEW_CASH,
+                                 lambda t: self._report_page(subject, t, report_id))
 
         # /api/<tenant>/<resource>
         if len(parts) == 3 and parts[0] == "api":
@@ -591,6 +654,11 @@ class WebApp:
             if resource == "close" and req.method == "POST":
                 return self._require(subject, token_tenant, tenant, P.MANAGE_CLOSE,
                                      lambda t: self._close_advance(t, req.body))
+            # build + save a custom report definition (gated on RECORD_DECISION —
+            # everyone but a read-only viewer can author a report).
+            if resource == "reports" and req.method == "POST":
+                return self._require(subject, token_tenant, tenant, P.RECORD_DECISION,
+                                     lambda t: self._reports_save(t, req.body))
             # owner-gated GDPR/CCPA data-portability export (MANAGE_USERS is
             # owner-only among tenant roles).
             if resource == "export" and req.method == "GET":
@@ -615,6 +683,12 @@ class WebApp:
             period = parts[3]
             return self._require(subject, token_tenant, parts[1], P.VIEW_PACKAGE,
                                  lambda t: self._package_json(t, period))
+
+        # /api/<tenant>/reports/<report_id>.json|.csv  -> export a rendered report
+        if len(parts) == 4 and parts[0] == "api" and parts[2] == "reports" and req.method == "GET":
+            filename = parts[3]
+            return self._require(subject, token_tenant, parts[1], P.VIEW_CASH,
+                                 lambda t: self._report_export(t, filename))
 
         return _json(404, {"error": "not found"})
 
@@ -1121,6 +1195,101 @@ class WebApp:
                 for n in nudges
             ],
         })
+
+    # --- reporting (rgnr8-reports) ------------------------------------------
+    def _report_context(self, t: _Tenant) -> DataContext:
+        """Assemble a reports `DataContext` for a tenant from what the app already
+        holds: the (override-aware) forecast, its open invoices + histories for AR,
+        the bank register, plus any attached financial-statements dict / budget /
+        usage summary. Missing sources make their sections degrade gracefully."""
+        inputs = self._effective_inputs(t)
+        fc = self._forecast(t)
+        as_of = inputs.opening.as_of
+        board = self._close.get(t.tenant_id)
+        period = board.period if board is not None else as_of.strftime("%Y-%m")
+        transactions = tuple(
+            ReportTransaction(
+                on_date=date.fromisoformat(r.date),
+                description=r.description,
+                category=r.category,
+                amount_minor=r.amount.minor_units,
+                currency=r.amount.currency,
+            )
+            for r in self._txns.get(t.tenant_id, [])
+        )
+        histories = {h.customer_id: h for h in inputs.customer_histories}
+        return DataContext(
+            period=period,
+            as_of=as_of,
+            currency=fc.projection.currency,
+            forecast=fc,
+            invoices=inputs.invoices,
+            histories=histories,
+            transactions=transactions,
+            usage=self._usage.get(t.tenant_id),
+            account=self._billing_accounts.get(t.tenant_id),
+            financial_statements=self._financial_statements.get(t.tenant_id),
+            budget=self._budgets.get(t.tenant_id),
+            forecast_inputs=inputs,
+            forecast_config=self._effective_config(t),
+        )
+
+    def _resolve_report_spec(self, t: _Tenant, report_id: str) -> ReportSpec | None:
+        """A baseline report (from the library) or one of the tenant's saved custom
+        reports, by id. None → no such report for this tenant."""
+        if report_id in BASELINE_REPORTS:
+            return BASELINE_REPORTS[report_id]
+        return self._saved_reports.get(t.tenant_id, report_id)
+
+    def _reports_page(self, subject: str, t: _Tenant) -> Response:
+        """The reports index inside the shell: the baseline library + this tenant's
+        saved custom reports, each linking to its render + JSON/CSV exports."""
+        baselines = list(BASELINE_REPORTS.values())
+        saved = self._saved_reports.list_for_tenant(t.tenant_id)
+        return self._shell(subject, t, "reports",
+                           render_reports_list(t.tenant_id, baselines, saved))
+
+    def _report_page(self, subject: str, t: _Tenant, report_id: str) -> Response:
+        """Render a baseline or saved report against the tenant's live data, wrapped
+        in the app shell. Unknown id → 404."""
+        spec = self._resolve_report_spec(t, report_id)
+        if spec is None:
+            return _json(404, {"error": f"unknown report {report_id}"})
+        report = render_report(spec, self._report_context(t), clock=self._report_clock)
+        return self._shell(subject, t, "reports", render_report_html(report))
+
+    def _report_export(self, t: _Tenant, filename: str) -> Response:
+        """Export a rendered report as JSON or CSV. `filename` is the report id plus
+        a `.json` / `.csv` suffix. Unknown id or suffix → 404."""
+        if filename.endswith(".json"):
+            report_id, fmt = filename[:-5], "json"
+        elif filename.endswith(".csv"):
+            report_id, fmt = filename[:-4], "csv"
+        else:
+            return _json(404, {"error": "export must end in .json or .csv"})
+        spec = self._resolve_report_spec(t, report_id)
+        if spec is None:
+            return _json(404, {"error": f"unknown report {report_id}"})
+        report = render_report(spec, self._report_context(t), clock=self._report_clock)
+        if fmt == "csv":
+            return Response(200, render_csv(report), "text/csv; charset=utf-8")
+        return Response(200, to_json(report), "application/json")
+
+    def _reports_save(self, t: _Tenant, body: str) -> Response:
+        """Build a `ReportSpec` from a JSON `{id, title, description, sections}` body
+        and persist it to the tenant's saved-report store. A bad spec (an unknown
+        section kind) is rejected with 400."""
+        try:
+            payload = json.loads(body or "{}")
+        except json.JSONDecodeError:
+            return _json(400, {"error": "invalid JSON body"})
+        try:
+            spec = build_report(payload)
+        except ReportSpecError as exc:
+            return _json(400, {"error": f"invalid report spec: {exc}"})
+        self._saved_reports.save(t.tenant_id, spec)
+        return _json(201, {"id": spec.id, "title": spec.title,
+                           "sections": [s.kind for s in spec.sections]})
 
     def _transactions_json(self, t: _Tenant) -> Response:
         """The bank register as JSON: summary + the for-review queue (the shape the

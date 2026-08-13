@@ -25,6 +25,7 @@ from rgnr8_briefing.answer import SUGGESTED
 from rgnr8_briefing.today import _cash_chart, _chart_points  # shared 13-week chart
 from rgnr8_ar import ARReport, ChaseItem, CollectionNudge
 from rgnr8_ar.aging import BUCKET_ORDER, AgingBucket
+from rgnr8_reports import ReportSpec
 
 _STATUS = {
     "STABLE": ("Stable", "var(--rg-pos)"),
@@ -336,6 +337,56 @@ def render_packages_body(tenant: str, periods: Sequence[str], configured: bool) 
     return f"""<h1>Financial packages</h1>
     <p class="sub">{escape(tenant)} · sealed month-end records · each figure re-verified against its fingerprint</p>
     {body}"""
+
+
+# --- Reports (in-shell baseline + saved report index) -----------------------
+def render_reports_list(
+    tenant: str,
+    baselines: Sequence[ReportSpec],
+    saved: Sequence[ReportSpec],
+) -> str:
+    """The reports index inside the shell: the baseline library and this tenant's
+    saved custom reports. Each row links to the in-shell render plus JSON and CSV
+    exports. Self-contained (relative links only), reuses the shell table/card CSS.
+    """
+    def _rows(specs: Sequence[ReportSpec]) -> str:
+        out = ""
+        for spec in specs:
+            open_href = f"/t/{escape(tenant)}/reports/{escape(spec.id)}"
+            json_href = f"/api/{escape(tenant)}/reports/{escape(spec.id)}.json"
+            csv_href = f"/api/{escape(tenant)}/reports/{escape(spec.id)}.csv"
+            desc = (f'<br><span class="muted" style="font-size:12px">{escape(spec.description)}</span>'
+                    if spec.description else "")
+            out += (
+                f'<tr><td><strong>{escape(spec.title)}</strong>{desc}</td>'
+                f'<td style="text-align:right">'
+                f'<a class="btn ghost" style="text-decoration:none" href="{open_href}">Open</a> '
+                f'<a class="muted" href="{json_href}">JSON</a> · '
+                f'<a class="muted" href="{csv_href}">CSV</a></td></tr>'
+            )
+        return out
+
+    baseline_table = (
+        '<table><thead><tr><th>Report</th><th></th></tr></thead>'
+        f'<tbody>{_rows(baselines)}</tbody></table>'
+    )
+    if saved:
+        saved_block = (
+            '<h2>Saved reports</h2>'
+            '<table><thead><tr><th>Report</th><th></th></tr></thead>'
+            f'<tbody>{_rows(saved)}</tbody></table>'
+        )
+    else:
+        saved_block = (
+            '<h2>Saved reports</h2>'
+            '<div class="banner good">No custom reports saved yet — '
+            'build one from a section list and it appears here.</div>'
+        )
+    return f"""<h1>Reports</h1>
+    <p class="sub">{escape(tenant)} · ready-made baseline reports and your saved custom reports · open in-app or export to JSON / CSV</p>
+    <h2>Baseline reports</h2>
+    {baseline_table}
+    {saved_block}"""
 
 
 # --- Scenario planning (in-shell what-if owner screen) ----------------------

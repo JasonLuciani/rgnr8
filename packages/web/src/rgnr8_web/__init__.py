@@ -30,6 +30,7 @@ from .screens import (
     render_cash_body,
     render_close_body,
     render_packages_body,
+    render_reports_list,
     render_scenario_body,
 )
 from .store import (
@@ -147,6 +148,7 @@ __all__ = [
     "render_briefing_body",
     "render_close_body",
     "render_packages_body",
+    "render_reports_list",
     "render_scenario_body",
     "render_ar_body",
     "CloseBoard",

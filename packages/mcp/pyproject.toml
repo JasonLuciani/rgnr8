@@ -18,10 +18,10 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src", "../web/src", "../forecast/src", "../briefing/src", "../obs/src", "../scenario/src", "../ar/src", "../categorize/src"]
+pythonpath = ["src", "../web/src", "../forecast/src", "../briefing/src", "../obs/src", "../scenario/src", "../ar/src", "../categorize/src", "../reports/src", "../recon-monitor/src", "../billing/src"]
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
 files = ["src", "tests"]
-mypy_path = "src:../obs/src:../web/src:../forecast/src:../briefing/src:../scenario/src:../ar/src:../categorize/src"
+mypy_path = "src:../obs/src:../web/src:../forecast/src:../briefing/src:../scenario/src:../ar/src:../categorize/src:../reports/src:../recon-monitor/src:../billing/src"

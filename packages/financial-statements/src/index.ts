@@ -43,3 +43,16 @@ export {
   renderStatements,
   type StatementReport,
 } from "./render.js";
+
+export {
+  financialStatementsJson,
+  financialStatementsJsonString,
+  minorToNumber,
+  FINANCIAL_STATEMENTS_CONTRACT,
+  type ContractLine,
+  type ContractIncomeStatement,
+  type ContractBalanceSheet,
+  type ContractCashFlow,
+  type FinancialStatementsContract,
+  type FinancialStatementsInput,
+} from "./contract.js";

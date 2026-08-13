@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rgnr8-reports"
+version = "0.1.0"
+description = "RGNR8 reporting — a report engine that composes the platform's data engines (forecast, briefing, AR, scenario, recon, billing, financial statements) into sections, a baseline library, a custom builder, and branded HTML/CSV/JSON exports."
+requires-python = ">=3.11"
+dependencies = [
+  "rgnr8-forecast>=0.1.0",
+  "rgnr8-briefing>=0.1.0",
+  "rgnr8-ar>=0.1.0",
+  "rgnr8-scenario>=0.1.0",
+  "rgnr8-recon-monitor>=0.1.0",
+  "rgnr8-billing>=0.1.0",
+]
+license = { text = "UNLICENSED" }
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "mypy>=1.8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [
+  "src",
+  "../forecast/src",
+  "../briefing/src",
+  "../ar/src",
+  "../scenario/src",
+  "../recon-monitor/src",
+  "../billing/src",
+]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+mypy_path = "src:../forecast/src:../briefing/src:../ar/src:../scenario/src:../recon-monitor/src:../billing/src"
