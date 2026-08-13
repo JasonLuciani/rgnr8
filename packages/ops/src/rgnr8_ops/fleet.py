@@ -31,9 +31,20 @@ from rgnr8_runtime import (
 )
 from rgnr8_runtime.subscriptions import SubscriptionStore
 from rgnr8_briefing import Deliverer
+from rgnr8_reports import (
+    InMemoryReportScheduleStore,
+    ReportSchedule,
+    ReportScheduleStore,
+    ReportSink,
+)
 
 from .status import TenantOpsStatus
 from .recon import TenantRecon, make_recon
+
+if TYPE_CHECKING:
+    from rgnr8_reports import SavedReportStore
+
+    from .report_job import ReportJob
 
 
 def default_schedule() -> Schedule:
@@ -60,6 +71,7 @@ class Fleet:
         clock: Callable[[], int] | None = None,
         store: "FleetStore | None" = None,
         subscriptions: "SubscriptionStore | None" = None,
+        report_schedules: "ReportScheduleStore | None" = None,
     ) -> None:
         self._secret = jwt_secret
         self._clock = clock if clock is not None else (lambda: int(time.time()))
@@ -72,6 +84,11 @@ class Fleet:
         # subscription, so a rehydrated cursor survives.
         self.subscriptions: SubscriptionStore = (
             subscriptions if subscriptions is not None else InMemorySubscriptionStore())
+        # Standing scheduled reports (which report, format, cadence, recipient) with
+        # their own delivery cursors — the same durability story as subscriptions,
+        # so the report scheduler never re-sends a cadence after a restart.
+        self.report_schedules: ReportScheduleStore = (
+            report_schedules if report_schedules is not None else InMemoryReportScheduleStore())
         self.tenant_source = InMemoryTenantSource()
         self.statuses: dict[str, TenantOpsStatus] = {}
         # Operator-attached trust figures (ledger/bank/forecast) per tenant, fed to
@@ -86,13 +103,15 @@ class Fleet:
         jwt_secret: str,
         clock: Callable[[], int] | None = None,
         subscriptions: "SubscriptionStore | None" = None,
+        report_schedules: "ReportScheduleStore | None" = None,
     ) -> "Fleet":
         """Rehydrate a fleet from a `FleetStore` — the roster of onboarded
         clients, their forecast inputs + floor + schedule, and last-known
         operational status all survive a restart."""
         from .store import FleetStore as _FS  # noqa: F401 (runtime import breaks the cycle)
 
-        fleet = cls(jwt_secret=jwt_secret, clock=clock, store=store, subscriptions=subscriptions)
+        fleet = cls(jwt_secret=jwt_secret, clock=clock, store=store,
+                    subscriptions=subscriptions, report_schedules=report_schedules)
         for record in store.load():
             fleet.onboard(record.to_beta_tenant(), persist=False)
             if record.status_json is not None:
@@ -225,3 +244,45 @@ class Fleet:
         subscriptions — extra briefing recipients, schedule changes, pausing a
         client's delivery without losing their cursor."""
         return SubscriptionManager(self.subscriptions)
+
+    def schedule_report(
+        self,
+        tenant_id: str,
+        report_id: str,
+        *,
+        recipient: str | None = None,
+        schedule: Schedule | None = None,
+        fmt: str = "pdf",
+    ) -> ReportSchedule:
+        """Add (or replace) a standing scheduled report for a client. ``report_id``
+        is a baseline or the tenant's saved custom report; ``fmt`` is one of the
+        report export formats (``pdf``/``xlsx``/``csv``/``html``/``json``). Defaults
+        the recipient to the tenant's briefing recipient and the cadence to the
+        tenant's briefing schedule, so "email me this report weekly" is one call.
+        Unknown tenants are rejected."""
+        if tenant_id not in self.tenants:
+            raise KeyError(tenant_id)
+        bt = self.tenants[tenant_id]
+        sched = ReportSchedule(
+            tenant_id=tenant_id,
+            report_id=report_id,
+            recipient=recipient if recipient is not None else bt.recipient,
+            schedule=schedule if schedule is not None else bt.schedule,
+            fmt=fmt,
+        )
+        self.report_schedules.save(sched)
+        return sched
+
+    def report_job(
+        self,
+        sink: ReportSink,
+        *,
+        saved: "SavedReportStore | None" = None,
+        name: str = "reports",
+    ) -> "ReportJob":
+        """The scheduler `ReportJob` over this fleet's report schedules, ready to
+        register on the `Dispatcher` alongside the briefing + alerts jobs. ``sink``
+        is the report transport; ``saved`` lets scheduled custom reports resolve."""
+        from .report_job import build_report_job  # runtime import breaks the cycle
+
+        return build_report_job(self, self.report_schedules, sink, saved=saved, name=name)

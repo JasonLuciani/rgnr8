@@ -49,6 +49,8 @@ from .sections import REGISTRY, known_kinds
 # (importing the submodule binds its name on the package; the engine import wins
 # by coming last).
 from .render import render_csv, render_html, to_dict, to_json
+from .pdf import render_pdf
+from .xlsx import render_xlsx
 from .library import BASELINE_REPORTS, baseline
 from .builder import (
     InMemorySavedReportStore,
@@ -60,6 +62,24 @@ from .builder import (
     spec_to_dict,
 )
 from .engine import Clock, render
+from .schedule import (
+    ContextBuilder,
+    InMemoryReportScheduleStore,
+    RecordingReportSink,
+    ReportDelivery,
+    ReportOutcome,
+    ReportReceipt,
+    ReportSchedule,
+    ReportScheduleStore,
+    ReportSink,
+    SpecResolver,
+    SqlReportScheduleStore,
+    VALID_FORMATS,
+    render_in_format,
+    run_due_reports,
+    schedule_from_dict,
+    schedule_to_dict,
+)
 
 __version__ = "0.1.0"
 
@@ -98,6 +118,25 @@ __all__ = [
     # render
     "render_html",
     "render_csv",
+    "render_pdf",
+    "render_xlsx",
     "to_dict",
     "to_json",
+    # schedule
+    "ReportSchedule",
+    "ReportDelivery",
+    "ReportReceipt",
+    "ReportOutcome",
+    "ReportSink",
+    "RecordingReportSink",
+    "ReportScheduleStore",
+    "InMemoryReportScheduleStore",
+    "SqlReportScheduleStore",
+    "SpecResolver",
+    "ContextBuilder",
+    "VALID_FORMATS",
+    "render_in_format",
+    "run_due_reports",
+    "schedule_to_dict",
+    "schedule_from_dict",
 ]

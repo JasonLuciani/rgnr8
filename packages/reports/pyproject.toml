@@ -14,6 +14,8 @@ dependencies = [
   "rgnr8-scenario>=0.1.0",
   "rgnr8-recon-monitor>=0.1.0",
   "rgnr8-billing>=0.1.0",
+  "reportlab>=4.0",
+  "openpyxl>=3.1",
 ]
 license = { text = "UNLICENSED" }
 
@@ -40,3 +42,9 @@ python_version = "3.11"
 strict = true
 files = ["src", "tests"]
 mypy_path = "src:../forecast/src:../briefing/src:../ar/src:../scenario/src:../recon-monitor/src:../billing/src"
+
+# reportlab and openpyxl ship no type information; the export renderers isolate
+# their use behind our own typed signatures (render_pdf/render_xlsx -> bytes).
+[[tool.mypy.overrides]]
+module = ["reportlab.*", "openpyxl.*"]
+ignore_missing_imports = true

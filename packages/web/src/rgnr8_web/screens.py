@@ -352,17 +352,18 @@ def render_reports_list(
     def _rows(specs: Sequence[ReportSpec]) -> str:
         out = ""
         for spec in specs:
+            base = f"/api/{escape(tenant)}/reports/{escape(spec.id)}"
             open_href = f"/t/{escape(tenant)}/reports/{escape(spec.id)}"
-            json_href = f"/api/{escape(tenant)}/reports/{escape(spec.id)}.json"
-            csv_href = f"/api/{escape(tenant)}/reports/{escape(spec.id)}.csv"
             desc = (f'<br><span class="muted" style="font-size:12px">{escape(spec.description)}</span>'
                     if spec.description else "")
             out += (
                 f'<tr><td><strong>{escape(spec.title)}</strong>{desc}</td>'
                 f'<td style="text-align:right">'
                 f'<a class="btn ghost" style="text-decoration:none" href="{open_href}">Open</a> '
-                f'<a class="muted" href="{json_href}">JSON</a> · '
-                f'<a class="muted" href="{csv_href}">CSV</a></td></tr>'
+                f'<a class="muted" href="{base}.pdf">PDF</a> · '
+                f'<a class="muted" href="{base}.xlsx">Excel</a> · '
+                f'<a class="muted" href="{base}.csv">CSV</a> · '
+                f'<a class="muted" href="{base}.json">JSON</a></td></tr>'
             )
         return out
 
@@ -383,7 +384,7 @@ def render_reports_list(
             'build one from a section list and it appears here.</div>'
         )
     return f"""<h1>Reports</h1>
-    <p class="sub">{escape(tenant)} · ready-made baseline reports and your saved custom reports · open in-app or export to JSON / CSV</p>
+    <p class="sub">{escape(tenant)} · ready-made baseline reports and your saved custom reports · open in-app or export to PDF / Excel / CSV / JSON</p>
     <h2>Baseline reports</h2>
     {baseline_table}
     {saved_block}"""

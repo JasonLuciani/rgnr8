@@ -299,7 +299,7 @@ def operator_wsgi(app: OperatorApp) -> Callable[[WsgiEnviron, StartResponse], It
             # never leak a stack trace to a client
             resp = Response(500, '{"error":"internal server error"}')
         status_line = f"{resp.status} {_STATUS_TEXT.get(resp.status, 'OK')}"
-        body = resp.body.encode("utf-8")
+        body = resp.body_bytes()
         headers = [*resp.headers.items(), ("Content-Length", str(len(body)))]
         start_response(status_line, headers)
         return [body]

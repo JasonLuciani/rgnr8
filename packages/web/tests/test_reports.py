@@ -97,10 +97,12 @@ def test_reports_index_lists_baseline_titles() -> None:
     for title in ("Cash Flow Outlook", "AR Aging &amp; Collections", "Runway",
                   "Executive Board Pack", "Financial Statements Pack"):
         assert title in r.body
-    # links point at the render + export routes
+    # links point at the render + export routes (PDF/Excel/CSV/JSON)
     assert 'href="/t/acme/reports/cash_flow_outlook"' in r.body
     assert 'href="/api/acme/reports/cash_flow_outlook.json"' in r.body
     assert 'href="/api/acme/reports/cash_flow_outlook.csv"' in r.body
+    assert 'href="/api/acme/reports/cash_flow_outlook.pdf"' in r.body
+    assert 'href="/api/acme/reports/cash_flow_outlook.xlsx"' in r.body
     # self-contained
     assert "http://" not in r.body and "https://" not in r.body
 
@@ -150,8 +152,37 @@ def test_report_csv_export() -> None:
 
 
 def test_report_export_unknown_suffix_is_404() -> None:
-    r = _app().handle(Request("GET", "/api/acme/reports/cash_flow_outlook.pdf", _h("owner@acme.com")))
+    r = _app().handle(Request("GET", "/api/acme/reports/cash_flow_outlook.txt", _h("owner@acme.com")))
     assert r.status == 404
+
+
+def test_report_pdf_export() -> None:
+    r = _app().handle(Request("GET", "/api/acme/reports/cash_flow_outlook.pdf", _h("owner@acme.com")))
+    assert r.status == 200
+    assert r.content_type == "application/pdf"
+    body = r.body_bytes()
+    assert body.startswith(b"%PDF-")
+    # sent as a download with a sensible filename
+    assert r.headers.get("Content-Disposition") == 'attachment; filename="cash_flow_outlook.pdf"'
+
+
+def test_report_xlsx_export() -> None:
+    r = _app().handle(Request("GET", "/api/acme/reports/exec_board_pack.xlsx", _h("owner@acme.com")))
+    assert r.status == 200
+    assert r.content_type == (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    body = r.body_bytes()
+    assert body[:2] == b"PK"  # xlsx is a zip container
+    assert r.headers.get("Content-Disposition") == 'attachment; filename="exec_board_pack.xlsx"'
+
+
+def test_report_binary_export_requires_view_permission() -> None:
+    # unknown report id still 404s on the binary paths
+    r = _app().handle(Request("GET", "/api/acme/reports/not_a_report.pdf", _h("owner@acme.com")))
+    assert r.status == 404
+    r2 = _app().handle(Request("GET", "/api/acme/reports/not_a_report.xlsx", _h("owner@acme.com")))
+    assert r2.status == 404
 
 
 # --- 5. custom builder: POST a valid section list, save, then render ---------

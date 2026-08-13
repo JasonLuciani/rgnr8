@@ -31,7 +31,7 @@ def make_handler(app: WebApp) -> Type[BaseHTTPRequestHandler]:
                 resp = app.handle(Request(method=method, path=self.path, headers=headers, body=body))
             # Merge the standard hardening headers for parity with the WSGI path.
             resp = with_security_headers(resp)
-            encoded = resp.body.encode("utf-8")
+            encoded = resp.body_bytes()
             self.send_response(resp.status)
             for k, v in resp.headers.items():
                 self.send_header(k, v)

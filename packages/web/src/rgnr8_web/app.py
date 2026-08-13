@@ -66,6 +66,8 @@ from rgnr8_reports import (
     render as render_report,
     render_csv,
     render_html as render_report_html,
+    render_pdf as render_report_pdf,
+    render_xlsx as render_report_xlsx,
     to_json,
 )
 
@@ -122,7 +124,11 @@ class Request:
 @dataclass(frozen=True, slots=True)
 class Response:
     status: int
-    body: str
+    # Text responses carry a ``str`` body; binary exports (PDF, XLSX) carry
+    # ``bytes``. The serialization layer (WSGI + stdlib server) calls
+    # :meth:`body_bytes`, so both paths write the correct bytes with an accurate
+    # Content-Length.
+    body: str | bytes
     content_type: str = "application/json"
     # extra response headers (e.g. Set-Cookie, Location) — merged into `headers`
     extra_headers: tuple[tuple[str, str], ...] = ()
@@ -133,6 +139,13 @@ class Response:
         for k, v in self.extra_headers:
             h[k] = v
         return h
+
+    def body_bytes(self) -> bytes:
+        """The response body as bytes — UTF-8-encoded when it is text, passed
+        through unchanged when it is already binary (a PDF/XLSX export)."""
+        if isinstance(self.body, bytes):
+            return self.body
+        return self.body.encode("utf-8")
 
 
 @dataclass(slots=True)
@@ -1258,22 +1271,45 @@ class WebApp:
         report = render_report(spec, self._report_context(t), clock=self._report_clock)
         return self._shell(subject, t, "reports", render_report_html(report))
 
+    # Export suffix -> (content-type, whether the export is a file download).
+    _REPORT_EXPORTS: "dict[str, str]" = {
+        ".json": "application/json",
+        ".csv": "text/csv; charset=utf-8",
+        ".pdf": "application/pdf",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }
+
     def _report_export(self, t: _Tenant, filename: str) -> Response:
-        """Export a rendered report as JSON or CSV. `filename` is the report id plus
-        a `.json` / `.csv` suffix. Unknown id or suffix → 404."""
-        if filename.endswith(".json"):
-            report_id, fmt = filename[:-5], "json"
-        elif filename.endswith(".csv"):
-            report_id, fmt = filename[:-4], "csv"
-        else:
-            return _json(404, {"error": "export must end in .json or .csv"})
+        """Export a rendered report as JSON, CSV, PDF, or XLSX. `filename` is the
+        report id plus a format suffix (`.json`/`.csv`/`.pdf`/`.xlsx`). Unknown id
+        or suffix → 404. PDF/XLSX are binary and are sent as file downloads."""
+        suffix = ""
+        for ext in self._REPORT_EXPORTS:
+            if filename.endswith(ext):
+                suffix = ext
+                break
+        if not suffix:
+            return _json(404, {"error": "export must end in .json, .csv, .pdf, or .xlsx"})
+        report_id = filename[: -len(suffix)]
         spec = self._resolve_report_spec(t, report_id)
         if spec is None:
             return _json(404, {"error": f"unknown report {report_id}"})
         report = render_report(spec, self._report_context(t), clock=self._report_clock)
-        if fmt == "csv":
-            return Response(200, render_csv(report), "text/csv; charset=utf-8")
-        return Response(200, to_json(report), "application/json")
+        content_type = self._REPORT_EXPORTS[suffix]
+        body: str | bytes
+        if suffix == ".csv":
+            body = render_csv(report)
+        elif suffix == ".pdf":
+            body = render_report_pdf(report)
+        elif suffix == ".xlsx":
+            body = render_report_xlsx(report)
+        else:
+            body = to_json(report)
+        extra: tuple[tuple[str, str], ...] = ()
+        if suffix in (".pdf", ".xlsx"):
+            # Offer a sensible download filename for the binary exports.
+            extra = (("Content-Disposition", f'attachment; filename="{report_id}{suffix}"'),)
+        return Response(200, body, content_type, extra)
 
     def _reports_save(self, t: _Tenant, body: str) -> Response:
         """Build a `ReportSpec` from a JSON `{id, title, description, sections}` body

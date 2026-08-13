@@ -272,3 +272,260 @@ def test_to_dict_block_kinds(full_context: DataContext, clock: Callable[[], date
             kinds.add(cast(str, block["kind"]))
     # cash_outlook produces a narrative, a kpi row, a table, and a chart
     assert {"narrative", "kpi_row", "table", "chart"} <= kinds
+
+
+# --- PDF export --------------------------------------------------------------
+def test_pdf_export_is_valid_and_deterministic(
+    full_context: DataContext, clock: Callable[[], datetime]
+) -> None:
+    from rgnr8_reports import render_pdf
+
+    report = render(baseline("exec_board_pack"), full_context, clock=clock)
+    a = render_pdf(report)
+    b = render_pdf(report)
+    assert a.startswith(b"%PDF-")
+    assert a.endswith(b"%%EOF\n") or a.rstrip().endswith(b"%%EOF")
+    # Byte-deterministic: reportlab invariant mode pins timestamp + doc id.
+    assert a == b
+    assert len(a) > 1000
+
+
+@pytest.mark.parametrize("report_id", sorted(BASELINE_REPORTS))
+def test_every_baseline_renders_to_pdf(
+    report_id: str, full_context: DataContext, clock: Callable[[], datetime]
+) -> None:
+    from rgnr8_reports import render_pdf
+
+    report = render(baseline(report_id), full_context, clock=clock)
+    data = render_pdf(report)
+    assert data.startswith(b"%PDF-")
+
+
+def test_pdf_of_empty_context_still_renders(clock: Callable[[], datetime]) -> None:
+    from rgnr8_reports import render_pdf
+
+    empty = DataContext(period="Empty", as_of=date(2026, 8, 1))
+    report = render(baseline("financial_statements"), empty, clock=clock)
+    assert render_pdf(report).startswith(b"%PDF-")
+
+
+# --- XLSX export -------------------------------------------------------------
+def test_xlsx_export_has_cover_and_table_sheets(
+    full_context: DataContext, clock: Callable[[], datetime]
+) -> None:
+    import io
+
+    import openpyxl
+
+    from rgnr8_reports import render_xlsx
+
+    report = render(baseline("exec_board_pack"), full_context, clock=clock)
+    data = render_xlsx(report)
+    assert data[:2] == b"PK"  # zip container
+    wb = openpyxl.load_workbook(io.BytesIO(data))
+    assert wb.sheetnames[0] == "Overview"
+    # every data table becomes its own worksheet
+    table_sections = [
+        s.title
+        for s in report.sections
+        for b in s.blocks
+        if b.__class__.__name__ == "Table"
+    ]
+    for title in table_sections:
+        assert any(title[:31] == name or title[:28] in name for name in wb.sheetnames)
+
+
+def test_xlsx_writes_amounts_as_numbers(
+    full_context: DataContext, clock: Callable[[], datetime]
+) -> None:
+    import io
+
+    import openpyxl
+
+    from rgnr8_reports import render_xlsx
+
+    report = render(baseline("financial_statements"), full_context, clock=clock)
+    wb = openpyxl.load_workbook(io.BytesIO(render_xlsx(report)))
+    # find at least one numeric amount cell in a table sheet
+    found_number = False
+    for name in wb.sheetnames[1:]:
+        for row in wb[name].iter_rows():
+            for cell in row:
+                if isinstance(cell.value, (int, float)) and not isinstance(cell.value, bool):
+                    found_number = True
+    assert found_number
+
+
+def test_xlsx_as_number_parser() -> None:
+    from rgnr8_reports.xlsx import _as_number
+
+    assert _as_number("$10,000.00") == 10000.0
+    assert _as_number("-$4,000.00") == -4000.0
+    assert _as_number("EUR 1,250.00") == 1250.0
+    assert _as_number("4.2 mo") is None
+    assert _as_number("W1") is None
+    assert _as_number("") is None
+
+
+@pytest.mark.parametrize("report_id", sorted(BASELINE_REPORTS))
+def test_every_baseline_renders_to_xlsx(
+    report_id: str, full_context: DataContext, clock: Callable[[], datetime]
+) -> None:
+    from rgnr8_reports import render_xlsx
+
+    report = render(baseline(report_id), full_context, clock=clock)
+    assert render_xlsx(report)[:2] == b"PK"
+
+
+# --- scheduled reports -------------------------------------------------------
+def _sched(fmt: str = "pdf", report_id: str = "exec_board_pack"):
+    from zoneinfo import ZoneInfo  # noqa: F401
+
+    from rgnr8_briefing import Schedule
+
+    from rgnr8_reports import ReportSchedule
+
+    return ReportSchedule(
+        tenant_id="t1", report_id=report_id, recipient="owner@acme.com",
+        schedule=Schedule(weekday=0, hour=8, minute=0, timezone="America/Denver"), fmt=fmt,
+    )
+
+
+def _tz_now(day: int, hour: int = 15):
+    from zoneinfo import ZoneInfo
+
+    return datetime(2026, 8, day, hour, 0, 0, tzinfo=ZoneInfo("UTC"))
+
+
+def test_schedule_fires_once_per_cadence_with_catch_up(full_context: DataContext) -> None:
+    from rgnr8_reports import RecordingReportSink, run_due_reports
+
+    scheds = [_sched()]
+    sink = RecordingReportSink()
+    kw = dict(spec_for=lambda s: baseline(s.report_id), context_for=lambda s: full_context, sink=sink)
+
+    # Monday after 8am Denver -> due
+    o1 = run_due_reports(scheds, _tz_now(10), **kw)  # 2026-08-10 is a Monday
+    assert [o.fired for o in o1] == [True]
+    assert len(sink.sent) == 1
+    # same week, later -> not due (idempotent)
+    o2 = run_due_reports(scheds, _tz_now(10, 18), **kw)
+    assert o2[0].fired is False and o2[0].skipped_reason == "not_due"
+    assert len(sink.sent) == 1
+    # next week -> fires again exactly once
+    o3 = run_due_reports(scheds, _tz_now(17), **kw)
+    assert o3[0].fired is True
+    assert len(sink.sent) == 2
+
+
+def test_schedule_delivers_binary_pdf_and_text_csv(full_context: DataContext) -> None:
+    from rgnr8_reports import RecordingReportSink, run_due_reports
+
+    for fmt, head in (("pdf", b"%PDF-"), ("xlsx", b"PK")):
+        sink = RecordingReportSink()
+        run_due_reports(
+            [_sched(fmt=fmt)], _tz_now(10),
+            spec_for=lambda s: baseline(s.report_id),
+            context_for=lambda s: full_context, sink=sink,
+        )
+        d = sink.sent[0]
+        assert d.is_binary and isinstance(d.content, bytes) and d.content.startswith(head)
+        assert d.filename == f"exec_board_pack.{fmt}"
+
+    sink = RecordingReportSink()
+    run_due_reports(
+        [_sched(fmt="csv")], _tz_now(10),
+        spec_for=lambda s: baseline(s.report_id),
+        context_for=lambda s: full_context, sink=sink,
+    )
+    assert not sink.sent[0].is_binary and isinstance(sink.sent[0].content, str)
+
+
+def test_schedule_paused_and_not_ready_skip(full_context: DataContext) -> None:
+    from rgnr8_reports import RecordingReportSink, run_due_reports
+
+    paused = _sched()
+    paused.active = False
+    sink = RecordingReportSink()
+    out = run_due_reports(
+        [paused], _tz_now(10),
+        spec_for=lambda s: baseline(s.report_id),
+        context_for=lambda s: full_context, sink=sink,
+    )
+    assert out[0].skipped_reason == "paused" and not sink.sent
+
+    # spec/context not ready -> skipped "not_ready", nothing sent
+    sink2 = RecordingReportSink()
+    out2 = run_due_reports(
+        [_sched()], _tz_now(10),
+        spec_for=lambda s: None, context_for=lambda s: full_context, sink=sink2,
+    )
+    assert out2[0].skipped_reason == "not_ready" and not sink2.sent
+
+
+def test_schedule_rejects_unknown_format() -> None:
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError):
+        _sched(fmt="docx")
+
+
+def test_render_in_format_dispatch(full_context: DataContext, clock: Callable[[], datetime]) -> None:
+    from rgnr8_reports import render_in_format
+
+    report = render(baseline("exec_board_pack"), full_context, clock=clock)
+    assert isinstance(render_in_format(report, "html"), str)
+    assert isinstance(render_in_format(report, "json"), str)
+    assert isinstance(render_in_format(report, "csv"), str)
+    assert isinstance(render_in_format(report, "pdf"), bytes)
+    assert isinstance(render_in_format(report, "xlsx"), bytes)
+    with __import__("pytest").raises(ValueError):
+        render_in_format(report, "nope")
+
+
+def test_schedule_store_roundtrip_inmemory() -> None:
+    from rgnr8_reports import InMemoryReportScheduleStore
+
+    store = InMemoryReportScheduleStore()
+    store.save(_sched(report_id="a"))
+    store.save(_sched(report_id="b"))
+    store.save(ReportScheduleForOtherTenant())
+    assert len(store.list_for_tenant("t1")) == 2
+    assert len(store.list_all()) == 3
+    assert store.get("t1", "a") is not None
+    store.delete("t1", "a")
+    assert store.get("t1", "a") is None
+    assert len(store.list_for_tenant("t1")) == 1
+
+
+def ReportScheduleForOtherTenant():  # noqa: N802 - tiny helper
+    from rgnr8_briefing import Schedule
+
+    from rgnr8_reports import ReportSchedule
+
+    return ReportSchedule(
+        tenant_id="t2", report_id="a", recipient="o@t2.com",
+        schedule=Schedule(), fmt="pdf",
+    )
+
+
+def test_schedule_store_roundtrip_sqlite() -> None:
+    from rgnr8_reports import SqlReportScheduleStore
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        store = SqlReportScheduleStore(conn)
+        store.create_schema()
+        s = _sched()
+        s.last_sent = datetime(2026, 8, 10, 8, 0, 0)
+        store.save(s)
+        loaded = store.get("t1", "exec_board_pack")
+        assert loaded is not None
+        assert loaded.fmt == "pdf"
+        assert loaded.last_sent == datetime(2026, 8, 10, 8, 0, 0)
+        assert loaded.schedule.timezone == "America/Denver"
+        assert len(store.list_all()) == 1
+        store.delete("t1", "exec_board_pack")
+        assert store.get("t1", "exec_board_pack") is None
+    finally:
+        conn.close()

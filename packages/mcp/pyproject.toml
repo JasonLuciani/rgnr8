@@ -25,3 +25,9 @@ python_version = "3.11"
 strict = true
 files = ["src", "tests"]
 mypy_path = "src:../obs/src:../web/src:../forecast/src:../briefing/src:../scenario/src:../ar/src:../categorize/src:../reports/src:../recon-monitor/src:../billing/src"
+
+# reportlab / openpyxl (pulled in transitively via rgnr8-reports' export
+# renderers) ship no type information.
+[[tool.mypy.overrides]]
+module = ["reportlab.*", "openpyxl.*"]
+ignore_missing_imports = true

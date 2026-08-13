@@ -113,7 +113,7 @@ def wsgi_app(
         if hardened:
             resp = with_security_headers(resp)
         status_line = f"{resp.status} {_STATUS_TEXT.get(resp.status, 'OK')}"
-        body = resp.body.encode("utf-8")
+        body = resp.body_bytes()
         headers = [
             *resp.headers.items(),
             ("Content-Length", str(len(body))),

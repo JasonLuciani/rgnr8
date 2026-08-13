@@ -28,6 +28,12 @@ from .alerts_job import (
     build_alerts_job,
     default_alert_rules,
 )
+from .report_job import (
+    ReportJob,
+    build_report_job,
+    fleet_context_builder,
+    make_spec_resolver,
+)
 from .store import FleetStore, FleetTenantRecord, InMemoryFleetStore, SqlFleetStore
 from .deploy import bootstrap_python_schemas
 from .config import ConfigError, Settings
@@ -84,6 +90,10 @@ __all__ = [
     "build_alert_dispatcher",
     "build_alerts_job",
     "default_alert_rules",
+    "ReportJob",
+    "build_report_job",
+    "fleet_context_builder",
+    "make_spec_resolver",
     "Provisioning",
     "build_provisioning",
     "FleetStore",

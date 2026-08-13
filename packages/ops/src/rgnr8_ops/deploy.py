@@ -25,6 +25,7 @@ from rgnr8_web import (
     SqlVerificationTokenStore,
 )
 from rgnr8_billing import SqlAccountStore
+from rgnr8_reports import SqlReportScheduleStore, SqlSavedReportStore
 
 from .scheduler import SqlLeaseStore
 from .store import SqlFleetStore
@@ -56,6 +57,9 @@ def bootstrap_python_schemas(
     verify_tokens = SqlVerificationTokenStore(cast("Any", conn), placeholder=placeholder)
     # Scheduler lease: at-most-one distributed dispatcher runner (LeasedDispatcher).
     lease = SqlLeaseStore(conn, placeholder=placeholder)
+    # Reporting: saved custom report specs + standing scheduled-report cadences.
+    saved_reports = SqlSavedReportStore(cast("Any", conn), placeholder=placeholder)
+    report_schedules = SqlReportScheduleStore(cast("Any", conn), placeholder=placeholder)
 
     tenant_store.create_schema()
     sub_store.create_schema()
@@ -68,7 +72,10 @@ def bootstrap_python_schemas(
     credentials.create_schema()
     verify_tokens.create_schema()
     lease.create_schema()
+    saved_reports.create_schema()
+    report_schedules.create_schema()
     return ["web_tenant_state", "briefing_subscription", "fleet_tenant", "rgnr8_user",
             "rgnr8_membership", "rgnr8_invitation", "rgnr8_api_key", "audit_event",
             "billing_account", "billing_usage", "rgnr8_credential",
-            "rgnr8_verification_token", "scheduler_lease"]
+            "rgnr8_verification_token", "scheduler_lease", "rgnr8_saved_report",
+            "rgnr8_report_schedule"]
