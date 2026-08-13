@@ -3,8 +3,9 @@
 The engines each own a `create_schema()` for their table; a deployer shouldn't
 have to remember all of them. `bootstrap_python_schemas(conn)` creates every
 Python-owned table (web tenant-state, briefing subscriptions, the fleet roster,
-users/memberships, invitations, API keys, the audit log, and billing accounts +
-usage) over one DB-API connection, idempotently. The TypeScript ledger +
+users/memberships, invitations, API keys, the audit log, billing accounts +
+usage, end-user credentials + email-verification tokens, and the scheduler lease)
+over one DB-API connection, idempotently. The TypeScript ledger +
 financial-package tables ship through `@rgnr8/migrations` separately; this covers
 exactly the Python-owned state so a fresh Postgres/sqlite is ready to serve.
 """
@@ -17,12 +18,15 @@ from rgnr8_runtime.subscriptions import DbApiConnection, SqlSubscriptionStore
 from rgnr8_web import (
     SqlApiKeyStore,
     SqlAuditLog,
+    SqlCredentialStore,
     SqlInvitationStore,
     SqlTenantStore,
     SqlUserDirectory,
+    SqlVerificationTokenStore,
 )
 from rgnr8_billing import SqlAccountStore
 
+from .scheduler import SqlLeaseStore
 from .store import SqlFleetStore
 
 if TYPE_CHECKING:
@@ -46,6 +50,12 @@ def bootstrap_python_schemas(
     api_keys = SqlApiKeyStore(cast("Any", conn), placeholder=placeholder)
     audit = SqlAuditLog(cast("Any", conn), placeholder=placeholder)
     accounts = SqlAccountStore(cast("Any", conn), placeholder=placeholder)
+    # Public-track end-user auth: password credentials + single-use verify/reset
+    # tokens — so a fresh DB can serve /signup → /verify → /login (login-ready).
+    credentials = SqlCredentialStore(cast("Any", conn), placeholder=placeholder)
+    verify_tokens = SqlVerificationTokenStore(cast("Any", conn), placeholder=placeholder)
+    # Scheduler lease: at-most-one distributed dispatcher runner (LeasedDispatcher).
+    lease = SqlLeaseStore(conn, placeholder=placeholder)
 
     tenant_store.create_schema()
     sub_store.create_schema()
@@ -55,6 +65,10 @@ def bootstrap_python_schemas(
     api_keys.create_schema()
     audit.create_schema()
     accounts.create_schema()
+    credentials.create_schema()
+    verify_tokens.create_schema()
+    lease.create_schema()
     return ["web_tenant_state", "briefing_subscription", "fleet_tenant", "rgnr8_user",
             "rgnr8_membership", "rgnr8_invitation", "rgnr8_api_key", "audit_event",
-            "billing_account", "billing_usage"]
+            "billing_account", "billing_usage", "rgnr8_credential",
+            "rgnr8_verification_token", "scheduler_lease"]

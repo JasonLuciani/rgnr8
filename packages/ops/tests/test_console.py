@@ -3,6 +3,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from rgnr8_forecast import Money
 from rgnr8_ops import (
     ConnectorHealth,
     Fleet,
@@ -11,6 +12,10 @@ from rgnr8_ops import (
     render_operator_console,
 )
 from factory import at_risk_tenant, steady_tenant
+
+
+def _usd(s: str) -> Money:
+    return Money.from_decimal(s)
 
 SECRET = "console-secret"
 NOW_EPOCH = 1_760_000_000
@@ -39,6 +44,32 @@ def test_console_renders_fleet_and_onboarding() -> None:
     assert "reconnect" in html
     # self-contained
     assert "http://" not in html and "https://" not in html
+
+
+def test_console_renders_trust_drift_with_amount_and_in_sync() -> None:
+    f = Fleet(jwt_secret=SECRET, clock=lambda: NOW_EPOCH)
+    f.onboard(steady_tenant())     # acme
+    f.onboard(at_risk_tenant())    # bright
+    # bright: ledger and bank disagree by $1,000.00 → a MAJOR drift (past $100 tol)
+    f.set_recon("bright", _usd("250000.00"), _usd("249000.00"), _usd("250000.00"))
+    # acme: all three figures agree → in sync
+    f.set_recon("acme", _usd("120000.00"), _usd("120000.00"), _usd("120000.00"))
+    html = render_operator_console(_report(f))
+
+    assert "Trust" in html                     # the trust column header
+    assert "1000.00" in html and "drift" in html   # the drift amount surfaces
+    assert "in sync" in html                   # the agreeing client reads in sync
+    report = _report(f)
+    assert report.recon_drift == 1
+
+
+def test_console_omits_trust_when_no_recon_attached() -> None:
+    f = Fleet(jwt_secret=SECRET, clock=lambda: NOW_EPOCH)
+    f.onboard(steady_tenant())
+    report = _report(f)
+    row = report.rows[0]
+    assert row.recon_severity is None and row.recon_in_sync is None
+    assert report.recon_drift == 0
 
 
 def test_console_empty_fleet_prompts_onboarding() -> None:

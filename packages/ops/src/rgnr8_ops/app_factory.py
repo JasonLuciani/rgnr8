@@ -11,6 +11,8 @@ gunicorn/uwsgi, and `readiness` adds a real DB round-trip to the `/ready` signal
 from __future__ import annotations
 
 import secrets
+import sys
+import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -21,6 +23,7 @@ from rgnr8_web import (
     InMemoryUserDirectory,
     JwksAuthenticator,
     JwtAuthenticator,
+    RateLimiter,
     Role,
     SqlTenantStore,
     SqlUserDirectory,
@@ -31,11 +34,19 @@ from rgnr8_web import (
     WebApp,
     wsgi_app,
 )
+from rgnr8_obs import (
+    ErrorReporter,
+    InMemoryErrorReporter,
+    MetricsRegistry,
+    StreamLogSink,
+    StructuredLogger,
+)
 
 from rgnr8_runtime.subscriptions import SqlSubscriptionStore
 
 from .config import ConfigError, Settings
 from .fleet import Fleet
+from .provisioning import Provisioning, build_provisioning
 from .store import SqlFleetStore
 
 
@@ -66,9 +77,11 @@ def build_web_app(
     conn: object | None = None,
     packages: FinancialPackageReader | None = None,
     clock: Callable[[], int] | None = None,
+    usage_recorder: "Callable[[str, str, int], None] | None" = None,
 ) -> WebApp:
     """A `WebApp` wired from settings. Pass a DB-API connection for the durable
-    tenant store; omit it (dev) for in-memory."""
+    tenant store; omit it (dev) for in-memory. ``usage_recorder`` (tenant, kind,
+    quantity) meters into billing when the provisioning seam is wired."""
     if conn is not None:
         store: object = SqlTenantStore(conn, placeholder=settings.placeholder)  # type: ignore[arg-type]
     else:
@@ -88,6 +101,7 @@ def build_web_app(
         authenticator=build_authenticator(settings, clock=clock),
         users=users,
         require_rbac=require_rbac,
+        usage_recorder=usage_recorder,
     )
 
 
@@ -141,20 +155,47 @@ def readiness(settings: Settings, conn: object | None = None) -> dict[str, objec
     return out
 
 
+def build_observability(
+    settings: Settings,
+    *,
+    clock: Callable[[], float],
+) -> tuple[RateLimiter, StructuredLogger, MetricsRegistry, ErrorReporter]:
+    """The edge/observability stack the served WSGI app binds: a token-bucket
+    rate limiter, a structured logger (JSON to stdout), a metrics registry, and an
+    error reporter — all on one injected ``clock`` so request latency is a single
+    deterministic measurement. In-memory/stdout sinks here; production swaps the
+    sinks without changing this wiring."""
+    logger = StructuredLogger(StreamLogSink(sys.stdout), clock=clock, service="rgnr8-web")
+    metrics = MetricsRegistry(clock=clock)
+    errors: ErrorReporter = InMemoryErrorReporter()
+    rate_limiter = RateLimiter(capacity=60, refill_per_second=30, clock=clock)
+    return rate_limiter, logger, metrics, errors
+
+
 def create_application(
     env: Mapping[str, str] | None = None,
     *,
     conn: object | None = None,
     packages: FinancialPackageReader | None = None,
+    provisioning: Provisioning | None = None,
 ) -> Callable[..., object]:
-    """The WSGI entrypoint factory: `Settings.from_env` → `WebApp` → `wsgi_app`.
-    A deploy module does `application = create_application()` for gunicorn; in
-    production it passes a live psycopg `conn`. Registers the persisted fleet's
+    """The WSGI entrypoint factory: `Settings.from_env` → `WebApp` → hardened
+    `wsgi_app`. A deploy module does `application = create_application()` for
+    gunicorn; in production it passes a live psycopg `conn`.
+
+    The served app is bound to the full edge stack (rate limiting, structured
+    logging, metrics, error capture) and the growth seams (analytics + the
+    signup→checkout→provisioning + metering `Provisioning`), so a fresh deployment
+    is login-ready end-to-end. Everything is optional/injected: called with no
+    args this still builds the in-memory dev app. Registers the persisted fleet's
     tenants when a connection is available so routes resolve after a restart."""
     settings = Settings.from_env(env)
-    app = build_web_app(settings, conn=conn, packages=packages)
+    prov = provisioning if provisioning is not None else build_provisioning()
+    app = build_web_app(settings, conn=conn, packages=packages,
+                        usage_recorder=prov.usage_recorder)
     if conn is not None:
         fleet = load_fleet(settings, conn)
+        prov.bind_fleet(fleet)  # the on_provisioned → fleet-onboard/metering seam
         for bt in fleet.tenants.values():
             # No guessable static token: under a real authenticator the static map
             # is inert anyway (gated in `_principal`), but we also stop minting a
@@ -163,4 +204,6 @@ def create_application(
             app.add_tenant(bt.tenant_id, bt.name, bt.inputs, bt.config,
                            token=secrets.token_urlsafe(32))
             _seat_owner(app, bt.recipient, bt.tenant_id)
-    return wsgi_app(app)
+    rate_limiter, logger, metrics, errors = build_observability(settings, clock=time.monotonic)
+    return wsgi_app(app, rate_limiter=rate_limiter, logger=logger,
+                    metrics=metrics, errors=errors)

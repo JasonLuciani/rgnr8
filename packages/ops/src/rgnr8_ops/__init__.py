@@ -21,9 +21,17 @@ from .scheduler import (
     SqlLeaseStore,
 )
 from .status import ConnectorHealth, CloseProgress, TenantOpsStatus
+from .recon import TenantRecon, make_recon
+from .alerts_job import (
+    AlertsJob,
+    build_alert_dispatcher,
+    build_alerts_job,
+    default_alert_rules,
+)
 from .store import FleetStore, FleetTenantRecord, InMemoryFleetStore, SqlFleetStore
 from .deploy import bootstrap_python_schemas
 from .config import ConfigError, Settings
+from .provisioning import Provisioning, build_provisioning
 from .migrate import (
     Migration,
     MigrationDriftError,
@@ -34,6 +42,7 @@ from .migrate import (
 )
 from .app_factory import (
     build_authenticator,
+    build_observability,
     build_web_app,
     create_application,
     load_fleet,
@@ -69,6 +78,14 @@ __all__ = [
     "ConnectorHealth",
     "CloseProgress",
     "TenantOpsStatus",
+    "TenantRecon",
+    "make_recon",
+    "AlertsJob",
+    "build_alert_dispatcher",
+    "build_alerts_job",
+    "default_alert_rules",
+    "Provisioning",
+    "build_provisioning",
     "FleetStore",
     "FleetTenantRecord",
     "InMemoryFleetStore",
@@ -77,6 +94,7 @@ __all__ = [
     "Settings",
     "ConfigError",
     "build_authenticator",
+    "build_observability",
     "build_web_app",
     "create_application",
     "load_fleet",

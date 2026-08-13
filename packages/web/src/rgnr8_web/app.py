@@ -11,8 +11,9 @@ from __future__ import annotations
 import dataclasses
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import date
 from urllib.parse import parse_qs, urlsplit
 
 from rgnr8_forecast import (
@@ -22,6 +23,27 @@ from rgnr8_forecast import (
     ForecastResult,
     Money,
     run_forecast,
+)
+from rgnr8_scenario import (
+    DelayCustomerPayment,
+    OneTimeFlow,
+    Scenario,
+    ScenarioDiff,
+    SetMinimumCash,
+    customer_pays_late,
+    hire_employee,
+    one_time_expense,
+    run_scenario,
+    take_loan,
+)
+from rgnr8_scenario.adjustments import Adjustment
+from rgnr8_ar import ARReport, ChaseItem, CollectionNudge, ar_report, chase_list, draft_nudge
+from rgnr8_categorize import (
+    CategorizedTxn,
+    Categorizer,
+    LearnedModel,
+    RuleSet,
+    Txn,
 )
 from rgnr8_briefing import (
     WeeklyBriefing,
@@ -55,10 +77,12 @@ from .transactions import BankTransaction, render_transactions
 from .screens import (
     CloseBoard,
     default_close_board,
+    render_ar_body,
     render_briefing_body,
     render_cash_body,
     render_close_body,
     render_packages_body,
+    render_scenario_body,
 )
 
 
@@ -197,6 +221,10 @@ class WebApp:
         # bank register feed per tenant (from ingestion / statement import / QBO)
         self._txns: dict[str, list[BankTransaction]] = {}
         self._accounts: dict[str, str] = {}  # tenant -> bank account label
+        # optional hand-authored categorization rules per tenant (@rgnr8/categorize).
+        # The learned model is mined from the tenant's already-categorized register
+        # at request time, so suggestions track the bookkeeper's own history.
+        self._rulesets: dict[str, RuleSet] = {}
         # month-end close board per tenant (mirrors the @rgnr8/close calendar)
         self._close: dict[str, CloseBoard] = {}
         # real end-user password auth (public track). With a credential store or an
@@ -236,6 +264,65 @@ class WebApp:
         / a QBO overlay). Shown on the Transactions screen."""
         self._txns[tenant_id] = list(txns)
         self._accounts[tenant_id] = account_name
+
+    def add_categorizer(self, tenant_id: str, ruleset: RuleSet | None = None) -> None:
+        """Turn on auto-categorization for a tenant's register. `ruleset` is the
+        optional hand-authored rule layer (@rgnr8/categorize); the learned layer is
+        built from the tenant's already-categorized transactions on each render, so
+        the "For review" queue arrives pre-triaged. With no ruleset, suggestions come
+        from learned history alone."""
+        self._rulesets[tenant_id] = ruleset if ruleset is not None else RuleSet(())
+
+    @staticmethod
+    def _to_txn(tx: BankTransaction) -> Txn:
+        """Project a `BankTransaction` onto the categorize `Txn` shape."""
+        return Txn(
+            id=tx.id,
+            description=tx.description,
+            counterparty=tx.counterparty,
+            amount_minor=tx.amount.minor_units,
+            currency=tx.amount.currency,
+        )
+
+    def _categorizer_for(self, t: _Tenant) -> Categorizer | None:
+        """Build a `Categorizer` for a tenant: its ruleset (if any) over a
+        `LearnedModel` mined from its already-categorized register. Returns None
+        when there's nothing to learn from and no ruleset — nothing to suggest."""
+        ruleset = self._rulesets.get(t.tenant_id)
+        rows = self._txns.get(t.tenant_id, [])
+        history = [
+            CategorizedTxn(
+                id=tx.id,
+                description=tx.description,
+                counterparty=tx.counterparty,
+                amount_minor=tx.amount.minor_units,
+                category=tx.category,
+                currency=tx.amount.currency,
+            )
+            for tx in rows
+            if tx.category != "Uncategorized"
+        ]
+        if ruleset is None and not history:
+            return None
+        model = LearnedModel.from_history(history)
+        return Categorizer(ruleset=ruleset if ruleset is not None else RuleSet(()), model=model)
+
+    def _suggestions_for(self, t: _Tenant) -> dict[str, tuple[str, float]]:
+        """The auto-categorize suggestions for a tenant's for-review, uncategorized
+        lines: id -> (category, confidence). Only real suggestions (a rule or a
+        learned match) are included; a novel line the engine can't place is omitted
+        so the register shows nothing rather than a spurious 0%-confidence hint."""
+        cat = self._categorizer_for(t)
+        if cat is None:
+            return {}
+        out: dict[str, tuple[str, float]] = {}
+        for tx in self._txns.get(t.tenant_id, []):
+            if tx.category != "Uncategorized" or not tx.needs_review:
+                continue
+            s = cat.suggest(self._to_txn(tx))
+            if s.source != "none" and s.confidence > 0.0:
+                out[tx.id] = (s.category, s.confidence)
+        return out
 
     def add_close(self, tenant_id: str, board: CloseBoard) -> None:
         """Attach a tenant's month-end close board (mirrors the `@rgnr8/close`
@@ -429,6 +516,16 @@ class WebApp:
             return self._require(subject, token_tenant, parts[1], P.MANAGE_CLOSE,
                                  lambda t: self._close_page(subject, t))
 
+        # /t/<tenant>/scenarios  -> what-if planning (shell page)
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "scenarios":
+            return self._require(subject, token_tenant, parts[1], P.VIEW_CASH,
+                                 lambda t: self._scenarios_page(subject, t))
+
+        # /t/<tenant>/receivables  -> AR / collections (shell page)
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "receivables":
+            return self._require(subject, token_tenant, parts[1], P.VIEW_CASH,
+                                 lambda t: self._receivables_page(subject, t))
+
         # /t/<tenant>/packages  -> sealed financial-package records (shell page)
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "packages":
             return self._require(subject, token_tenant, parts[1], P.VIEW_PACKAGE,
@@ -482,6 +579,12 @@ class WebApp:
             if resource == "transactions" and req.method == "POST":
                 return self._require(subject, token_tenant, tenant, P.CATEGORIZE_TXNS,
                                      lambda t: self._categorize(t, req.body))
+            if resource == "scenario" and req.method == "POST":
+                return self._require(subject, token_tenant, tenant, P.VIEW_CASH,
+                                     lambda t: self._scenario(t, req.body))
+            if resource == "receivables" and req.method == "GET":
+                return self._require(subject, token_tenant, tenant, P.VIEW_CASH,
+                                     self._receivables_json)
             if resource == "close" and req.method == "GET":
                 return self._require(subject, token_tenant, tenant, P.MANAGE_CLOSE,
                                      self._close_json)
@@ -821,8 +924,11 @@ class WebApp:
         perms, role = self._perms_role(subject, t.tenant_id)
         can_cat = self._policy is None or Permission.CATEGORIZE_TXNS in perms
         txns = self._txns.get(t.tenant_id, [])
+        # Only compute suggestions when the caller can act on them.
+        suggestions = self._suggestions_for(t) if can_cat else None
         body = render_transactions(
-            t.tenant_id, self._accounts.get(t.tenant_id, "Checking"), txns, can_categorize=can_cat
+            t.tenant_id, self._accounts.get(t.tenant_id, "Checking"), txns,
+            can_categorize=can_cat, suggestions=suggestions,
         )
         return _html(200, render_shell(tenant=t.tenant_id, display_name=t.name, role=role,
                                        permissions=perms, active="transactions", body_html=body, subject=subject))
@@ -882,6 +988,139 @@ class WebApp:
         body = render_close_body(self._close_board(t), t.tenant_id,
                                  can_manage=can_manage, can_publish=can_publish)
         return self._shell(subject, t, "close", body)
+
+    # --- scenario planning (what-if) ----------------------------------------
+    def _scenarios_page(self, subject: str, t: _Tenant) -> Response:
+        return self._shell(subject, t, "scenarios", render_scenario_body(t.tenant_id, t.name))
+
+    def _scenario_from_template(self, template: str, params: Mapping[str, object]) -> Scenario:
+        """Build a library `Scenario` from a template key + its params."""
+        def money(key: str) -> Money:
+            return Money.from_decimal(str(params[key]))
+
+        def day(key: str) -> date:
+            return date.fromisoformat(str(params[key]))
+
+        if template == "hire":
+            return hire_employee(money("monthly_cost"), day("start"))
+        if template == "customer_pays_late":
+            return customer_pays_late(str(params["customer_id"]), int(str(params["days"])))
+        if template == "take_loan":
+            return take_loan(money("amount"), day("on"), money("monthly_repayment"),
+                             day("first_repayment"))
+        if template == "one_time_expense":
+            return one_time_expense(str(params.get("label", "One-time expense")),
+                                    money("amount"), day("on"))
+        raise ValueError(f"unknown template {template!r}")
+
+    def _parse_adjustment(self, a: Mapping[str, object]) -> Adjustment:
+        """Parse one raw adjustment dict from a custom scenario spec."""
+        kind = str(a.get("kind", ""))
+        if kind == "delay_customer":
+            return DelayCustomerPayment(str(a["customer_id"]), int(str(a["days"])))
+        if kind == "one_time":
+            return OneTimeFlow(str(a.get("label", "One-time")),
+                               Money.from_decimal(str(a["amount"])),
+                               date.fromisoformat(str(a["on"])), bool(a.get("inflow", False)))
+        if kind == "set_minimum_cash":
+            return SetMinimumCash(Money.from_decimal(str(a["amount"])))
+        raise ValueError(f"unknown adjustment kind {kind!r}")
+
+    def _build_scenario(self, payload: Mapping[str, object]) -> Scenario:
+        """A scenario from a spec: a library `template` + `params`, or a raw list of
+        `adjustments`."""
+        template = payload.get("template")
+        if isinstance(template, str):
+            raw = payload.get("params", {})
+            params = raw if isinstance(raw, dict) else {}
+            return self._scenario_from_template(template, params)
+        adjustments = payload.get("adjustments")
+        if isinstance(adjustments, list):
+            parsed = tuple(
+                self._parse_adjustment(a) for a in adjustments if isinstance(a, dict)
+            )
+            if not parsed:
+                raise ValueError("no valid adjustments in spec")
+            return Scenario(name=str(payload.get("name", "Custom scenario")), adjustments=parsed)
+        raise ValueError("provide a 'template' (+ params) or a list of 'adjustments'")
+
+    @staticmethod
+    def _diff_json(scenario: Scenario, diff: ScenarioDiff) -> dict[str, object]:
+        return {
+            "scenario": scenario.name,
+            "trough_delta": diff.trough_delta.to_decimal_string(),
+            "cushion_delta": diff.cushion_delta.to_decimal_string(),
+            "breach_week_before": diff.breach_week_before,
+            "breach_week_after": diff.breach_week_after,
+            "weekly_closing_deltas": [d.to_decimal_string() for d in diff.weekly_closing_deltas],
+        }
+
+    def _scenario(self, t: _Tenant, body: str) -> Response:
+        """Run a what-if scenario against the tenant's live inputs/config and return
+        the signed `ScenarioDiff` as JSON. Nothing is persisted."""
+        try:
+            payload = json.loads(body or "{}")
+        except json.JSONDecodeError:
+            return _json(400, {"error": "invalid JSON body"})
+        if not isinstance(payload, dict):
+            return _json(400, {"error": "expected a JSON object"})
+        try:
+            scenario = self._build_scenario(payload)
+        except (KeyError, TypeError, ValueError) as exc:
+            return _json(400, {"error": f"invalid scenario spec: {exc}"})
+        _result, diff = run_scenario(
+            self._effective_inputs(t), self._effective_config(t), scenario
+        )
+        return _json(200, self._diff_json(scenario, diff))
+
+    # --- AR / collections ----------------------------------------------------
+    def _ar_data(
+        self, t: _Tenant
+    ) -> "tuple[ARReport, list[ChaseItem], list[CollectionNudge]]":
+        """Compute the AR surface for a tenant from its open invoices: the point-in-
+        time report, the prioritized chase list, and a nudge draft per chase item."""
+        inputs = self._effective_inputs(t)
+        as_of = inputs.opening.as_of
+        invoices = inputs.invoices
+        report = ar_report(invoices, as_of)
+        histories = {h.customer_id: h for h in inputs.customer_histories}
+        chase = chase_list(invoices, as_of, histories=histories)
+        nudges = [draft_nudge(item.invoice, as_of) for item in chase]
+        return report, chase, nudges
+
+    def _receivables_page(self, subject: str, t: _Tenant) -> Response:
+        report, chase, nudges = self._ar_data(t)
+        body = render_ar_body(t.tenant_id, t.name, report, chase, nudges)
+        return self._shell(subject, t, "receivables", body)
+
+    def _receivables_json(self, t: _Tenant) -> Response:
+        report, chase, nudges = self._ar_data(t)
+        aging = report.aging
+        return _json(200, {
+            "tenant": t.tenant_id,
+            "as_of": report.as_of.isoformat(),
+            "total_ar": report.total_ar.to_decimal_string(),
+            "overdue_total": report.overdue_total.to_decimal_string(),
+            "dso": report.dso,
+            "aging": {
+                "current": aging.current.to_decimal_string(),
+                "d1_30": aging.d1_30.to_decimal_string(),
+                "d31_60": aging.d31_60.to_decimal_string(),
+                "d60_plus": aging.d60_plus.to_decimal_string(),
+            },
+            "chase_list": [
+                {"invoice": c.invoice.id, "customer": c.invoice.customer_id,
+                 "open_amount": c.invoice.open_amount.to_decimal_string(),
+                 "days_overdue": c.days_overdue, "bucket": c.bucket.value,
+                 "risk_score": c.risk_score, "priority": c.priority}
+                for c in chase
+            ],
+            "nudges": [
+                {"invoice": n.invoice.id, "tone": n.tone.value,
+                 "subject": n.subject, "body": n.body}
+                for n in nudges
+            ],
+        })
 
     def _transactions_json(self, t: _Tenant) -> Response:
         """The bank register as JSON: summary + the for-review queue (the shape the

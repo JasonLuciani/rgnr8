@@ -23,6 +23,8 @@ from rgnr8_forecast.brand import format_money as _money  # the one shared money 
 from rgnr8_briefing import Question, WeeklyBriefing, answer, build_briefing
 from rgnr8_briefing.answer import SUGGESTED
 from rgnr8_briefing.today import _cash_chart, _chart_points  # shared 13-week chart
+from rgnr8_ar import ARReport, ChaseItem, CollectionNudge
+from rgnr8_ar.aging import BUCKET_ORDER, AgingBucket
 
 _STATUS = {
     "STABLE": ("Stable", "var(--rg-pos)"),
@@ -334,3 +336,157 @@ def render_packages_body(tenant: str, periods: Sequence[str], configured: bool) 
     return f"""<h1>Financial packages</h1>
     <p class="sub">{escape(tenant)} · sealed month-end records · each figure re-verified against its fingerprint</p>
     {body}"""
+
+
+# --- Scenario planning (in-shell what-if owner screen) ----------------------
+# The owner-facing templates, mapped to the `@rgnr8/scenario` library builders.
+# Each entry: (template key, label, blurb, [(param, label, input-type, placeholder)]).
+_SCENARIO_TEMPLATES: tuple[tuple[str, str, str, tuple[tuple[str, str, str, str], ...]], ...] = (
+    ("hire", "Hire someone", "A new recurring monthly payroll cost.",
+     (("monthly_cost", "Monthly cost", "text", "8000.00"),
+      ("start", "Start date", "date", ""))),
+    ("customer_pays_late", "Customer pays late", "A key customer slips their payment timing.",
+     (("customer_id", "Customer", "text", "acme"),
+      ("days", "Days later than usual", "number", "30"))),
+    ("take_loan", "Take a loan", "A lump inflow now, repaid monthly.",
+     (("amount", "Loan amount", "text", "50000.00"),
+      ("on", "Draw date", "date", ""),
+      ("monthly_repayment", "Monthly repayment", "text", "2200.00"),
+      ("first_repayment", "First repayment", "date", ""))),
+    ("one_time_expense", "One-time expense", "A single dated cash outflow.",
+     (("label", "What is it", "text", "New equipment"),
+      ("amount", "Amount", "text", "12000.00"),
+      ("on", "Date", "date", ""))),
+)
+
+
+def render_scenario_body(tenant: str, display_name: str) -> str:
+    """The what-if planning screen inside the shell: pick a library template, fill
+    its inputs, and see the resulting `ScenarioDiff` — trough Δ, breach week
+    before/after, cushion Δ — rendered against the tenant's live forecast. The form
+    POSTs the spec to `/api/<tenant>/scenario` and renders the returned diff;
+    everything is self-contained (no external assets)."""
+    cards = ""
+    for key, label, blurb, params in _SCENARIO_TEMPLATES:
+        fields = ""
+        for pkey, plabel, ptype, placeholder in params:
+            ph = f' placeholder="{escape(placeholder)}"' if placeholder else ""
+            fields += (f'<label>{escape(plabel)}</label>'
+                       f'<input data-param="{escape(pkey)}" type="{escape(ptype)}"{ph}>')
+        cards += (
+            f'<form class="card scn" data-template="{escape(key)}" onsubmit="return runScenario(this)">'
+            f'<div style="font-family:var(--rg-serif);font-size:18px">{escape(label)}</div>'
+            f'<p class="muted" style="margin:2px 0 4px;font-size:13px">{escape(blurb)}</p>'
+            f'{fields}'
+            f'<button class="btn sage" style="margin-top:14px" type="submit">Run scenario</button>'
+            f'</form>'
+        )
+    return f"""<h1>Scenario planning</h1>
+    <p class="sub">{escape(display_name)} · model a decision against your live 13-week cash outlook — nothing is saved</p>
+    <div id="rgErr" class="banner warn" role="alert" style="display:none">Something went wrong.</div>
+    <div id="scnResult" style="display:none"></div>
+    <div class="tiles" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">{cards}</div>
+    <script>
+      const T={tenant!r};
+      function rgErr(m){{ var b=document.getElementById('rgErr'); if(b){{ b.textContent=m||''; b.style.display=m?'block':'none'; }} }}
+      function fmtWeek(w){{ return (w===null||w===undefined) ? 'no breach' : ('week '+w); }}
+      function renderDiff(d){{
+        var box=document.getElementById('scnResult');
+        box.innerHTML =
+          '<h2>'+d.scenario+'</h2>'+
+          '<div class="tiles">'+
+          '<div class="tile"><div class="k">Low-point change</div><div class="v">'+d.trough_delta+'</div></div>'+
+          '<div class="tile"><div class="k">Cushion change</div><div class="v">'+d.cushion_delta+'</div></div>'+
+          '<div class="tile"><div class="k">Breach before</div><div class="v">'+fmtWeek(d.breach_week_before)+'</div></div>'+
+          '<div class="tile"><div class="k">Breach after</div><div class="v">'+fmtWeek(d.breach_week_after)+'</div></div>'+
+          '</div>';
+        box.style.display='block';
+        box.scrollIntoView({{behavior:'smooth',block:'start'}});
+      }}
+      async function runScenario(form){{
+        rgErr('');
+        var params={{}};
+        form.querySelectorAll('[data-param]').forEach(function(el){{ if(el.value!=='') params[el.dataset.param]=el.value; }});
+        try{{
+          var r = await fetch('/api/'+T+'/scenario', {{method:'POST', headers:{{'content-type':'application/json'}},
+            body: JSON.stringify({{template: form.dataset.template, params: params}}), credentials:'same-origin'}});
+          if(!r.ok){{ rgErr('Could not run that scenario (HTTP '+r.status+'). Check the inputs.'); return false; }}
+          renderDiff(await r.json());
+        }} catch(e){{ rgErr('Network error — please try again.'); }}
+        return false;
+      }}
+    </script>"""
+
+
+# --- AR / collections (in-shell owner screen) -------------------------------
+_BUCKET_LABEL: dict[AgingBucket, str] = {
+    AgingBucket.CURRENT: "Current",
+    AgingBucket.D1_30: "1–30 days",
+    AgingBucket.D31_60: "31–60 days",
+    AgingBucket.D60_PLUS: "60+ days",
+}
+# The nudge tone, colored by escalation so a final notice reads as urgent.
+_TONE_COLOR: dict[str, str] = {
+    "FRIENDLY": "var(--rg-pos)", "FIRM": "var(--rg-watch)", "FINAL": "var(--rg-risk)"}
+
+
+def render_ar_body(
+    tenant: str,
+    display_name: str,
+    report: ARReport,
+    chase: Sequence[ChaseItem],
+    nudges: Sequence[CollectionNudge],
+) -> str:
+    """The receivables / collections screen inside the shell: the aging summary,
+    the prioritized chase list (worst-first), and the per-invoice nudge drafts
+    whose tone escalates with age. All computed by `@rgnr8/ar` over the tenant's
+    open invoices. Read-only and self-contained."""
+    aging = report.aging
+    # Aging summary tiles (per bucket) + a total.
+    tiles = ""
+    for bucket in BUCKET_ORDER:
+        tiles += (f'<div class="tile"><div class="k">{escape(_BUCKET_LABEL[bucket])}</div>'
+                  f'<div class="v">{escape(_money(aging.amount(bucket)))}</div></div>')
+    tiles += (f'<div class="tile"><div class="k">Total AR</div>'
+              f'<div class="v">{escape(_money(report.total_ar))}</div></div>')
+    dso = "" if report.dso is None else f" · DSO ~{report.dso:.0f} days"
+
+    if not chase:
+        chase_block = ('<div class="banner good">Nothing overdue — every open invoice is current '
+                       f'as of {escape(report.as_of.isoformat())}.</div>')
+    else:
+        rows = ""
+        for it in chase:
+            inv = it.invoice
+            rows += (f'<tr><td><strong>{escape(inv.id)}</strong></td>'
+                     f'<td class="muted">{escape(inv.customer_id)}</td>'
+                     f'<td class="num">{escape(_money(inv.open_amount))}</td>'
+                     f'<td class="num">{it.days_overdue}</td>'
+                     f'<td>{escape(_BUCKET_LABEL[it.bucket])}</td></tr>')
+        chase_block = (f'<h2>Chase list — worst first</h2>'
+                       f'<div class="table-scroll"><table><thead><tr><th>Invoice</th><th>Customer</th>'
+                       f'<th class="num">Open</th><th class="num">Days overdue</th><th>Bucket</th>'
+                       f'</tr></thead><tbody>{rows}</tbody></table></div>')
+
+    drafts = ""
+    for n in nudges:
+        color = _TONE_COLOR.get(n.tone.value, "var(--rg-muted)")
+        drafts += (
+            f'<div class="card" style="margin-bottom:12px">'
+            f'<div class="row" style="justify-content:space-between">'
+            f'<strong>{escape(n.invoice.id)} · {escape(n.invoice.customer_id)}</strong>'
+            f'<span class="pill" style="color:{color};border:1px solid color-mix(in srgb, {color} 20%, transparent)">'
+            f'{escape(n.tone.value)}</span></div>'
+            f'<div style="margin-top:8px;font-weight:700;font-size:13px">{escape(n.subject)}</div>'
+            f'<pre style="white-space:pre-wrap;font:inherit;color:var(--rg-ink-2);margin:8px 0 0">{escape(n.body)}</pre>'
+            f'</div>'
+        )
+    drafts_block = (f'<h2>Reminder drafts</h2>{drafts}' if drafts else "")
+    return f"""<h1>Receivables &amp; collections</h1>
+    <p class="sub">{escape(display_name)} · open AR as of {escape(report.as_of.isoformat())}{dso} · get paid faster</p>
+    <div class="banner {'warn' if report.overdue_total.is_positive else 'good'}">
+      {escape(_money(report.overdue_total))} overdue of {escape(_money(report.total_ar))} total AR.</div>
+    <h2>Aging</h2>
+    <div class="tiles">{tiles}</div>
+    {chase_block}
+    {drafts_block}"""

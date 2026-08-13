@@ -25,10 +25,12 @@ from .screens import (
     CloseBoard,
     CloseTask,
     default_close_board,
+    render_ar_body,
     render_briefing_body,
     render_cash_body,
     render_close_body,
     render_packages_body,
+    render_scenario_body,
 )
 from .store import (
     InMemoryTenantStore,
@@ -145,6 +147,8 @@ __all__ = [
     "render_briefing_body",
     "render_close_body",
     "render_packages_body",
+    "render_scenario_body",
+    "render_ar_body",
     "CloseBoard",
     "CloseTask",
     "default_close_board",

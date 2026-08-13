@@ -15,6 +15,7 @@ from datetime import datetime
 from rgnr8_forecast import run_forecast
 from rgnr8_forecast.brand import POSITIVE, RG_BASE_CSS, RG_TOKENS_CSS, RISK, WATCH, brand_bar
 from rgnr8_briefing import Subscription, build_briefing, most_recent_fire, next_fire
+from rgnr8_recon_monitor import Severity as ReconSeverity
 
 from .fleet import Fleet
 
@@ -41,6 +42,12 @@ class TenantOpsRow:
     connector_summary: str
     close_complete: bool | None
     close_summary: str
+    # trust / reconciliation (None severity when no recon figures are attached)
+    recon_severity: str | None  # "in_sync" | "minor" | "major" | None
+    recon_in_sync: bool | None
+    recon_note: str
+    recon_worst_gap: str
+    recon_ledger_vs_bank: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +79,11 @@ class OpsReport:
     @property
     def closes_done(self) -> int:
         return sum(1 for r in self.rows if r.close_complete is True)
+
+    @property
+    def recon_drift(self) -> int:
+        """Clients whose ledger/bank/forecast figures diverge (attached + not in sync)."""
+        return sum(1 for r in self.rows if r.recon_severity not in (None, "in_sync"))
 
 
 def build_ops_report(fleet: Fleet, now: datetime) -> OpsReport:
@@ -106,6 +118,20 @@ def build_ops_report(fleet: Fleet, now: datetime) -> OpsReport:
                 close_complete = st.close.complete
                 close_summary = st.close.summary()
 
+        recon_severity: str | None = None
+        recon_in_sync: bool | None = None
+        recon_note = "—"
+        recon_worst_gap = "—"
+        recon_ledger_vs_bank = "—"
+        rc = fleet.recon.get(bt.tenant_id)
+        if rc is not None:
+            div = rc.divergence(bt.tenant_id, now.date())
+            recon_severity = div.severity.value
+            recon_in_sync = div.severity is ReconSeverity.IN_SYNC
+            recon_note = div.note
+            recon_worst_gap = div.worst_gap.to_decimal_string()
+            recon_ledger_vs_bank = div.ledger_vs_bank.to_decimal_string()
+
         rows.append(
             TenantOpsRow(
                 tenant_id=bt.tenant_id,
@@ -127,6 +153,11 @@ def build_ops_report(fleet: Fleet, now: datetime) -> OpsReport:
                 connector_summary=connector_summary,
                 close_complete=close_complete,
                 close_summary=close_summary,
+                recon_severity=recon_severity,
+                recon_in_sync=recon_in_sync,
+                recon_note=recon_note,
+                recon_worst_gap=recon_worst_gap,
+                recon_ledger_vs_bank=recon_ledger_vs_bank,
             )
         )
     # sort worst-first: AT_RISK, then WATCH, then STABLE; within, soonest breach

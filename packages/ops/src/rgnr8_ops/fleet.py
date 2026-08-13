@@ -33,6 +33,7 @@ from rgnr8_runtime.subscriptions import SubscriptionStore
 from rgnr8_briefing import Deliverer
 
 from .status import TenantOpsStatus
+from .recon import TenantRecon, make_recon
 
 
 def default_schedule() -> Schedule:
@@ -73,6 +74,9 @@ class Fleet:
             subscriptions if subscriptions is not None else InMemorySubscriptionStore())
         self.tenant_source = InMemoryTenantSource()
         self.statuses: dict[str, TenantOpsStatus] = {}
+        # Operator-attached trust figures (ledger/bank/forecast) per tenant, fed to
+        # the recon monitor by build_ops_report. Live, not persisted — like a status.
+        self.recon: dict[str, TenantRecon] = {}
 
     @classmethod
     def load(
@@ -111,6 +115,27 @@ class Fleet:
         from the live connector-health + close-calendar reports to the dashboard,
         no hand-populated Python objects."""
         self.set_status(tenant_id, TenantOpsStatus.from_json(payload))
+
+    def set_recon(
+        self,
+        tenant_id: str,
+        ledger_cash: Money,
+        bank_cash: Money,
+        forecast_opening: Money,
+        *,
+        minor_tolerance: Money | None = None,
+        major_tolerance: Money | None = None,
+    ) -> None:
+        """Attach the three cash figures (ledger / bank / forecast opening) for a
+        client so the operator console can surface ledger-vs-bank-vs-forecast
+        divergence (via `rgnr8_recon_monitor.check`) next to its cash. Mirrors
+        `set_status`; unknown tenants are rejected. Live figures, not persisted."""
+        if tenant_id not in self.tenants:
+            raise KeyError(tenant_id)
+        self.recon[tenant_id] = make_recon(
+            ledger_cash, bank_cash, forecast_opening,
+            minor_tolerance=minor_tolerance, major_tolerance=major_tolerance,
+        )
 
     def onboard(self, bt: BetaTenant, *, persist: bool = True) -> None:
         """Provision one client everywhere: web tenant, delivery subscription,

@@ -22,6 +22,23 @@ def _esc(s: object) -> str:
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+_RECON_COLOR = {"major": RISK, "minor": WATCH, "in_sync": POSITIVE}
+
+
+def _trust_cell(r: TenantOpsRow) -> str:
+    """The trust column: in-sync, drift (with severity + amount), or — when unset."""
+    if r.recon_severity is None:
+        return '<span class="muted">—</span>'
+    color = _RECON_COLOR.get(r.recon_severity, "#888")
+    if r.recon_in_sync:
+        return f'<span class="dot" style="background:{color}"></span>in sync'
+    return (
+        f'<span class="dot" style="background:{color}"></span>'
+        f'{_esc(r.recon_severity)} drift · {_esc(r.recon_worst_gap)}'
+        f'<br><span class="muted">{_esc(r.recon_note)}</span>'
+    )
+
+
 def _row(r: TenantOpsRow) -> str:
     breach = f"week {r.weeks_until_breach} · short {_esc(r.shortfall)}" if r.breached else "—"
     if r.books_current is None:
@@ -40,7 +57,7 @@ def _row(r: TenantOpsRow) -> str:
       <td class="num">{_esc(r.cash_today)}</td>
       <td class="num">{_esc(r.floor)}</td>
       <td class="num">{_esc(r.trough)}<br><span class="muted">{_esc(r.trough_date)}</span></td>
-      <td>{breach}</td><td>{books}</td><td>{close}</td>
+      <td>{breach}</td><td>{books}</td><td>{close}</td><td>{_trust_cell(r)}</td>
       <td>{deliv}<br><span class="muted">next {_esc(r.next_due[:16])}</span></td>
     </tr>"""
 
@@ -63,7 +80,7 @@ def render_operator_console(
         banner = f"{report.books_not_current} of {report.total} client(s) have books behind"
     else:
         banner = f"All {report.total} client(s) steady"
-    empty = '<tr><td colspan="9" class="muted" style="text-align:center;padding:26px">No clients onboarded yet — add the first one above.</td></tr>'
+    empty = '<tr><td colspan="10" class="muted" style="text-align:center;padding:26px">No clients onboarded yet — add the first one above.</td></tr>'
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -116,7 +133,7 @@ def render_operator_console(
 
   <h2>Fleet — worst first</h2>
   <div class="table-scroll"><table>
-    <thead><tr><th>Client</th><th>Status</th><th class="num">Cash</th><th class="num">Floor</th><th class="num">Trough</th><th>Breach</th><th>Books</th><th>Close</th><th>Briefing</th></tr></thead>
+    <thead><tr><th>Client</th><th>Status</th><th class="num">Cash</th><th class="num">Floor</th><th class="num">Trough</th><th>Breach</th><th>Books</th><th>Close</th><th>Trust</th><th>Briefing</th></tr></thead>
     <tbody>
 {rows or empty}
     </tbody>

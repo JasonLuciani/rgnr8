@@ -96,3 +96,23 @@ def test_create_application_registers_persisted_fleet_over_wsgi() -> None:
 
     assert json.loads(body.decode())["tenants"] == 1
     _ = Money  # (imported for parity with other tests)
+
+
+def test_create_application_builds_in_memory_dev_app_with_edge_hardening() -> None:
+    # no conn → in-memory dev path still builds a served, hardened WSGI app
+    app = create_application({"RGNR8_JWT_SECRET": "x"})
+    status_line: list[str] = []
+    headers: list[tuple[str, str]] = []
+
+    def sr(status: str, hdrs: list[tuple[str, str]]) -> None:
+        status_line.append(status)
+        headers.extend(hdrs)
+
+    body = b"".join(app({"REQUEST_METHOD": "GET", "PATH_INFO": "/ready",
+                         "QUERY_STRING": "", "CONTENT_LENGTH": "0"}, sr))  # type: ignore[operator,arg-type]
+    assert status_line and status_line[0].startswith("200")
+    assert body  # a body was served
+    # the observability + edge-hardening stack is bound (security headers merged)
+    header_names = {k.lower() for k, _ in headers}
+    assert "content-security-policy" in header_names
+    assert "x-frame-options" in header_names
