@@ -149,6 +149,29 @@ class RecordingReportSink:
         )
 
 
+class CallableReportSink:
+    """Adapts a delivery callable into a `ReportSink`, so a caller can wire the
+    real transport (email-with-attachment, object store, webhook) without writing
+    a class — ``CallableReportSink(mailer.send_report)``. The callable receives the
+    :class:`ReportDelivery`; if it returns a :class:`ReportReceipt` that is used,
+    otherwise a ``SENT`` receipt is synthesized from the delivery."""
+
+    def __init__(self, fn: Callable[[ReportDelivery], ReportReceipt | None]) -> None:
+        self._fn = fn
+
+    def send(self, delivery: ReportDelivery) -> ReportReceipt:
+        receipt = self._fn(delivery)
+        if receipt is not None:
+            return receipt
+        return ReportReceipt(
+            tenant_id=delivery.tenant_id,
+            report_id=delivery.report_id,
+            recipient=delivery.recipient,
+            fmt=delivery.fmt,
+            delivered_at=delivery.generated_at.isoformat(),
+        )
+
+
 # The two callbacks the runner needs to turn a schedule into a rendered report:
 # resolve its spec (baseline or saved) and build its data context. Either
 # returning ``None`` skips that schedule for this tick (spec/context not ready).

@@ -37,7 +37,10 @@ class JobResult:
 
 
 class Job(Protocol):
-    name: str
+    # read-only so both frozen (`BriefingDispatchJob`) and mutable
+    # (`AlertsJob`, `ReportJob`) dataclasses satisfy the protocol.
+    @property
+    def name(self) -> str: ...
 
     def due(self, now: datetime, last_run: datetime | None) -> bool: ...
     def run(self, now: datetime) -> str: ...

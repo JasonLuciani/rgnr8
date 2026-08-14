@@ -34,6 +34,7 @@ from .report_job import (
     fleet_context_builder,
     make_spec_resolver,
 )
+from .worker import build_fleet_jobs, build_worker
 from .store import FleetStore, FleetTenantRecord, InMemoryFleetStore, SqlFleetStore
 from .deploy import bootstrap_python_schemas
 from .config import ConfigError, Settings
@@ -94,6 +95,8 @@ __all__ = [
     "build_report_job",
     "fleet_context_builder",
     "make_spec_resolver",
+    "build_fleet_jobs",
+    "build_worker",
     "Provisioning",
     "build_provisioning",
     "FleetStore",
