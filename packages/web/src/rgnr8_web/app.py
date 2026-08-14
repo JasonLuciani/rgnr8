@@ -14,6 +14,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+from html import escape
 from urllib.parse import parse_qs, urlsplit
 
 from rgnr8_forecast import (
@@ -70,6 +71,7 @@ from rgnr8_reports import (
     render_xlsx as render_report_xlsx,
     to_json,
 )
+from rgnr8_qbo import QboConnectService, QboStatus
 
 from .store import InMemoryTenantStore, TenantDef, TenantState, TenantStore
 from .financial_package import (
@@ -220,7 +222,11 @@ class WebApp:
         emailer: "Callable[[str, str, str], None] | None" = None,
         saved_reports: SavedReportStore | None = None,
         report_clock: "Callable[[], datetime] | None" = None,
+        qbo: QboConnectService | None = None,
     ) -> None:
+        # QuickBooks Online connect service (OAuth acquisition + token store).
+        # When absent, the connect surface reports "not configured" rather than 404.
+        self._qbo = qbo
         self._tenants: dict[str, _Tenant] = {}
         self._tokens: dict[str, str] = {}  # bearer token -> tenant_id (default auth)
         # persistence for mutable owner state; in-memory unless a durable one is given
@@ -549,6 +555,11 @@ class WebApp:
         if route == "/logout":
             return _redirect("/login", (("Set-Cookie", "rgnr8_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"),))
 
+        # --- QBO OAuth callback (public: Intuit redirects the owner's browser
+        # here; the signed `state` is the CSRF boundary and carries the tenant) ---
+        if route == "/oauth/qbo/callback" and req.method == "GET":
+            return self._qbo_callback(req)
+
         principal = self._principal(req)
         if principal is None:
             return _json(401, {"error": "missing or invalid bearer token"})
@@ -597,6 +608,22 @@ class WebApp:
                                  lambda t: self._reports_page(subject, t))
 
         # /t/<tenant>/packages  -> sealed financial-package records (shell page)
+        # /t/<tenant>/connect -> the connections page (QBO status + connect button)
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "connect":
+            return self._require(subject, token_tenant, parts[1], P.MANAGE_CONNECTORS,
+                                 lambda t: self._connect_page(subject, t))
+
+        # /t/<tenant>/connect/qbo -> start the QBO OAuth flow (redirect to Intuit)
+        if len(parts) == 4 and parts[0] == "t" and parts[2] == "connect" and parts[3] == "qbo":
+            return self._require(subject, token_tenant, parts[1], P.MANAGE_CONNECTORS,
+                                 self._qbo_begin)
+
+        # /t/<tenant>/connect/qbo/disconnect -> revoke + drop the connection
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "connect"
+                and parts[3] == "qbo" and parts[4] == "disconnect" and req.method == "POST"):
+            return self._require(subject, token_tenant, parts[1], P.MANAGE_CONNECTORS,
+                                 lambda t: self._qbo_disconnect(subject, t))
+
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "packages":
             return self._require(subject, token_tenant, parts[1], P.VIEW_PACKAGE,
                                  lambda t: self._packages_page(subject, t))
@@ -1326,6 +1353,65 @@ class WebApp:
         self._saved_reports.save(t.tenant_id, spec)
         return _json(201, {"id": spec.id, "title": spec.title,
                            "sections": [s.kind for s in spec.sections]})
+
+    # --- QuickBooks Online connect (rgnr8-qbo) -------------------------------
+    def _connect_page(self, subject: str, t: _Tenant) -> Response:
+        """The connections page: QBO status + a Connect / Reconnect / Disconnect
+        control. Shows a "not configured" note when no `QboConnectService` is
+        seated (dev, or before the Intuit app credentials are provided)."""
+        from .screens import render_connect_page
+        configured = self._qbo is not None
+        conn = self._qbo.status(t.tenant_id) if self._qbo is not None else None
+        status = conn.status.value if conn is not None else None
+        realm = conn.realm_id if conn is not None else None
+        return self._shell(subject, t, "connect",
+                           render_connect_page(t.tenant_id, configured=configured,
+                                               status=status, realm_id=realm))
+
+    def _qbo_begin(self, t: _Tenant) -> Response:
+        """Redirect the owner to Intuit's authorize screen (signed, tenant-bound
+        state). 501 when QBO isn't configured on this deployment."""
+        if self._qbo is None:
+            return _json(501, {"error": "QuickBooks connect is not configured"})
+        return _redirect(self._qbo.begin(t.tenant_id))
+
+    def _qbo_disconnect(self, subject: str, t: _Tenant) -> Response:
+        """Revoke at Intuit (best-effort) + drop the stored connection, then back
+        to the connections page."""
+        if self._qbo is None:
+            return _json(501, {"error": "QuickBooks connect is not configured"})
+        self._qbo.disconnect(t.tenant_id)
+        if self._audit is not None:
+            self._audit.record(subject, "qbo.disconnected", self._session_clock(),
+                               tenant_id=t.tenant_id, target=t.tenant_id)
+        return _redirect(f"/t/{t.tenant_id}/connect")
+
+    def _qbo_callback(self, req: Request) -> Response:
+        """Intuit's OAuth redirect target. Verifies the signed `state` (which
+        carries the tenant), exchanges the `code`, persists the connection, and
+        redirects to that tenant's connections page. All failures render a small
+        error page rather than leaking details."""
+        if self._qbo is None:
+            return _html(503, "<p>QuickBooks connect is not configured.</p>")
+        q = req.query
+        error = q.get("error")
+        if error:
+            return _html(400, f"<p>QuickBooks authorization was declined ({escape(error)}).</p>")
+        code = q.get("code", "")
+        state = q.get("state", "")
+        realm_id = q.get("realmId", "")
+        if not code or not state:
+            return _html(400, "<p>Missing authorization code or state.</p>")
+        try:
+            conn = self._qbo.complete(state, code, realm_id)
+        except Exception:
+            # never leak state/exchange internals to the browser
+            return _html(400, "<p>Could not complete the QuickBooks connection. "
+                              "Please start the connect again from your dashboard.</p>")
+        if self._audit is not None:
+            self._audit.record("", "qbo.connected", self._session_clock(),
+                               tenant_id=conn.tenant_id, target=conn.realm_id)
+        return _redirect(f"/t/{conn.tenant_id}/connect")
 
     def _transactions_json(self, t: _Tenant) -> Response:
         """The bank register as JSON: summary + the for-review queue (the shape the

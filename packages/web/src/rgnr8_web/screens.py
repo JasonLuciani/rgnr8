@@ -390,6 +390,72 @@ def render_reports_list(
     {saved_block}"""
 
 
+# --- Connections (QuickBooks Online connect) --------------------------------
+_QBO_STATUS_UI: dict[str, tuple[str, str]] = {
+    # status -> (banner class, human label)
+    "connected": ("good", "Connected"),
+    "expired": ("warn", "Reconnect needed — the QuickBooks authorization expired"),
+    "revoked": ("warn", "Access was revoked — reconnect to resume syncing"),
+    "disconnected": ("", "Not connected"),
+    "error": ("warn", "Last sync hit an error — reconnect if it persists"),
+}
+
+
+def render_connect_page(
+    tenant: str,
+    *,
+    configured: bool,
+    status: str | None,
+    realm_id: str | None,
+) -> str:
+    """The connections page: QuickBooks Online status + a connect / reconnect /
+    disconnect control. Self-contained (relative links only), reuses the shell
+    card/banner/btn CSS."""
+    connect_href = f"/t/{escape(tenant)}/connect/qbo"
+    disconnect_href = f"/t/{escape(tenant)}/connect/qbo/disconnect"
+
+    if not configured:
+        body = (
+            '<div class="banner warn">QuickBooks connect isn\'t configured on this '
+            'environment yet. Once the Intuit app credentials are set, the Connect '
+            'button appears here.</div>'
+        )
+        return f"""<h1>Connections</h1>
+        <p class="sub">{escape(tenant)} · connect QuickBooks Online to keep the books current</p>
+        <div class="card"><h2>QuickBooks Online</h2>{body}</div>"""
+
+    is_connected = status == "connected"
+    banner_cls, label = _QBO_STATUS_UI.get(status or "disconnected", ("", "Not connected"))
+    banner = f'<div class="banner {banner_cls}">{escape(label)}</div>' if banner_cls else (
+        f'<p class="muted">{escape(label)}</p>')
+    realm_line = (f'<p class="muted" style="font-size:12px">Company (realm) '
+                  f'{escape(realm_id)}</p>' if realm_id else "")
+
+    if is_connected:
+        action = (
+            f'<a class="btn ghost" style="text-decoration:none" href="{connect_href}">Reconnect</a> '
+            f'<form method="post" action="{disconnect_href}" style="display:inline">'
+            f'<button class="btn" type="submit">Disconnect</button></form>'
+        )
+    else:
+        action = (
+            f'<a class="btn" style="text-decoration:none" href="{connect_href}">'
+            f'Connect QuickBooks</a>'
+        )
+
+    return f"""<h1>Connections</h1>
+    <p class="sub">{escape(tenant)} · connect QuickBooks Online to keep the books current</p>
+    <div class="card">
+      <h2>QuickBooks Online</h2>
+      {banner}
+      {realm_line}
+      <p>RGNR8 reads your QuickBooks company to keep the ledger, cash outlook, and
+      reports current. You'll be sent to Intuit to authorize access; we never see
+      your QuickBooks password.</p>
+      <div style="margin-top:12px">{action}</div>
+    </div>"""
+
+
 # --- Scenario planning (in-shell what-if owner screen) ----------------------
 # The owner-facing templates, mapped to the `@rgnr8/scenario` library builders.
 # Each entry: (template key, label, blurb, [(param, label, input-type, placeholder)]).

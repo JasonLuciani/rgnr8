@@ -31,6 +31,7 @@ _NAV: list[tuple[str, str, Permission]] = [
     ("briefing", "Briefing", Permission.VIEW_BRIEFING),
     ("close", "Close", Permission.MANAGE_CLOSE),
     ("packages", "Package", Permission.VIEW_PACKAGE),
+    ("connect", "Connect", Permission.MANAGE_CONNECTORS),
     ("team", "Team", Permission.MANAGE_USERS),
     ("audit", "Audit", Permission.MANAGE_USERS),
 ]

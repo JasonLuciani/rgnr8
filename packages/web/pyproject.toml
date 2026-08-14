@@ -7,7 +7,7 @@ name = "rgnr8-web"
 version = "0.1.0"
 description = "RGNR8 web app shell — a framework-free, multi-tenant HTTP app serving the owner Today dashboard, JSON API, and ask-your-CFO endpoint with bearer auth."
 requires-python = ">=3.11"
-dependencies = ["rgnr8-forecast>=0.1.0", "rgnr8-briefing>=0.1.0", "rgnr8-obs>=0.1.0", "rgnr8-scenario>=0.1.0", "rgnr8-ar>=0.1.0", "rgnr8-categorize>=0.1.0", "rgnr8-reports>=0.1.0"]
+dependencies = ["rgnr8-forecast>=0.1.0", "rgnr8-briefing>=0.1.0", "rgnr8-obs>=0.1.0", "rgnr8-scenario>=0.1.0", "rgnr8-ar>=0.1.0", "rgnr8-categorize>=0.1.0", "rgnr8-reports>=0.1.0", "rgnr8-qbo>=0.1.0"]
 license = { text = "UNLICENSED" }
 
 [project.optional-dependencies]
@@ -18,13 +18,13 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src", "../forecast/src", "../briefing/src", "../obs/src", "../scenario/src", "../ar/src", "../categorize/src", "../reports/src", "../recon-monitor/src", "../billing/src"]
+pythonpath = ["src", "../forecast/src", "../briefing/src", "../obs/src", "../scenario/src", "../ar/src", "../categorize/src", "../reports/src", "../recon-monitor/src", "../billing/src", "../qbo/src"]
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
 files = ["src", "tests"]
-mypy_path = "src:../forecast/src:../briefing/src:../obs/src:../scenario/src:../ar/src:../categorize/src:../reports/src:../recon-monitor/src:../billing/src"
+mypy_path = "src:../forecast/src:../briefing/src:../obs/src:../scenario/src:../ar/src:../categorize/src:../reports/src:../recon-monitor/src:../billing/src:../qbo/src"
 
 # reportlab / openpyxl (pulled in transitively via rgnr8-reports' export
 # renderers) ship no type information.
