@@ -33,10 +33,21 @@ export interface PackagedTrialBalance {
   readonly inBalance: boolean;
 }
 
+/** One presentation line on a sealed statement (minor-unit integer string). */
+export interface PackagedStatementLine {
+  readonly code: string;
+  readonly name: string;
+  readonly amountMinor: string;
+}
+
 export interface PackagedIncomeStatement {
   readonly revenueMinor: string;
   readonly expensesMinor: string;
   readonly netIncomeMinor: string;
+  /** Full revenue lines (optional; when present the sealed package is the
+   * complete published statement, not just its summary totals). */
+  readonly revenueLines?: readonly PackagedStatementLine[];
+  readonly expenseLines?: readonly PackagedStatementLine[];
 }
 
 export interface PackagedBalanceSheet {
@@ -44,6 +55,10 @@ export interface PackagedBalanceSheet {
   readonly totalLiabilitiesAndEquityMinor: string;
   readonly netIncomeMinor: string;
   readonly balances: boolean;
+  /** Full balance-sheet lines (optional; see PackagedIncomeStatement). */
+  readonly assetLines?: readonly PackagedStatementLine[];
+  readonly liabilityLines?: readonly PackagedStatementLine[];
+  readonly equityLines?: readonly PackagedStatementLine[];
 }
 
 export interface PackagedQboReconciliation {

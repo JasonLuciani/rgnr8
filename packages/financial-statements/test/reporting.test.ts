@@ -31,6 +31,8 @@ import {
   glDetail,
   incomeStatement,
   multiPeriodIncomeStatement,
+  packagedBalanceSheet,
+  packagedIncomeStatement,
   renderGlDetailAccount,
   renderRetainedEarnings,
   renderTrialBalance,
@@ -198,4 +200,17 @@ test("renderers produce branded HTML fragments", async () => {
   const is = incomeStatement(fromKernelTrialBalance(await computeTrialBalance(store, tenant, coa, USD, AUG)));
   const bs = balanceSheet(augTb, is.netIncome);
   assert.equal(bs.balanced, true);
+});
+
+test("packaged statement mappers emit full line detail for sealing", async () => {
+  const store = await seed(book);
+  const augTb = fromKernelTrialBalance(await computeTrialBalance(store, tenant, coa, USD, { to: "2026-08-31" }));
+  const is = incomeStatement(fromKernelTrialBalance(await computeTrialBalance(store, tenant, coa, USD, AUG)));
+  const bs = balanceSheet(augTb, is.netIncome);
+  const pIs = packagedIncomeStatement(is);
+  const pBs = packagedBalanceSheet(bs);
+  assert.equal(pIs.revenueMinor, "30000");
+  assert.equal(pIs.revenueLines.length, 1);
+  assert.equal(pBs.netIncomeMinor, "13000");
+  assert.ok(pBs.assetLines.length >= 2); // cash, ar, equip
 });
