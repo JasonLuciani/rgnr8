@@ -77,3 +77,21 @@ def test_console_empty_fleet_prompts_onboarding() -> None:
     html = render_operator_console(_report(f))
     assert "No clients onboarded yet" in html
     assert "operator@rgnr8.co" in html  # default operator identity
+
+
+def test_console_shows_coa_picker_and_live_badge() -> None:
+    from rgnr8_ops import category_catalog
+    f = Fleet(jwt_secret=SECRET, clock=lambda: NOW_EPOCH)
+    f.onboard(steady_tenant())  # "acme"
+    html = render_operator_console(
+        _report(f), operator="ops@rgnr8.co",
+        coa_templates=category_catalog(),
+        live_tenants=frozenset({"acme"}),
+    )
+    # the COA-template picker appears in the onboard form
+    assert 'name="coa_category"' in html
+    assert "Contractor &amp; Trades" in html or "Contractor & Trades" in html
+    # the system-of-record live badge appears for the cut-over tenant
+    assert "LIVE" in html
+    # still self-contained
+    assert "http://" not in html and "https://" not in html

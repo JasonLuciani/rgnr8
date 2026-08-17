@@ -192,7 +192,10 @@ class OperatorApp:
     # --- handlers ------------------------------------------------------------
     def _console(self, operator: str) -> Response:
         report = build_ops_report(self._fleet, self._clock())
-        return _html(200, render_operator_console(report, operator=operator))
+        live = frozenset(t for t in self._fleet.tenants if self._onboarding.is_live(t))
+        return _html(200, render_operator_console(
+            report, operator=operator, coa_templates=category_catalog(), live_tenants=live,
+        ))
 
     def _onboard(self, req: Request, operator: str) -> Response:
         try:

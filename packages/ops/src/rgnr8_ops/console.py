@@ -39,8 +39,12 @@ def _trust_cell(r: TenantOpsRow) -> str:
     )
 
 
-def _row(r: TenantOpsRow) -> str:
+def _row(r: TenantOpsRow, live: "frozenset[str]" = frozenset()) -> str:
     breach = f"week {r.weeks_until_breach} · short {_esc(r.shortfall)}" if r.breached else "—"
+    live_badge = (
+        ' <span class="rg-live" title="RGNR8 is the system of record">● LIVE</span>'
+        if r.tenant_id in live else ""
+    )
     if r.books_current is None:
         books = '<span class="muted">—</span>'
     else:
@@ -52,7 +56,7 @@ def _row(r: TenantOpsRow) -> str:
     deliv = "✓ this week" if r.delivered_this_period else (
         f"last {_esc(r.last_delivered)}" if r.last_delivered else "not yet")
     return f"""<tr>
-      <td><strong>{_esc(r.name)}</strong><br><span class="muted">{_esc(r.recipient)}</span></td>
+      <td><strong>{_esc(r.name)}</strong>{live_badge}<br><span class="muted">{_esc(r.recipient)}</span></td>
       <td><span class="dot" style="background:{_STATUS_COLOR.get(r.status, '#888')}"></span>{_esc(r.status)}</td>
       <td class="num">{_esc(r.cash_today)}</td>
       <td class="num">{_esc(r.floor)}</td>
@@ -67,10 +71,25 @@ def render_operator_console(
     *,
     operator: str = "operator@rgnr8.co",
     onboard_action: str = "/operator/onboard",
+    coa_templates: "list[dict[str, str]] | None" = None,
+    live_tenants: "frozenset[str] | None" = None,
 ) -> str:
     """The full operator console page: forest chrome + operator identity, a fleet
-    health banner, the onboarding panel, and the worst-first fleet table."""
-    rows = "\n".join(_row(r) for r in report.rows)
+    health banner, the onboarding panel (with a COA-template picker), and the
+    worst-first fleet table (with a system-of-record 'live' badge)."""
+    live = live_tenants or frozenset()
+    rows = "\n".join(_row(r, live) for r in report.rows)
+    # COA template <select> for onboarding — the chart seeded for the new client.
+    if coa_templates:
+        opts = "".join(
+            f'<option value="{_esc(t["slug"])}">{_esc(t["label"])}</option>' for t in coa_templates
+        )
+        coa_field = (
+            '<label>Chart of accounts (business type)</label>'
+            f'<select name="coa_category"><option value="">— none (start empty) —</option>{opts}</select>'
+        )
+    else:
+        coa_field = ""
     banner_cls = "warn" if (report.at_risk or report.books_not_current) else "good"
     if report.at_risk:
         banner = f"{report.at_risk} of {report.total} client(s) AT RISK"
@@ -96,7 +115,8 @@ def render_operator_console(
   h2{{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--rg-muted);margin:0 0 12px}}
   .sub{{color:var(--rg-muted);margin:0 0 14px;font-size:13px}}
   label{{display:block;font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--rg-muted);margin:12px 0 6px}}
-  input,textarea{{width:100%;padding:11px 12px;border:1px solid var(--rg-line);border-radius:10px;font:inherit;background:#fff;color:var(--rg-ink)}}
+  input,select,textarea{{width:100%;padding:11px 12px;border:1px solid var(--rg-line);border-radius:10px;font:inherit;background:#fff;color:var(--rg-ink)}}
+  .rg-live{{color:var(--rg-sage);font-size:10px;font-weight:800;letter-spacing:.06em}}
   textarea{{min-height:82px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}}
   .grid{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}}
   .btn{{padding:11px 16px;margin-top:14px}}
@@ -124,6 +144,7 @@ def render_operator_console(
         <div><label>Briefing recipient</label><input name="recipient" placeholder="owner@northwind.com"></div>
         <div><label>Minimum-cash floor (USD)</label><input name="minimum_cash" placeholder="25000.00"></div>
       </div>
+      {coa_field}
       <label>forecast-inputs/1 DTO</label>
       <textarea name="dto" placeholder='{{"opening":{{"as_of":"2026-08-31","available":"90000.00","currency":"USD"}}, ...}}'></textarea>
       <p class="note">Both onboarding paths land here: the <strong>overlay</strong> (bank balances + open AR/AP on top of QBO) and the full <strong>migration</strong> (QBO ledger imported into RGNR8) each emit this same DTO. Connect a live source at onboarding to fill it automatically.</p>
