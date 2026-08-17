@@ -24,6 +24,8 @@ import {
   accountLedger,
   balanceSheet,
   budgetVsActual,
+  budgetVsActualJson,
+  retainedEarningsJson,
   cashBasisIncomeStatement,
   cashFlow,
   comparativeBalanceSheet,
@@ -252,4 +254,19 @@ test("unbalanced eliminations are rejected", () => {
     () => consolidateTrialBalances([{ entityId: "A", tb }], [{ accountId: asAccountId("x"), code: "9", name: "x", accountClass: "asset" as const, signed: Money.fromDecimal("50.00", USD) }]),
     ConsolidationError,
   );
+});
+
+test("budgetVsActualJson and retainedEarningsJson serialize to their contracts", async () => {
+  const store = await seed(book);
+  const augTb = fromKernelTrialBalance(await computeTrialBalance(store, tenant, coa, USD, AUG));
+  const period = asPeriodKey("2026-08");
+  const budget = new Budget().set(asAccountId("rev"), period, m(25000n));
+  const bj = budgetVsActualJson(budgetVsActual(budget, augTb, period));
+  assert.equal(bj.contract, "budget-vs-actual/1");
+  assert.equal(bj.period, "2026-08");
+  assert.ok(bj.lines.some((l) => l.code === "4000"));
+
+  const rj = retainedEarningsJson(retainedEarnings({ beginning: m(20000n), netIncome: m(13000n), distributions: m(5000n) }));
+  assert.equal(rj.contract, "retained-earnings/1");
+  assert.equal(rj.ending_minor, "28000");
 });

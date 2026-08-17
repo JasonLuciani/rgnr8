@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Money, USD } from "@rgnr8/ledger-kernel";
-import { APSubledger, ARSubledger, apAgingReport, arAgingReport } from "../src/index.js";
+import { APSubledger, ARSubledger, agingReportJson, apAgingReport, arAgingReport } from "../src/index.js";
 
 const usd = (s: string) => Money.fromDecimal(s, USD);
 const ASOF = "2026-08-31";
@@ -36,4 +36,15 @@ test("AP aging report ages vendor bills and excludes paid ones", () => {
   const report = apAgingReport(ap, ASOF, USD);
   assert.equal(report.rows.length, 1);
   assert.equal(report.grandTotal.toDecimalString(), "300.00");
+});
+
+test("agingReportJson serializes to the aging/1 contract", () => {
+  const ar = new ARSubledger(USD);
+  ar.addInvoice({ id: "i1", customerId: "acme", issueDate: "2026-08-20", dueDate: "2026-09-10", amount: usd("1000.00") });
+  const json = agingReportJson(arAgingReport(ar, ASOF, USD), "AR");
+  assert.equal(json.contract, "aging/1");
+  assert.equal(json.kind, "AR");
+  assert.equal(json.grand_total_minor, "100000");
+  assert.equal(json.rows[0].party_id, "acme");
+  assert.equal(json.bucket_labels.length, json.rows[0].buckets_minor.length);
 });

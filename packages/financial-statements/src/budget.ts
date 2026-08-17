@@ -148,3 +148,44 @@ export function budgetVsActual(
     totalVariance: totalActual.minus(totalBudget),
   };
 }
+
+/** The serializable `budget-vs-actual/1` contract for owner-facing rendering. */
+export interface BudgetVsActualJson {
+  readonly contract: "budget-vs-actual/1";
+  readonly period: string;
+  readonly currency: string;
+  readonly lines: ReadonlyArray<{
+    readonly code: string;
+    readonly name: string;
+    readonly account_class: string;
+    readonly budget_minor: string;
+    readonly actual_minor: string;
+    readonly variance_minor: string;
+    readonly favorable: boolean;
+    readonly pct_of_budget: number | null;
+  }>;
+  readonly total_budget_minor: string;
+  readonly total_actual_minor: string;
+  readonly total_variance_minor: string;
+}
+
+export function budgetVsActualJson(report: BudgetVarianceReport): BudgetVsActualJson {
+  return {
+    contract: "budget-vs-actual/1",
+    period: String(report.period),
+    currency: report.currency.code,
+    lines: report.lines.map((l) => ({
+      code: l.code,
+      name: l.name,
+      account_class: l.accountClass,
+      budget_minor: l.budget.minorUnits.toString(),
+      actual_minor: l.actual.minorUnits.toString(),
+      variance_minor: l.variance.minorUnits.toString(),
+      favorable: l.favorable,
+      pct_of_budget: l.pctOfBudget,
+    })),
+    total_budget_minor: report.totalBudget.minorUnits.toString(),
+    total_actual_minor: report.totalActual.minorUnits.toString(),
+    total_variance_minor: report.totalVariance.minorUnits.toString(),
+  };
+}

@@ -45,8 +45,10 @@ export {
 
 export {
   retainedEarnings,
+  retainedEarningsJson,
   type RetainedEarnings,
   type RetainedEarningsInput,
+  type RetainedEarningsJson,
 } from "./retainedEarnings.js";
 
 export { subtypeCashFlowClassifier } from "./subtypeClassifier.js";
@@ -87,9 +89,11 @@ export {
 export {
   Budget,
   budgetVsActual,
+  budgetVsActualJson,
   type BudgetLine,
   type BudgetVarianceLine,
   type BudgetVarianceReport,
+  type BudgetVsActualJson,
 } from "./budget.js";
 
 export {

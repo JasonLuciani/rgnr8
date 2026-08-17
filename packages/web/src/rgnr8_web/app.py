@@ -87,6 +87,7 @@ from .apikeys import ApiKeyService
 from .audit import AuditSink
 from .credentials import AuthError, AuthService, CredentialStore
 from .openapi import build_openapi
+from .owner_reports import render_owner_report
 from .rbac import AccessPolicy, Permission, Role, User, UserDirectory
 from .shell import (
     render_app_home,
@@ -299,6 +300,9 @@ class WebApp:
             report_clock if report_clock is not None else (lambda: datetime.now(timezone.utc))
         )
         self._financial_statements: dict[str, Mapping[str, object]] = {}
+        # Owner-facing ledger reports, keyed (tenant, kind) — the JSON contracts
+        # the TS core emits (aging/1, budget-vs-actual/1, retained-earnings/1).
+        self._owner_reports: dict[tuple[str, str], Mapping[str, object]] = {}
         self._budgets: dict[str, Mapping[str, Money]] = {}
         self._usage: dict[str, UsageSummary] = {}
         self._billing_accounts: dict[str, Account] = {}
@@ -397,6 +401,21 @@ class WebApp:
         ``@rgnr8/financial-statements`` package emits). Feeds the P&L / balance-sheet
         / cash-flow sections of the reporting surface; absent → those degrade."""
         self._financial_statements[tenant_id] = statements
+
+    # Owner-report ids (URL) -> renderer kind.
+    _OWNER_REPORT_IDS: "dict[str, str]" = {
+        "receivables-aging": "aging_ar",
+        "payables-aging": "aging_ap",
+        "budget": "budget",
+        "retained-earnings": "retained_earnings",
+    }
+
+    def add_owner_report(self, tenant_id: str, kind: str, data: Mapping[str, object]) -> None:
+        """Attach an owner-facing ledger report contract (aging/budget/retained
+        earnings) the TS core emitted, surfaced under /t/<tenant>/reports/<id>."""
+        if kind not in {"aging_ar", "aging_ap", "budget", "retained_earnings"}:
+            raise ValueError(f"unknown owner report kind {kind!r}")
+        self._owner_reports[(tenant_id, kind)] = data
 
     def add_budget(self, tenant_id: str, budget: Mapping[str, Money]) -> None:
         """Attach a tenant's per-category budget (category → budgeted amount). Feeds
@@ -1373,6 +1392,19 @@ class WebApp:
     def _report_page(self, subject: str, t: _Tenant, report_id: str) -> Response:
         """Render a baseline or saved report against the tenant's live data, wrapped
         in the app shell. Unknown id → 404."""
+        # Owner-facing ledger reports (aging/budget/retained-earnings) come from
+        # the TS core as JSON contracts; render them if this id is one and we hold it.
+        kind = self._OWNER_REPORT_IDS.get(report_id)
+        if kind is not None:
+            data = self._owner_reports.get((t.tenant_id, kind))
+            if data is None:
+                return self._shell(subject, t, "reports",
+                                   '<section class="card"><p class="muted">This report isn\'t available yet — '
+                                   'it appears once the ledger has computed it.</p></section>')
+            html = render_owner_report(kind, data)
+            if html is not None:
+                return self._shell(subject, t, "reports", html)
+
         spec = self._resolve_report_spec(t, report_id)
         if spec is None:
             return _json(404, {"error": f"unknown report {report_id}"})

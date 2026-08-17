@@ -65,6 +65,38 @@ function buildAgingReport(items: readonly PartyItem[], asOf: string, currency: C
   };
 }
 
+/** The serializable `aging/1` contract — what an owner-facing surface renders. */
+export interface AgingReportJson {
+  readonly contract: "aging/1";
+  readonly kind: "AR" | "AP";
+  readonly as_of: string;
+  readonly bucket_labels: readonly string[];
+  readonly rows: ReadonlyArray<{
+    readonly party_id: string;
+    readonly buckets_minor: readonly string[];
+    readonly total_minor: string;
+  }>;
+  readonly column_totals_minor: readonly string[];
+  readonly grand_total_minor: string;
+}
+
+/** Serialize an aging report to the `aging/1` contract (minor-unit strings). */
+export function agingReportJson(report: AgingReport, kind: "AR" | "AP"): AgingReportJson {
+  return {
+    contract: "aging/1",
+    kind,
+    as_of: report.asOf,
+    bucket_labels: report.bucketLabels,
+    rows: report.rows.map((r) => ({
+      party_id: r.partyId,
+      buckets_minor: r.buckets.map((b) => b.minorUnits.toString()),
+      total_minor: r.total.minorUnits.toString(),
+    })),
+    column_totals_minor: report.columnTotals.map((c) => c.minorUnits.toString()),
+    grand_total_minor: report.grandTotal.minorUnits.toString(),
+  };
+}
+
 /** AR aging by customer, as of a date. */
 export function arAgingReport(ar: ARSubledger, asOf: string, currency: Currency): AgingReport {
   const items = ar.openInvoices().map((i) => ({ partyId: i.customerId, dueDate: i.dueDate, openAmount: i.openAmount }));

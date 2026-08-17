@@ -41,3 +41,24 @@ export function retainedEarnings(input: RetainedEarningsInput): RetainedEarnings
     ending,
   };
 }
+
+/** The serializable `retained-earnings/1` contract for owner-facing rendering. */
+export interface RetainedEarningsJson {
+  readonly contract: "retained-earnings/1";
+  readonly currency: string;
+  readonly beginning_minor: string;
+  readonly net_income_minor: string;
+  readonly distributions_minor: string;
+  readonly ending_minor: string;
+}
+
+export function retainedEarningsJson(re: RetainedEarnings): RetainedEarningsJson {
+  return {
+    contract: "retained-earnings/1",
+    currency: re.currency.code,
+    beginning_minor: re.beginning.minorUnits.toString(),
+    net_income_minor: re.netIncome.minorUnits.toString(),
+    distributions_minor: re.distributions.minorUnits.toString(),
+    ending_minor: re.ending.minorUnits.toString(),
+  };
+}

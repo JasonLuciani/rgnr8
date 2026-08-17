@@ -4,8 +4,10 @@ export { ageItems } from "./aging.js";
 export {
   arAgingReport,
   apAgingReport,
+  agingReportJson,
   type AgingReport,
   type AgingReportRow,
+  type AgingReportJson,
 } from "./agingReport.js";
 export { reconcileControl, type ControlReconciliation } from "./control.js";
 export {
