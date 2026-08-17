@@ -35,6 +35,14 @@ export {
   type FinancialPackageStore,
 } from "./packageStore.js";
 export {
+  buildYearEndClose,
+  fiscalYearBounds,
+  CALENDAR_YEAR,
+  type FiscalYearConfig,
+  type YearEndCloseOptions,
+  type YearEndClose,
+} from "./yearEnd.js";
+export {
   DEFAULT_CLOSE_TEMPLATE,
   addBusinessDays,
   buildCloseCalendar,
