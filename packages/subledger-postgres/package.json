@@ -1,0 +1,31 @@
+{
+  "name": "@rgnr8/subledger-postgres",
+  "version": "0.1.0",
+  "description": "PostgreSQL durable stores for RGNR8 subledger master data (customers, vendors, items).",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {
+    "@rgnr8/ledger-kernel": "^0.1.0",
+    "@rgnr8/subledger": "^0.1.0",
+    "@rgnr8/migrations": "^0.1.0",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "@types/pg": "^8.11.10",
+    "pg-mem": "^3.0.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}
