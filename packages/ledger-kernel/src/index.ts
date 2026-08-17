@@ -36,6 +36,14 @@ export {
 
 export { ChartOfAccounts } from "./chartOfAccounts.js";
 export {
+  BusinessCategory,
+  buildChartForCategory,
+  templateAccounts,
+  templateLines,
+  listCoaTemplates,
+  type CoaTemplateMeta,
+} from "./coaTemplates.js";
+export {
   convert,
   revalue,
   fxRevaluationCommand,
