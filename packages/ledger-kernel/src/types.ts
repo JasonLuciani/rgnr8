@@ -38,6 +38,65 @@ export function normalBalanceOf(type: AccountType): NormalBalance {
   }
 }
 
+/**
+ * QBO-style detail subtypes. Each maps to exactly one {@link AccountType}
+ * (see {@link accountTypeOfSubtype}) and drives statement classification and
+ * behavior (Bank/AR/AP/Undeposited-Funds/Sales-Tax-Payable are special).
+ */
+export enum AccountSubtype {
+  // ASSET
+  BANK = "BANK",
+  ACCOUNTS_RECEIVABLE = "ACCOUNTS_RECEIVABLE",
+  UNDEPOSITED_FUNDS = "UNDEPOSITED_FUNDS",
+  INVENTORY = "INVENTORY",
+  OTHER_CURRENT_ASSET = "OTHER_CURRENT_ASSET",
+  FIXED_ASSET = "FIXED_ASSET",
+  OTHER_ASSET = "OTHER_ASSET",
+  // LIABILITY
+  ACCOUNTS_PAYABLE = "ACCOUNTS_PAYABLE",
+  CREDIT_CARD = "CREDIT_CARD",
+  SALES_TAX_PAYABLE = "SALES_TAX_PAYABLE",
+  OTHER_CURRENT_LIABILITY = "OTHER_CURRENT_LIABILITY",
+  LONG_TERM_LIABILITY = "LONG_TERM_LIABILITY",
+  // EQUITY
+  EQUITY = "EQUITY",
+  RETAINED_EARNINGS = "RETAINED_EARNINGS",
+  // REVENUE
+  INCOME = "INCOME",
+  OTHER_INCOME = "OTHER_INCOME",
+  // EXPENSE
+  EXPENSE = "EXPENSE",
+  COST_OF_GOODS_SOLD = "COST_OF_GOODS_SOLD",
+  OTHER_EXPENSE = "OTHER_EXPENSE",
+}
+
+const SUBTYPE_TYPE: Readonly<Record<AccountSubtype, AccountType>> = {
+  [AccountSubtype.BANK]: AccountType.ASSET,
+  [AccountSubtype.ACCOUNTS_RECEIVABLE]: AccountType.ASSET,
+  [AccountSubtype.UNDEPOSITED_FUNDS]: AccountType.ASSET,
+  [AccountSubtype.INVENTORY]: AccountType.ASSET,
+  [AccountSubtype.OTHER_CURRENT_ASSET]: AccountType.ASSET,
+  [AccountSubtype.FIXED_ASSET]: AccountType.ASSET,
+  [AccountSubtype.OTHER_ASSET]: AccountType.ASSET,
+  [AccountSubtype.ACCOUNTS_PAYABLE]: AccountType.LIABILITY,
+  [AccountSubtype.CREDIT_CARD]: AccountType.LIABILITY,
+  [AccountSubtype.SALES_TAX_PAYABLE]: AccountType.LIABILITY,
+  [AccountSubtype.OTHER_CURRENT_LIABILITY]: AccountType.LIABILITY,
+  [AccountSubtype.LONG_TERM_LIABILITY]: AccountType.LIABILITY,
+  [AccountSubtype.EQUITY]: AccountType.EQUITY,
+  [AccountSubtype.RETAINED_EARNINGS]: AccountType.EQUITY,
+  [AccountSubtype.INCOME]: AccountType.REVENUE,
+  [AccountSubtype.OTHER_INCOME]: AccountType.REVENUE,
+  [AccountSubtype.EXPENSE]: AccountType.EXPENSE,
+  [AccountSubtype.COST_OF_GOODS_SOLD]: AccountType.EXPENSE,
+  [AccountSubtype.OTHER_EXPENSE]: AccountType.EXPENSE,
+};
+
+/** The {@link AccountType} a subtype belongs to. */
+export function accountTypeOfSubtype(subtype: AccountSubtype): AccountType {
+  return SUBTYPE_TYPE[subtype];
+}
+
 export interface Account {
   readonly id: AccountId;
   readonly code: string;
@@ -45,6 +104,10 @@ export interface Account {
   readonly type: AccountType;
   readonly currency: Currency;
   readonly parentId?: AccountId;
+  /** QBO-style detail subtype (must belong to `type`). */
+  readonly subtype?: AccountSubtype;
+  /** Inactive accounts are hidden from pickers but keep their history. Default true. */
+  readonly active?: boolean;
 }
 
 export type EntrySide = "DEBIT" | "CREDIT";

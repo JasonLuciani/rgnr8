@@ -10,7 +10,9 @@ export {
 
 export {
   AccountType,
+  AccountSubtype,
   normalBalanceOf,
+  accountTypeOfSubtype,
   asTenantId,
   asAccountId,
   asIdempotencyKey,
