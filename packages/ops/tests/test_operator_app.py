@@ -232,3 +232,57 @@ def test_view_as_toggle_is_operator_only_and_disables_role_view() -> None:
     plain = app.handle(Request("POST", "/operator/view-as", op,
                                json.dumps({"tenant_id": "seed"})))
     assert plain.status == 200 and json.loads(plain.body)["view_as"] is None
+
+
+def test_operator_manages_tenant_users_and_roles() -> None:
+    app, fleet, admin, _billing, directory, audit = _app()
+    _bootstrap_tenant(admin)
+    op = {"authorization": f"Bearer {_staff_token(admin, fleet, 'dev@rgnr8.co', Role.OPERATOR)}"}
+
+    r = app.handle(Request("POST", "/operator/tenant/seed/users", op,
+                           json.dumps({"email": "book@seed.com", "name": "Book Keeper", "role": "bookkeeper"})))
+    assert r.status == 200
+    assert directory.membership("book@seed.com", "seed").role is Role.BOOKKEEPER
+
+    listing = json.loads(app.handle(Request("GET", "/operator/tenant/seed/users", op)).body)
+    emails = {m["email"] for m in listing["members"]}
+    assert "book@seed.com" in emails and "owner@seed.com" in emails
+    assert "operator" not in listing["assignable_roles"]
+
+    app.handle(Request("POST", "/operator/tenant/seed/users", op,
+                       json.dumps({"email": "book@seed.com", "role": None})))
+    assert directory.membership("book@seed.com", "seed") is None
+    assert any(e.action == "membership.set" for e in audit.events(tenant_id="seed"))
+    assert any(e.action == "membership.removed" for e in audit.events(tenant_id="seed"))
+
+
+def test_assigning_a_platform_role_to_a_tenant_is_rejected() -> None:
+    app, fleet, admin, _billing, _dir, _audit = _app()
+    _bootstrap_tenant(admin)
+    op = {"authorization": f"Bearer {_staff_token(admin, fleet, 'dev@rgnr8.co', Role.OPERATOR)}"}
+    r = app.handle(Request("POST", "/operator/tenant/seed/users", op,
+                           json.dumps({"email": "x@seed.com", "role": "operator"})))
+    assert r.status == 403
+
+
+def test_support_cannot_manage_users_but_can_view() -> None:
+    app, fleet, admin, _billing, _dir, _audit = _app()
+    _bootstrap_tenant(admin)
+    sup = {"authorization": f"Bearer {_staff_token(admin, fleet, 'sam@rgnr8.co', Role.SUPPORT)}"}
+    assert app.handle(Request("GET", "/operator/tenant/seed/users", sup)).status == 200
+    w = app.handle(Request("POST", "/operator/tenant/seed/users", sup,
+                           json.dumps({"email": "x@seed.com", "role": "viewer"})))
+    assert w.status == 403
+
+
+def test_operator_changes_a_clients_plan() -> None:
+    app, fleet, admin, billing, _dir, _audit = _app()
+    _bootstrap_tenant(admin)
+    op = {"authorization": f"Bearer {_staff_token(admin, fleet, 'dev@rgnr8.co', Role.OPERATOR)}"}
+    r = app.handle(Request("POST", "/operator/account/acct_seed/plan", op,
+                           json.dumps({"tier": "assisted"})))
+    assert r.status == 200
+    assert json.loads(r.body)["tier"] == "assisted"
+    assert billing.get_account("acct_seed").tier is Tier.ASSISTED
+    assert app.handle(Request("POST", "/operator/account/nope/plan", op,
+                              json.dumps({"tier": "assisted"}))).status == 404

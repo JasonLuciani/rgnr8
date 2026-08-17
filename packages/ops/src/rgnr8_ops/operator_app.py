@@ -149,6 +149,26 @@ class OperatorApp:
                 return _json(403, {"error": "toggling view-as requires the operator role"})
             return self._view_as_toggle(req, subject)
 
+        # --- parameterized management routes ---
+        parts = [p for p in route.split("/") if p]
+
+        # /operator/tenant/<id>/users — per-tenant user & role management
+        if len(parts) == 4 and parts[0] == "operator" and parts[1] == "tenant" and parts[3] == "users":
+            tenant_id = parts[2]
+            if req.method == "GET":
+                return self._tenant_users(tenant_id)
+            if req.method == "POST":
+                if role is not Role.OPERATOR:
+                    return _json(403, {"error": "managing users requires the operator role"})
+                return self._tenant_users_set(req, tenant_id, subject)
+
+        # /operator/account/<id>/plan — change a client's billing plan
+        if (len(parts) == 4 and parts[0] == "operator" and parts[1] == "account"
+                and parts[3] == "plan" and req.method == "POST"):
+            if role is not Role.OPERATOR:
+                return _json(403, {"error": "changing a plan requires the operator role"})
+            return self._account_plan(req, parts[2], subject)
+
         return _json(404, {"error": "not found"})
 
     # --- handlers ------------------------------------------------------------
@@ -243,6 +263,58 @@ class OperatorApp:
             "expires_in": ttl_seconds,
             "token": token,
         })
+
+    def _tenant_users(self, tenant_id: str) -> Response:
+        if tenant_id not in self._fleet.tenants:
+            return _json(404, {"error": f"unknown tenant {tenant_id}"})
+        return _json(200, {"tenant_id": tenant_id, "members": self._admin.list_members(tenant_id),
+                           "assignable_roles": [r.value for r in Role if not r.is_platform]})
+
+    def _tenant_users_set(self, req: Request, tenant_id: str, operator: str) -> Response:
+        """Add/change/remove a client member. Body: {"email": "...", "name"?: "...",
+        "role": "owner|controller|bookkeeper|accountant|viewer"|null}."""
+        if tenant_id not in self._fleet.tenants:
+            return _json(404, {"error": f"unknown tenant {tenant_id}"})
+        try:
+            data = json.loads(req.body) if req.body else {}
+        except json.JSONDecodeError:
+            return _json(400, {"error": "invalid JSON body"})
+        if not isinstance(data, dict) or not str(data.get("email", "")).strip():
+            return _json(400, {"error": "email is required"})
+        email = str(data["email"]).strip()
+        name = str(data.get("name", ""))
+        role_raw = data.get("role")
+        role: Role | None = None
+        if role_raw not in (None, ""):
+            try:
+                role = Role(str(role_raw))
+            except ValueError:
+                return _json(400, {"error": f"unknown role {role_raw!r}"})
+        try:
+            self._admin.set_member_role(tenant_id, email, role, operator=operator, name=name)
+        except PlatformError as exc:
+            return _json(403, {"error": str(exc)})
+        return _json(200, {"tenant_id": tenant_id, "members": self._admin.list_members(tenant_id)})
+
+    def _account_plan(self, req: Request, account_id: str, operator: str) -> Response:
+        """Change a client's billing plan. Body: {"tier": "self_serve|assisted|co_delivery"}."""
+        if self._billing.get_account(account_id) is None:
+            return _json(404, {"error": f"unknown account {account_id}"})
+        try:
+            data = json.loads(req.body) if req.body else {}
+        except json.JSONDecodeError:
+            return _json(400, {"error": "invalid JSON body"})
+        if not isinstance(data, dict) or "tier" not in data:
+            return _json(400, {"error": "tier is required"})
+        try:
+            tier = Tier(str(data["tier"]))
+        except ValueError:
+            return _json(400, {"error": f"unknown tier {data['tier']!r}"})
+        try:
+            acct = self._admin.set_plan(account_id, tier, operator=operator)
+        except BillingError as exc:
+            return _json(409, {"error": str(exc)})
+        return _json(200, {"account_id": account_id, "tier": acct.tier.value})
 
     def _view_as_toggle(self, req: Request, subject: str) -> Response:
         """Enable/disable developer view-as globally. Body: {"enabled": bool}."""

@@ -78,6 +78,44 @@ class PlatformAdmin:
         self._record(operator, "account.plan_changed", account_id=account_id, detail=tier.value)
         return acct
 
+    # --- a client's users + roles (operator management of any tenant) --------
+    def list_members(self, tenant_id: str) -> list[dict[str, object]]:
+        """Every member of a client business with their role — for the operator
+        console's per-tenant user management."""
+        rows: list[dict[str, object]] = []
+        for m in self._dir.members(tenant_id):
+            u = self._dir.get_user(m.user_id)
+            rows.append({
+                "user_id": m.user_id,
+                "email": u.email if u is not None else None,
+                "name": u.name if u is not None else None,
+                "role": m.role.value,
+            })
+        return rows
+
+    def set_member_role(
+        self, tenant_id: str, email: str, role: Role | None, *, operator: str,
+        name: str = "",
+    ) -> None:
+        """Add or change a client member's role, or remove them (``role=None``).
+        Only *client* roles may be assigned here (a platform role is granted with
+        ``grant_platform_role``, not seated in a tenant). Audited."""
+        if role is not None and role.is_platform:
+            raise PlatformError(f"{role.value} is a platform role — use grant_platform_role")
+        user = self._dir.find_by_email(email)
+        if role is None:
+            if user is not None:
+                self._dir.remove_membership(user.id, tenant_id)
+            self._record(operator, "membership.removed", tenant_id=tenant_id, target=email)
+            return
+        if user is None:
+            user = User(id=email, email=email, name=name)
+            self._dir.upsert_user(user)
+        elif name and user.name != name:
+            self._dir.upsert_user(User(id=user.id, email=user.email, name=name))
+        self._dir.set_membership(user.id, tenant_id, role)
+        self._record(operator, "membership.set", tenant_id=tenant_id, target=email, detail=role.value)
+
     # --- our own staff -------------------------------------------------------
     def grant_platform_role(self, user_id: str, role: Role | None, *, operator: str) -> None:
         if role is not None and not role.is_platform:
