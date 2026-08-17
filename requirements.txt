@@ -1,0 +1,5 @@
+# Runtime dependencies for deploying RGNR8 (the Python web surface).
+# The RGNR8 packages themselves are pure-stdlib except for the report exporters.
+gunicorn>=21.2
+reportlab>=4.0
+openpyxl>=3.1
