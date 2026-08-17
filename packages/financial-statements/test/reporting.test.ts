@@ -27,6 +27,8 @@ import {
   cashBasisIncomeStatement,
   cashFlow,
   comparativeBalanceSheet,
+  consolidateTrialBalances,
+  ConsolidationError,
   fromKernelTrialBalance,
   glDetail,
   incomeStatement,
@@ -213,4 +215,41 @@ test("packaged statement mappers emit full line detail for sealing", async () =>
   assert.equal(pIs.revenueLines.length, 1);
   assert.equal(pBs.netIncomeMinor, "13000");
   assert.ok(pBs.assetLines.length >= 2); // cash, ar, equip
+});
+
+test("consolidation sums entities and applies balanced intercompany eliminations", () => {
+  // Two entities; entity A has an intercompany receivable of 100 from B, B a payable of 100.
+  const mk = (entries: { accountId: string; code: string; name: string; accountClass: any; signed: string }[]) => ({
+    currency: USD,
+    entries: entries.map((e) => ({ accountId: asAccountId(e.accountId), code: e.code, name: e.name, accountClass: e.accountClass, signed: Money.fromDecimal(e.signed, USD) })),
+  });
+  const a = mk([
+    { accountId: "cash", code: "1000", name: "Cash", accountClass: "asset", signed: "500.00" },
+    { accountId: "ic_ar", code: "1300", name: "IC Receivable", accountClass: "asset", signed: "100.00" },
+    { accountId: "cap", code: "3000", name: "Capital", accountClass: "equity", signed: "-600.00" },
+  ]);
+  const b = mk([
+    { accountId: "cash", code: "1000", name: "Cash", accountClass: "asset", signed: "300.00" },
+    { accountId: "ic_ap", code: "2100", name: "IC Payable", accountClass: "liability", signed: "-100.00" },
+    { accountId: "cap", code: "3000", name: "Capital", accountClass: "equity", signed: "-200.00" },
+  ]);
+  // Eliminate the intercompany pair (net zero).
+  const elims = [
+    { accountId: asAccountId("ic_ar"), code: "1300", name: "IC Receivable", accountClass: "asset" as const, signed: Money.fromDecimal("-100.00", USD) },
+    { accountId: asAccountId("ic_ap"), code: "2100", name: "IC Payable", accountClass: "liability" as const, signed: Money.fromDecimal("100.00", USD) },
+  ];
+  const result = consolidateTrialBalances([{ entityId: "A", tb: a }, { entityId: "B", tb: b }], elims);
+  assert.ok(result.balanced);
+  // Consolidated cash = 800; intercompany accounts eliminated to zero (dropped).
+  assert.equal(result.consolidated.entries.find((e) => e.code === "1000")!.signed.toDecimalString(), "800.00");
+  assert.equal(result.consolidated.entries.some((e) => e.code === "1300"), false);
+  assert.equal(result.consolidated.entries.some((e) => e.code === "2100"), false);
+});
+
+test("unbalanced eliminations are rejected", () => {
+  const tb = { currency: USD, entries: [{ accountId: asAccountId("cash"), code: "1000", name: "Cash", accountClass: "asset" as const, signed: Money.fromDecimal("100.00", USD) }] };
+  assert.throws(
+    () => consolidateTrialBalances([{ entityId: "A", tb }], [{ accountId: asAccountId("x"), code: "9", name: "x", accountClass: "asset" as const, signed: Money.fromDecimal("50.00", USD) }]),
+    ConsolidationError,
+  );
 });

@@ -52,6 +52,14 @@ export {
 export { subtypeCashFlowClassifier } from "./subtypeClassifier.js";
 
 export {
+  consolidateTrialBalances,
+  ConsolidationError,
+  type EntityTrialBalance,
+  type EliminationLine,
+  type ConsolidationResult,
+} from "./consolidation.js";
+
+export {
   multiPeriodIncomeStatement,
   comparativeBalanceSheet,
   classTotal,
