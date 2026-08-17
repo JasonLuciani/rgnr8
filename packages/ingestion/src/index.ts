@@ -32,3 +32,8 @@ export {
   type AccountMap,
   type MappedCommands,
 } from "./mapping.js";
+export {
+  postCanonicalToLedger,
+  type PostingReport,
+  type PostOptions,
+} from "./poster.js";

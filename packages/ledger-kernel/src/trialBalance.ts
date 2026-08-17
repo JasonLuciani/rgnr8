@@ -24,25 +24,58 @@ export interface TrialBalance {
 }
 
 /**
+ * Date window for period-scoped reporting (inclusive ISO `YYYY-MM-DD` bounds on
+ * `entryDate`). A **balance sheet** as of a date uses `{ to }` (everything up to
+ * that date, cumulative); an **income statement** for a period uses `{ from, to }`.
+ * Omitting the filter reproduces the original behavior (every posted entry).
+ *
+ * ISO dates compare correctly as plain strings, so no date parsing is needed and
+ * the computation stays deterministic.
+ */
+export interface DateWindow {
+  readonly from?: string;
+  readonly to?: string;
+}
+
+function inWindow(entryDate: string, window?: DateWindow): boolean {
+  if (window === undefined) return true;
+  if (window.from !== undefined && entryDate < window.from) return false;
+  if (window.to !== undefined && entryDate > window.to) return false;
+  return true;
+}
+
+/** Net debit position (minor units, debit-positive) per account over a window. */
+async function netByAccount(
+  store: LedgerStore,
+  tenant: TenantId,
+  window?: DateWindow,
+): Promise<Map<AccountId, bigint>> {
+  const net = new Map<AccountId, bigint>();
+  for (const entry of await store.list(tenant)) {
+    if (!inWindow(entry.entryDate, window)) continue;
+    for (const line of entry.lines) {
+      const delta = line.side === "DEBIT" ? line.amount.minorUnits : -line.amount.minorUnits;
+      net.set(line.accountId, (net.get(line.accountId) ?? 0n) + delta);
+    }
+  }
+  return net;
+}
+
+/**
  * Derive a trial balance purely from posted ledger facts. All financial
  * statements are generated from the same ledger facts; nothing is stored
- * as a mutable running total.
+ * as a mutable running total. Pass a {@link DateWindow} to scope the balance to
+ * a period (income statement) or an as-of date (balance sheet).
  */
 export async function computeTrialBalance(
   store: LedgerStore,
   tenant: TenantId,
   coa: ChartOfAccounts,
   currency: Currency,
+  window?: DateWindow,
 ): Promise<TrialBalance> {
   // Net debit position per account, in minor units (debit positive).
-  const net = new Map<AccountId, bigint>();
-
-  for (const entry of await store.list(tenant)) {
-    for (const line of entry.lines) {
-      const delta = line.side === "DEBIT" ? line.amount.minorUnits : -line.amount.minorUnits;
-      net.set(line.accountId, (net.get(line.accountId) ?? 0n) + delta);
-    }
-  }
+  const net = await netByAccount(store, tenant, window);
 
   const rows: TrialBalanceRow[] = [];
   let totalDebitMinor = 0n;
@@ -87,14 +120,9 @@ export async function accountBalances(
   tenant: TenantId,
   coa: ChartOfAccounts,
   currency: Currency,
+  window?: DateWindow,
 ): Promise<Map<AccountId, Money>> {
-  const net = new Map<AccountId, bigint>();
-  for (const entry of await store.list(tenant)) {
-    for (const line of entry.lines) {
-      const delta = line.side === "DEBIT" ? line.amount.minorUnits : -line.amount.minorUnits;
-      net.set(line.accountId, (net.get(line.accountId) ?? 0n) + delta);
-    }
-  }
+  const net = await netByAccount(store, tenant, window);
   const out = new Map<AccountId, Money>();
   for (const [id, n] of net) {
     const account = coa.get(id);

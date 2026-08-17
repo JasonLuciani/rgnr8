@@ -51,6 +51,7 @@ export {
   accountBalances,
   type TrialBalance,
   type TrialBalanceRow,
+  type DateWindow,
 } from "./trialBalance.js";
 
 export {
