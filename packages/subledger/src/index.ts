@@ -103,3 +103,49 @@ export {
   type PayrollAccounts,
   type PayrollTotals,
 } from "./payroll.js";
+export {
+  build1099Report,
+  DEFAULT_1099_THRESHOLD_MINOR,
+  type VendorPayment,
+  type Form1099Row,
+  type Form1099Report,
+} from "./ten99.js";
+export {
+  occurrencesBetween,
+  materializeRecurring,
+  type Frequency,
+  type RecurringSchedule,
+  type RecurringTemplate,
+} from "./recurring.js";
+export {
+  AuditLog,
+  type AuditEntry,
+  type AuditEntryInput,
+  type AuditQuery,
+} from "./auditLog.js";
+export {
+  inventoryAdjustmentCommand,
+  applyAdjustment,
+  InventoryError,
+  type InventoryAdjustment,
+  type InventoryAccounts,
+  type InventoryPosition,
+} from "./inventory.js";
+export {
+  dueDateFor,
+  discountDeadlineFor,
+  discountMinor,
+  addDaysIso,
+  type PaymentMethod,
+  type PaymentTerms,
+} from "./termsAndMethods.js";
+export {
+  documentTotal,
+  estimateToInvoice,
+  purchaseOrderToBill,
+  NonPostingError,
+  type Estimate,
+  type EstimateStatus,
+  type PurchaseOrder,
+  type PurchaseOrderStatus,
+} from "./nonPosting.js";
