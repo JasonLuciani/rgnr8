@@ -54,6 +54,8 @@ export {
 export {
   invoiceToPostCommand,
   billToPostCommand,
+  anchoredCommand,
+  resolveLines,
   resolveInvoiceLines,
   resolveBillLines,
   sumLines,
@@ -65,3 +67,14 @@ export {
   type DocPostContext,
   type ResolveOptions,
 } from "./documents.js";
+export {
+  salesReceiptToPostCommand,
+  creditMemoToPostCommand,
+  refundReceiptToPostCommand,
+  vendorCreditToPostCommand,
+  expenseToPostCommand,
+  depositToPostCommand,
+  type CustomerDoc,
+  type VendorDoc,
+  type DepositDoc,
+} from "./salesPurchase.js";

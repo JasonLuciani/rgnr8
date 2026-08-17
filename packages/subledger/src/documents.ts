@@ -104,14 +104,24 @@ export interface ResolveOptions {
   readonly items?: { tenant: string; store: MasterDataStore };
 }
 
+/** Resolve a bare set of lines for one side (fill item defaults, compute amounts). */
+export function resolveLines(
+  lines: readonly DocumentLine[],
+  side: "income" | "expense",
+  currency: Money["currency"],
+  opts: ResolveOptions = {},
+): readonly ResolvedLine[] {
+  if (lines.length === 0) throw new DocumentError(`document has no lines`);
+  return lines.map((l) => resolveLine(l, side, currency, opts.items));
+}
+
 /** Resolve a document's lines (fill item defaults, compute amounts). */
 export function resolveInvoiceLines(
   doc: InvoiceDoc,
   currency: Money["currency"],
   opts: ResolveOptions = {},
 ): readonly ResolvedLine[] {
-  if (doc.lines.length === 0) throw new DocumentError(`Invoice ${doc.id} has no lines`);
-  return doc.lines.map((l) => resolveLine(l, "income", currency, opts.items));
+  return resolveLines(doc.lines, "income", currency, opts);
 }
 
 export function resolveBillLines(
@@ -119,8 +129,7 @@ export function resolveBillLines(
   currency: Money["currency"],
   opts: ResolveOptions = {},
 ): readonly ResolvedLine[] {
-  if (doc.lines.length === 0) throw new DocumentError(`Bill ${doc.id} has no lines`);
-  return doc.lines.map((l) => resolveLine(l, "expense", currency, opts.items));
+  return resolveLines(doc.lines, "expense", currency, opts);
 }
 
 export function sumLines(lines: readonly ResolvedLine[], currency: Money["currency"]): Money {
@@ -134,6 +143,34 @@ export interface DocPostContext {
   readonly mappingVersion?: string;
 }
 
+/**
+ * Build a balanced posting command with a single **anchor** line (the control /
+ * cash / bank account) carrying the document total on one side, and the resolved
+ * item lines carrying their amounts on the other. This is the shared shape behind
+ * every line-item document (invoice, bill, sales receipt, credit memo, refund,
+ * vendor credit, check, deposit) — only the anchor account + side differ.
+ */
+export function anchoredCommand(
+  idKey: string,
+  entryDate: string,
+  anchor: { readonly accountId: AccountId; readonly side: "DEBIT" | "CREDIT" },
+  lines: readonly ResolvedLine[],
+  ctx: DocPostContext,
+  memo?: string,
+): PostCommand {
+  const total = sumLines(lines, ctx.currency);
+  const lineSide: "DEBIT" | "CREDIT" = anchor.side === "DEBIT" ? "CREDIT" : "DEBIT";
+  const anchorLine: JournalLineInput = { accountId: anchor.accountId, side: anchor.side, amount: total };
+  const itemLines: JournalLineInput[] = lines.map((l) => ({
+    accountId: l.accountId,
+    side: lineSide,
+    amount: l.amount,
+    ...(l.description !== "" ? { memo: l.description } : {}),
+  }));
+  const journal = anchor.side === "DEBIT" ? [anchorLine, ...itemLines] : [...itemLines, anchorLine];
+  return command(idKey, entryDate, journal, ctx, memo);
+}
+
 /** An invoice → Dr AR-control (total) / Cr each line's income account. */
 export function invoiceToPostCommand(
   doc: InvoiceDoc,
@@ -142,12 +179,7 @@ export function invoiceToPostCommand(
   opts: ResolveOptions = {},
 ): PostCommand {
   const lines = resolveInvoiceLines(doc, ctx.currency, opts);
-  const total = sumLines(lines, ctx.currency);
-  const journal: JournalLineInput[] = [
-    { accountId: arControl, side: "DEBIT", amount: total },
-    ...lines.map((l): JournalLineInput => ({ accountId: l.accountId, side: "CREDIT", amount: l.amount, memo: l.description })),
-  ];
-  return command(`invoice:${doc.id}`, doc.issueDate, journal, ctx, doc.memo);
+  return anchoredCommand(`invoice:${doc.id}`, doc.issueDate, { accountId: arControl, side: "DEBIT" }, lines, ctx, doc.memo);
 }
 
 /** A bill → Cr AP-control (total) / Dr each line's expense account. */
@@ -158,12 +190,7 @@ export function billToPostCommand(
   opts: ResolveOptions = {},
 ): PostCommand {
   const lines = resolveBillLines(doc, ctx.currency, opts);
-  const total = sumLines(lines, ctx.currency);
-  const journal: JournalLineInput[] = [
-    ...lines.map((l): JournalLineInput => ({ accountId: l.accountId, side: "DEBIT", amount: l.amount, memo: l.description })),
-    { accountId: apControl, side: "CREDIT", amount: total },
-  ];
-  return command(`bill:${doc.id}`, doc.billDate, journal, ctx, doc.memo);
+  return anchoredCommand(`bill:${doc.id}`, doc.billDate, { accountId: apControl, side: "CREDIT" }, lines, ctx, doc.memo);
 }
 
 function command(
