@@ -39,7 +39,13 @@ from rgnr8_web import (
 from .console import render_operator_console
 from .fleet import BetaTenant, Fleet
 from .platform import PlatformAdmin, PlatformError
-from .onboarding import OnboardingError, OnboardingRegistry, category_catalog, is_valid_category
+from .onboarding import (
+    OnboardingError,
+    OnboardingRegistry,
+    build_go_live_request,
+    category_catalog,
+    is_valid_category,
+)
 from .report import build_ops_report
 
 
@@ -186,6 +192,14 @@ class OperatorApp:
                 if role is not Role.OPERATOR:
                     return _json(403, {"error": "cutover requires the operator role"})
                 return self._cutover_mark(req, tenant_id, subject)
+
+        # /operator/tenant/<id>/go-live — build the go-live/1 request (seed COA +
+        # opening balances) for the TS core, and mark the tenant live.
+        if (len(parts) == 4 and parts[0] == "operator" and parts[1] == "tenant"
+                and parts[3] == "go-live" and req.method == "POST"):
+            if role is not Role.OPERATOR:
+                return _json(403, {"error": "go-live requires the operator role"})
+            return self._go_live(req, parts[2], subject)
 
         return _json(404, {"error": "not found"})
 
@@ -341,6 +355,52 @@ class OperatorApp:
                            detail=f"{rec.source_system}@{rec.cutover_date}")
         return _json(200, {"tenant_id": tenant_id, "live": True,
                            "source_system": rec.source_system, "cutover_date": rec.cutover_date})
+
+    def _go_live(self, req: Request, tenant_id: str, operator: str) -> Response:
+        """Prepare a client's go-live: build the go-live/1 request (COA template +
+        the source's as-of trial balance → opening balances) that the TS core
+        executes, record it, and mark the tenant live. Body:
+        {"source_system": "...", "cutover_date": "YYYY-MM-DD",
+         "source_accounts": [{"code","name","balance_minor","subtype"|"type"}],
+         "currency"?, "opening_balance_equity_code"?}. The COA template is taken
+        from what was chosen at onboarding (override with "coa_category")."""
+        if tenant_id not in self._fleet.tenants:
+            return _json(404, {"error": f"unknown tenant {tenant_id}"})
+        try:
+            data = json.loads(req.body) if req.body else {}
+        except json.JSONDecodeError:
+            return _json(400, {"error": "invalid JSON body"})
+        if not isinstance(data, dict):
+            return _json(400, {"error": "body must be a JSON object"})
+        cutover_date = str(data.get("cutover_date", "")).strip()
+        source_system = str(data.get("source_system", "")).strip()
+        if not cutover_date:
+            return _json(400, {"error": "cutover_date is required"})
+        raw_accounts = data.get("source_accounts")
+        if not isinstance(raw_accounts, list):
+            return _json(400, {"error": "source_accounts must be a list (the source trial balance)"})
+        category = data.get("coa_category")
+        coa_category = str(category) if category else self._onboarding.coa_category(tenant_id)
+
+        try:
+            request = build_go_live_request(
+                tenant_id, source_system, cutover_date,
+                [a for a in raw_accounts if isinstance(a, dict)],
+                opening_balance_equity_code=str(data.get("opening_balance_equity_code", "3010")),
+                currency=str(data.get("currency", "USD")),
+                coa_category=coa_category,
+            )
+        except OnboardingError as exc:
+            return _json(400, {"error": str(exc)})
+
+        accounts = request["source_accounts"]
+        n_accounts = len(accounts) if isinstance(accounts, list) else 0
+        self._onboarding.set_go_live_request(tenant_id, request)
+        self._onboarding.mark_cutover(tenant_id, source_system, cutover_date,
+                                      marked_by=operator, marked_at=self._epoch())
+        self._audit.record(operator, "tenant.go_live", self._epoch(), tenant_id=tenant_id,
+                           detail=f"{source_system}@{cutover_date} accounts={n_accounts}")
+        return _json(200, {"tenant_id": tenant_id, "live": True, "go_live_request": request})
 
     def _tenant_users(self, tenant_id: str) -> Response:
         if tenant_id not in self._fleet.tenants:

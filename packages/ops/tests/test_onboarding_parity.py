@@ -31,3 +31,32 @@ def test_source_systems_match_ts_cutover_type() -> None:
     body = text.split("export type SourceSystem", 1)[1].split(";", 1)[0]
     ts = set(re.findall(r'"([a-z]+)"', body))
     assert SOURCE_SYSTEMS == ts, f"drift: py={SOURCE_SYSTEMS}, ts={ts}"
+
+
+def test_go_live_contract_fields_match_ts_dto() -> None:
+    """The go-live/1 DTO the Python control plane emits must use the exact field
+    names the TS `GoLiveDto` declares, so `goLiveFromDto` can parse it."""
+    from rgnr8_ops import GO_LIVE_CONTRACT, build_go_live_request
+
+    req = build_go_live_request(
+        "acme", "quickbooks", "2026-08-31",
+        [{"code": "1000", "name": "Checking", "balance_minor": 100, "subtype": "BANK"}],
+        coa_category="RETAIL",
+    )
+    assert req["contract"] == GO_LIVE_CONTRACT
+
+    ts = (_TS.parent / "goLive.ts").read_text()
+    # the GoLiveDto interface body
+    dto_body = ts.split("export interface GoLiveDto", 1)[1].split("}", 1)[0]
+    ts_fields = set(re.findall(r"readonly (\w+)\??:", dto_body))
+    # the contract constant value must match too
+    ts_contract = re.search(r'GO_LIVE_CONTRACT\s*=\s*"([^"]+)"', ts).group(1)
+    assert ts_contract == GO_LIVE_CONTRACT
+
+    py_fields = set(req.keys())
+    # every Python field is a declared TS DTO field (TS may allow more, e.g. provenance)
+    assert py_fields <= ts_fields, f"python emits fields TS won't parse: {py_fields - ts_fields}"
+    # the source_accounts item fields also line up
+    sa_body = dto_body.split("source_accounts", 1)[1]
+    for f in req["source_accounts"][0].keys():
+        assert f in sa_body, f"source-account field {f} not in TS DTO"

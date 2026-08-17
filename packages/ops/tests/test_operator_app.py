@@ -337,3 +337,44 @@ def test_cutover_go_live_marks_system_of_record() -> None:
     # a bad source system is a clean 400
     assert app.handle(Request("POST", "/operator/tenant/seed/cutover", op,
                               json.dumps({"source_system": "sage", "cutover_date": "2026-08-31"}))).status == 400
+
+
+def test_go_live_builds_the_contract_and_marks_live() -> None:
+    app, fleet, admin, _billing, _dir, audit = _app()
+    _bootstrap_tenant(admin)
+    op = {"authorization": f"Bearer {_staff_token(admin, fleet, 'dev@rgnr8.co', Role.OPERATOR)}"}
+
+    # onboarding recorded a contractor chart for a later tenant; here use seed
+    body = json.dumps({
+        "source_system": "quickbooks", "cutover_date": "2026-08-31", "coa_category": "CONTRACTOR_TRADES",
+        "source_accounts": [
+            {"code": "1000", "name": "Checking", "balance_minor": 2500000, "subtype": "BANK"},
+            {"code": "3900", "name": "Retained Earnings", "balance_minor": -2500000, "subtype": "RETAINED_EARNINGS"},
+        ],
+    })
+    r = app.handle(Request("POST", "/operator/tenant/seed/go-live", op, body))
+    assert r.status == 200, r.body
+    out = json.loads(r.body)
+    assert out["live"] is True
+    req = out["go_live_request"]
+    assert req["contract"] == "go-live/1"
+    assert req["coa_category"] == "CONTRACTOR_TRADES"
+    assert req["source_accounts"][0]["balance_minor"] == "2500000"  # minor-unit string
+    assert req["opening_balance_equity_code"] == "3010"
+    # status now shows live + the go-live was audited
+    st = json.loads(app.handle(Request("GET", "/operator/tenant/seed/cutover", op)).body)
+    assert st["live"] is True
+    assert any(e.action == "tenant.go_live" for e in audit.events(tenant_id="seed"))
+
+
+def test_go_live_rejects_a_malformed_trial_balance() -> None:
+    app, fleet, admin, _billing, _dir, _audit = _app()
+    _bootstrap_tenant(admin)
+    op = {"authorization": f"Bearer {_staff_token(admin, fleet, 'dev@rgnr8.co', Role.OPERATOR)}"}
+    # an account with no subtype/type can't be placed → 400
+    bad = json.dumps({"source_system": "quickbooks", "cutover_date": "2026-08-31",
+                      "source_accounts": [{"code": "1000", "name": "Checking", "balance_minor": 100}]})
+    assert app.handle(Request("POST", "/operator/tenant/seed/go-live", op, bad)).status == 400
+    # empty trial balance → 400
+    empty = json.dumps({"source_system": "quickbooks", "cutover_date": "2026-08-31", "source_accounts": []})
+    assert app.handle(Request("POST", "/operator/tenant/seed/go-live", op, empty)).status == 400

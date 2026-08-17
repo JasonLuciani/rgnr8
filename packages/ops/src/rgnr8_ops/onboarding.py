@@ -33,6 +33,69 @@ _CATEGORY_SLUGS = frozenset(slug for slug, _ in BUSINESS_CATEGORIES)
 # Source systems we cut over from.
 SOURCE_SYSTEMS = frozenset({"quickbooks", "xero", "other"})
 
+# The cross-language go-live contract consumed by ledger-kernel `goLiveFromDto`.
+GO_LIVE_CONTRACT = "go-live/1"
+
+
+def build_go_live_request(
+    tenant_id: str,
+    source_system: str,
+    cutover_date: str,
+    source_accounts: list[dict[str, object]],
+    *,
+    opening_balance_equity_code: str = "3010",
+    currency: str = "USD",
+    coa_category: str | None = None,
+) -> dict[str, object]:
+    """Assemble a ``go-live/1`` request the TS accounting core executes end to end
+    (seed the COA template, bring over the source's chart + as-of trial balance,
+    post the opening-balance journal, lock the period). ``source_accounts`` is the
+    source system's trial balance: each item needs ``code``, ``name``, and a
+    signed debit-positive ``balance_minor`` (integer minor units), plus a
+    ``subtype`` or ``type`` so a brought-over account can be placed. Validated so a
+    malformed request never reaches the ledger."""
+    if source_system not in SOURCE_SYSTEMS:
+        raise OnboardingError(f"unknown source system {source_system!r}")
+    if coa_category is not None and not is_valid_category(coa_category):
+        raise OnboardingError(f"unknown COA category {coa_category!r}")
+    if not source_accounts:
+        raise OnboardingError("go-live needs at least one source account (the trial balance)")
+
+    accounts: list[dict[str, object]] = []
+    for a in source_accounts:
+        code = str(a.get("code", "")).strip()
+        name = str(a.get("name", "")).strip()
+        if not code or not name:
+            raise OnboardingError("each source account needs a code and a name")
+        raw_balance = a.get("balance_minor")
+        if not isinstance(raw_balance, (int, str)) or isinstance(raw_balance, bool):
+            raise OnboardingError(f"account {code} has a non-integer balance_minor")
+        try:
+            balance_minor = int(raw_balance)
+        except ValueError:
+            raise OnboardingError(f"account {code} has a non-integer balance_minor")
+        if not a.get("subtype") and not a.get("type"):
+            raise OnboardingError(f"account {code} needs a subtype or type to be placed")
+        entry: dict[str, object] = {"code": code, "name": name, "balance_minor": str(balance_minor)}
+        if a.get("subtype"):
+            entry["subtype"] = str(a["subtype"])
+        if a.get("type"):
+            entry["type"] = str(a["type"])
+        accounts.append(entry)
+
+    request: dict[str, object] = {
+        "contract": GO_LIVE_CONTRACT,
+        "tenant_id": tenant_id,
+        "source_system": source_system,
+        "cutover_date": cutover_date,
+        "currency": currency,
+        "opening_balance_equity_code": opening_balance_equity_code,
+        "source_accounts": accounts,
+    }
+    if coa_category is not None:
+        request["coa_category"] = coa_category
+    return request
+
 
 def is_valid_category(slug: str) -> bool:
     return slug in _CATEGORY_SLUGS
@@ -65,6 +128,7 @@ class OnboardingRegistry:
     def __init__(self) -> None:
         self._coa_category: dict[str, str] = {}
         self._cutover: dict[str, CutoverRecord] = {}
+        self._go_live_request: dict[str, dict[str, object]] = {}
 
     # --- COA template choice --------------------------------------------------
     def set_coa_category(self, tenant_id: str, category: str) -> None:
@@ -93,3 +157,11 @@ class OnboardingRegistry:
     def is_live(self, tenant_id: str) -> bool:
         """True once RGNR8 is the system of record for this tenant."""
         return tenant_id in self._cutover
+
+    # --- the go-live/1 handoff to the TS core ---------------------------------
+    def set_go_live_request(self, tenant_id: str, request: dict[str, object]) -> None:
+        self._go_live_request[tenant_id] = request
+
+    def go_live_request(self, tenant_id: str) -> dict[str, object] | None:
+        """The go-live/1 request queued for the TS accounting core, if any."""
+        return self._go_live_request.get(tenant_id)

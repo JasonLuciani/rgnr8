@@ -179,7 +179,23 @@ export interface GoLiveDto {
     readonly subtype?: string;
     readonly type?: string;
   }>;
-  readonly provenance: Provenance;
+  /** Optional; the TS core synthesizes a default when a caller (e.g. the Python
+   * control plane) omits it. */
+  readonly provenance?: Provenance;
+}
+
+/** A default provenance stamped when a go-live/1 DTO omits one. */
+function defaultProvenance(dto: GoLiveDto): Provenance {
+  return {
+    sourceSystem: dto.source_system,
+    sourceObject: "trial_balance",
+    sourceVersion: "1",
+    effectiveDate: dto.cutover_date,
+    postedDate: dto.cutover_date,
+    ingestedAt: dto.cutover_date,
+    normalizationVersion: "go-live/1",
+    mappingVersion: "go-live/1",
+  };
 }
 
 /** Serialize a go-live request to the `go-live/1` contract (minor-unit strings). */
@@ -221,7 +237,7 @@ export function goLiveFromDto(dto: GoLiveDto): GoLiveRequest {
     currency,
     ...(coaCategory ? { coaCategory } : {}),
     openingBalanceEquityCode: dto.opening_balance_equity_code,
-    provenance: dto.provenance,
+    provenance: dto.provenance ?? defaultProvenance(dto),
     sourceAccounts: dto.source_accounts.map((s) => ({
       code: s.code,
       name: s.name,
