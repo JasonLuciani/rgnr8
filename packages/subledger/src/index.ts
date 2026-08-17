@@ -1,6 +1,12 @@
 export { ARSubledger } from "./ar.js";
 export { APSubledger } from "./ap.js";
 export { ageItems } from "./aging.js";
+export {
+  arAgingReport,
+  apAgingReport,
+  type AgingReport,
+  type AgingReportRow,
+} from "./agingReport.js";
 export { reconcileControl, type ControlReconciliation } from "./control.js";
 export {
   applyReceiptsToAR,
