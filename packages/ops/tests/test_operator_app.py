@@ -448,3 +448,35 @@ def test_logout_clears_the_session_cookie() -> None:
     r = app.handle(Request("GET", "/operator/logout"))
     assert r.status == 302
     assert "Max-Age=0" in str(r.headers.get("Set-Cookie", ""))
+
+
+def test_go_live_from_a_qbo_trial_balance() -> None:
+    app, fleet, admin, _billing, _dir, _audit = _app()
+    _bootstrap_tenant(admin)
+    op = {"authorization": f"Bearer {_staff_token(admin, fleet, 'dev@rgnr8.co', Role.OPERATOR)}"}
+    body = json.dumps({
+        "source_system": "quickbooks", "cutover_date": "2026-08-31", "coa_category": "SERVICE_GENERAL",
+        "qbo_trial_balance": [
+            {"code": "1000", "name": "Checking", "account_type": "Bank", "debit_minor": 2500000, "credit_minor": 0},
+            {"code": "2000", "name": "A/P", "account_type": "Accounts Payable", "debit_minor": 0, "credit_minor": 500000},
+            {"code": "3900", "name": "Retained Earnings", "account_type": "Equity", "debit_minor": 0, "credit_minor": 2000000},
+        ],
+    })
+    r = app.handle(Request("POST", "/operator/tenant/seed/go-live", op, body))
+    assert r.status == 200, r.body
+    req = json.loads(r.body)["go_live_request"]
+    sa = {a["code"]: a for a in req["source_accounts"]}
+    assert sa["1000"]["subtype"] == "BANK" and sa["1000"]["balance_minor"] == "2500000"
+    assert sa["2000"]["subtype"] == "ACCOUNTS_PAYABLE" and sa["2000"]["balance_minor"] == "-500000"
+    assert sa["3900"]["subtype"] == "EQUITY"
+
+
+def test_go_live_rejects_unmappable_qbo_account_type() -> None:
+    app, fleet, admin, _billing, _dir, _audit = _app()
+    _bootstrap_tenant(admin)
+    op = {"authorization": f"Bearer {_staff_token(admin, fleet, 'dev@rgnr8.co', Role.OPERATOR)}"}
+    body = json.dumps({
+        "source_system": "quickbooks", "cutover_date": "2026-08-31",
+        "qbo_trial_balance": [{"code": "9", "name": "Mystery", "account_type": "Wizardry", "debit_minor": 1, "credit_minor": 0}],
+    })
+    assert app.handle(Request("POST", "/operator/tenant/seed/go-live", op, body)).status == 400

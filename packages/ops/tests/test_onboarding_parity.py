@@ -60,3 +60,24 @@ def test_go_live_contract_fields_match_ts_dto() -> None:
     sa_body = dto_body.split("source_accounts", 1)[1]
     for f in req["source_accounts"][0].keys():
         assert f in sa_body, f"source-account field {f} not in TS DTO"
+
+
+def test_qbo_subtype_mapping_targets_valid_ts_subtypes() -> None:
+    """Every subtype the QBO/Xero mapper emits must be a real ledger-kernel
+    AccountSubtype enum value, so a mapped source account is placeable in TS."""
+    from rgnr8_ops import qbo_trial_balance_to_source_accounts, subtype_for_account_type
+    from rgnr8_ops.onboarding import _ACCOUNT_TYPE_TO_SUBTYPE
+
+    types_ts = (_TS.parent / "types.ts").read_text()
+    body = types_ts.split("export enum AccountSubtype", 1)[1].split("}", 1)[0]
+    ts_subtypes = set(re.findall(r'=\s*"([A-Z_]+)"', body))
+
+    emitted = set(_ACCOUNT_TYPE_TO_SUBTYPE.values())
+    assert emitted <= ts_subtypes, f"mapper emits non-TS subtypes: {emitted - ts_subtypes}"
+
+    # a concrete map round-trips through the normalizer
+    rows = [{"code": "1000", "name": "Checking", "account_type": "Bank",
+             "debit_minor": 100, "credit_minor": 0}]
+    sa = qbo_trial_balance_to_source_accounts(rows)
+    assert sa[0]["subtype"] in ts_subtypes
+    assert subtype_for_account_type("Accounts Payable") == "ACCOUNTS_PAYABLE"

@@ -36,6 +36,86 @@ SOURCE_SYSTEMS = frozenset({"quickbooks", "xero", "other"})
 # The cross-language go-live contract consumed by ledger-kernel `goLiveFromDto`.
 GO_LIVE_CONTRACT = "go-live/1"
 
+# QBO/Xero account classifications → our AccountSubtype slugs (which match the TS
+# `AccountSubtype` enum values). Keys are lower-cased so provider casing doesn't
+# matter. This is how a source trial balance becomes placeable source accounts.
+_ACCOUNT_TYPE_TO_SUBTYPE: dict[str, str] = {
+    # assets
+    "bank": "BANK",
+    "accounts receivable": "ACCOUNTS_RECEIVABLE",
+    "accounts_receivable": "ACCOUNTS_RECEIVABLE",
+    "undeposited funds": "UNDEPOSITED_FUNDS",
+    "other current asset": "OTHER_CURRENT_ASSET",
+    "other current assets": "OTHER_CURRENT_ASSET",
+    "inventory": "INVENTORY",
+    "fixed asset": "FIXED_ASSET",
+    "fixed assets": "FIXED_ASSET",
+    "other asset": "OTHER_ASSET",
+    "other assets": "OTHER_ASSET",
+    # liabilities
+    "accounts payable": "ACCOUNTS_PAYABLE",
+    "accounts_payable": "ACCOUNTS_PAYABLE",
+    "credit card": "CREDIT_CARD",
+    "other current liability": "OTHER_CURRENT_LIABILITY",
+    "other current liabilities": "OTHER_CURRENT_LIABILITY",
+    "long term liability": "LONG_TERM_LIABILITY",
+    "long-term liability": "LONG_TERM_LIABILITY",
+    # equity
+    "equity": "EQUITY",
+    # income / expense
+    "income": "INCOME",
+    "revenue": "INCOME",
+    "other income": "OTHER_INCOME",
+    "cost of goods sold": "COST_OF_GOODS_SOLD",
+    "expense": "EXPENSE",
+    "expenses": "EXPENSE",
+    "other expense": "OTHER_EXPENSE",
+    "other expenses": "OTHER_EXPENSE",
+}
+
+
+def subtype_for_account_type(account_type: str) -> str | None:
+    """Map a QBO/Xero account classification to our AccountSubtype slug, or None."""
+    return _ACCOUNT_TYPE_TO_SUBTYPE.get(account_type.strip().lower())
+
+
+def qbo_trial_balance_to_source_accounts(
+    rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Normalize a QBO/Xero trial balance into go-live ``source_accounts``. Each
+    row needs a ``code`` (account number), ``name``, an ``account_type`` (QBO
+    classification), and ``debit_minor``/``credit_minor`` integer columns. The
+    signed, debit-positive balance is ``debit − credit``; the account type maps
+    to a subtype so the account can be placed. Rows whose type can't be mapped
+    raise ``OnboardingError`` so nothing silently lands unclassified."""
+    out: list[dict[str, object]] = []
+    for r in rows:
+        code = str(r.get("code", "")).strip()
+        name = str(r.get("name", "")).strip()
+        account_type = str(r.get("account_type", "")).strip()
+        if not code or not name:
+            raise OnboardingError("each trial-balance row needs a code and a name")
+        subtype = subtype_for_account_type(account_type)
+        if subtype is None:
+            raise OnboardingError(f"account {code}: unmappable account type {account_type!r}")
+        def _as_int(v: object, field: str) -> int:
+            if isinstance(v, bool) or not isinstance(v, (int, str)):
+                raise OnboardingError(f"account {code} has non-integer {field}")
+            try:
+                return int(v)
+            except ValueError:
+                raise OnboardingError(f"account {code} has non-integer {field}")
+
+        debit = _as_int(r.get("debit_minor", 0), "debit_minor")
+        credit = _as_int(r.get("credit_minor", 0), "credit_minor")
+        out.append({
+            "code": code,
+            "name": name,
+            "balance_minor": debit - credit,
+            "subtype": subtype,
+        })
+    return out
+
 
 def build_go_live_request(
     tenant_id: str,

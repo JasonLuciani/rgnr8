@@ -45,6 +45,7 @@ from .onboarding import (
     OnboardingError,
     OnboardingRegistry,
     build_go_live_request,
+    qbo_trial_balance_to_source_accounts,
     category_catalog,
     is_valid_category,
 )
@@ -445,16 +446,24 @@ class OperatorApp:
         source_system = str(data.get("source_system", "")).strip()
         if not cutover_date:
             return _json(400, {"error": "cutover_date is required"})
-        raw_accounts = data.get("source_accounts")
-        if not isinstance(raw_accounts, list):
-            return _json(400, {"error": "source_accounts must be a list (the source trial balance)"})
+        # Accept either pre-normalized `source_accounts` or a QBO/Xero-shaped
+        # `qbo_trial_balance` (account_type + debit/credit) we normalize here.
         category = data.get("coa_category")
         coa_category = str(category) if category else self._onboarding.coa_category(tenant_id)
-
+        raw_accounts = data.get("source_accounts")
+        qbo_tb = data.get("qbo_trial_balance")
         try:
+            if isinstance(qbo_tb, list):
+                source_accounts = qbo_trial_balance_to_source_accounts(
+                    [r for r in qbo_tb if isinstance(r, dict)]
+                )
+            elif isinstance(raw_accounts, list):
+                source_accounts = [a for a in raw_accounts if isinstance(a, dict)]
+            else:
+                return _json(400, {"error": "provide source_accounts or qbo_trial_balance (the source trial balance)"})
             request = build_go_live_request(
                 tenant_id, source_system, cutover_date,
-                [a for a in raw_accounts if isinstance(a, dict)],
+                source_accounts,
                 opening_balance_equity_code=str(data.get("opening_balance_equity_code", "3010")),
                 currency=str(data.get("currency", "USD")),
                 coa_category=coa_category,
