@@ -58,12 +58,22 @@ export {
   executeGoLive,
   goLiveToDto,
   goLiveFromDto,
+  sourceAccountsFromTrialBalance,
   GO_LIVE_CONTRACT,
   type SourceAccount,
   type GoLiveRequest,
   type GoLiveResult,
   type GoLiveDto,
+  type TrialBalanceRowInput,
 } from "./goLive.js";
+export {
+  GoLiveWorker,
+  InMemoryGoLiveQueue,
+  type GoLiveJob,
+  type GoLiveJobResult,
+  type GoLiveQueue,
+  type LedgerFor,
+} from "./goLiveWorker.js";
 export {
   convert,
   revalue,

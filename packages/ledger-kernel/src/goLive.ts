@@ -162,6 +162,39 @@ export async function executeGoLive(
   return { chart, createdAccounts: created, cutover };
 }
 
+/**
+ * Map a source system's trial balance (debit/credit columns per account) into
+ * the {@link SourceAccount} shape go-live consumes. The signed, debit-positive
+ * balance is `debit − credit`. This is source-agnostic: a QBO or Xero export is
+ * normalized to `{ code, name, subtype|type, debitMinor, creditMinor }` first
+ * (that provider-specific step lives in the connector), then handed here.
+ */
+export interface TrialBalanceRowInput {
+  readonly code: string;
+  readonly name: string;
+  readonly debitMinor: string | bigint;
+  readonly creditMinor: string | bigint;
+  readonly subtype?: AccountSubtype;
+  readonly type?: AccountType;
+}
+
+export function sourceAccountsFromTrialBalance(
+  rows: readonly TrialBalanceRowInput[],
+  currency: Currency,
+): SourceAccount[] {
+  return rows.map((r) => {
+    const debit = typeof r.debitMinor === "bigint" ? r.debitMinor : BigInt(r.debitMinor);
+    const credit = typeof r.creditMinor === "bigint" ? r.creditMinor : BigInt(r.creditMinor);
+    return {
+      code: r.code,
+      name: r.name,
+      balance: Money.fromMinorUnits(debit - credit, currency),
+      ...(r.subtype ? { subtype: r.subtype } : {}),
+      ...(r.type ? { type: r.type } : {}),
+    };
+  });
+}
+
 // --- go-live/1 serializable contract ----------------------------------------
 
 export interface GoLiveDto {
