@@ -19,3 +19,14 @@ export {
   type ReconcileOptions,
 } from "./reconcile.js";
 export { bookItemsFromCanonical } from "./bridge.js";
+export {
+  ClearedRegister,
+  bankRegister,
+  reconcileBankAccount,
+  finishBankReconciliation,
+  type ClearStatus,
+  type RegisterLine,
+  type BankReconciliation,
+  type BankReconStatus,
+  type ReconcileBankOptions,
+} from "./ledgerRec.js";
