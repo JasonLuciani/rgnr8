@@ -124,6 +124,13 @@ export {
   type AuditQuery,
 } from "./auditLog.js";
 export {
+  AttachmentStore,
+  AttachmentError,
+  type Attachment,
+  type AttachmentInput,
+  type AttachmentTargetKind,
+} from "./attachments.js";
+export {
   inventoryAdjustmentCommand,
   applyAdjustment,
   InventoryError,

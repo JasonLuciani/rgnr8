@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Money, USD, asAccountId, type Provenance } from "@rgnr8/ledger-kernel";
 import {
+  AttachmentError,
+  AttachmentStore,
   AuditLog,
   build1099Report,
   discountDeadlineFor,
@@ -150,4 +152,31 @@ test("a received purchase order converts to a bill", () => {
   const bill = purchaseOrderToBill(po, { id: "b1", date: "2026-08-10", dueDate: "2026-09-09" });
   assert.equal(bill.vendorId, "v1");
   assert.equal(bill.lines.length, 1);
+});
+
+// --- attachments ------------------------------------------------------------
+
+test("attachments link documents to a transaction and soft-remove", () => {
+  const store = new AttachmentStore();
+  store.add("acme", {
+    id: "att1", targetKind: "entry", targetId: "acme:12", filename: "receipt.pdf",
+    contentType: "application/pdf", byteSize: 20480, storageKey: "s3://rgnr8/att1",
+    checksum: "abc123", uploadedBy: "jason", uploadedAt: "2026-08-15T10:00:00Z",
+  });
+  store.add("acme", {
+    id: "att2", targetKind: "entry", targetId: "acme:12", filename: "contract.pdf",
+    contentType: "application/pdf", byteSize: 51200, storageKey: "s3://rgnr8/att2",
+    uploadedBy: "jason", uploadedAt: "2026-08-16T10:00:00Z",
+  });
+  assert.equal(store.forTarget("acme", "entry", "acme:12").length, 2);
+  store.remove("acme", "att1");
+  const left = store.forTarget("acme", "entry", "acme:12");
+  assert.equal(left.length, 1);
+  assert.equal(left[0]!.id, "att2");
+  // tenant isolation
+  assert.equal(store.forTarget("beta", "entry", "acme:12").length, 0);
+  assert.throws(() => store.add("acme", {
+    id: "att2", targetKind: "entry", targetId: "x", filename: "d.pdf",
+    contentType: "application/pdf", byteSize: 1, storageKey: "k", uploadedBy: "j", uploadedAt: "2026-08-16T10:00:00Z",
+  }), AttachmentError);
 });
