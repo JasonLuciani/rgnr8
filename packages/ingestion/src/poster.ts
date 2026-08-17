@@ -10,6 +10,7 @@ import {
 
 import type { CanonicalTransaction } from "./types.js";
 import { toPostingCommands, type AccountMap } from "./mapping.js";
+import type { RuleSet } from "./rules.js";
 
 /**
  * The wire from the ingested feed to the double-entry ledger.
@@ -52,6 +53,8 @@ export interface PostingReport {
 export interface PostOptions {
   /** The post timestamp stamped on new entries (injected — no wall clock). */
   readonly postedAt: string;
+  /** Categorization rules — code matching transactions to specific accounts. */
+  readonly rules?: RuleSet;
 }
 
 /**
@@ -65,7 +68,7 @@ export async function postCanonicalToLedger(
   store: LedgerStore,
   opts: PostOptions,
 ): Promise<PostingReport> {
-  const { commands, skippedTransfers, skippedZero } = toPostingCommands(txns, map);
+  const { commands, skippedTransfers, skippedZero } = toPostingCommands(txns, map, opts.rules);
 
   let posted = 0;
   let alreadyPosted = 0;

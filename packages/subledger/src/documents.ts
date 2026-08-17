@@ -33,6 +33,8 @@ export interface DocumentLine {
   readonly unitAmount?: Money;
   /** GL account this line codes to (income for an invoice, expense for a bill). */
   readonly accountId?: AccountId;
+  /** Whether sales tax applies to this line (default true; falls back to the item). */
+  readonly taxable?: boolean;
 }
 
 export interface InvoiceDoc {
@@ -59,6 +61,7 @@ export interface ResolvedLine {
   readonly unitAmount: Money;
   readonly amount: Money; // unitAmount * quantity
   readonly accountId: AccountId;
+  readonly taxable: boolean;
 }
 
 export class DocumentError extends Error {}
@@ -90,12 +93,14 @@ function resolveLine(
   if (!Number.isInteger(quantity) || quantity <= 0) {
     throw new DocumentError(`Line quantity must be a positive integer, got ${quantity}`);
   }
+  const taxable = line.taxable ?? item?.taxable ?? true;
   return {
     description: line.description ?? item?.name ?? "",
     quantity,
     unitAmount,
     amount: unitAmount.timesInteger(quantity),
     accountId,
+    taxable,
   };
 }
 

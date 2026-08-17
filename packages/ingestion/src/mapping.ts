@@ -1,4 +1,5 @@
 import { asAccountId, asIdempotencyKey, asPeriodKey, asTenantId } from "@rgnr8/ledger-kernel";
+import type { RuleSet } from "./rules.js";
 import type { AccountId, JournalLineInput, PostCommand, Provenance } from "@rgnr8/ledger-kernel";
 import type { CanonicalTransaction } from "./types.js";
 import { TransactionKind } from "./types.js";
@@ -46,6 +47,7 @@ export function defaultAccountMap(prefix = "gl."): AccountMap {
 export function toPostingCommands(
   txns: readonly CanonicalTransaction[],
   map: AccountMap,
+  rules?: RuleSet,
 ): MappedCommands {
   const commands: PostCommand[] = [];
   let skippedTransfers = 0;
@@ -63,7 +65,9 @@ export function toPostingCommands(
 
     const magnitude = t.amount.abs();
     const inflow = t.direction === "INFLOW";
-    const counter = counterAccount(t.kind, inflow, map);
+    // A matching categorization rule codes to a specific account; otherwise fall
+    // back to the kind-based default (the old catch-all behavior).
+    const counter = rules?.accountFor(t) ?? counterAccount(t.kind, inflow, map);
 
     // Cash rises on an inflow (debit cash) and falls on an outflow (credit cash).
     const lines: JournalLineInput[] = inflow

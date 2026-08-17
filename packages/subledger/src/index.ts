@@ -78,3 +78,13 @@ export {
   type VendorDoc,
   type DepositDoc,
 } from "./salesPurchase.js";
+export {
+  taxOnMinor,
+  taxOnAmount,
+  taxableBase,
+  taxedInvoiceToPostCommand,
+  TaxError,
+  type TaxRate,
+  type TaxCode,
+  type TaxedInvoiceResult,
+} from "./tax.js";

@@ -37,3 +37,8 @@ export {
   type PostingReport,
   type PostOptions,
 } from "./poster.js";
+export {
+  RuleSet,
+  type CategoryRule,
+  type RuleMatch,
+} from "./rules.js";
