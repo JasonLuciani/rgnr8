@@ -88,3 +88,12 @@ export {
   type TaxCode,
   type TaxedInvoiceResult,
 } from "./tax.js";
+export {
+  payrollTotals,
+  payrollRunToPostCommand,
+  PayrollError,
+  type PayrollRun,
+  type EmployeePay,
+  type PayrollAccounts,
+  type PayrollTotals,
+} from "./payroll.js";
