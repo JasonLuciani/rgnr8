@@ -41,3 +41,27 @@ export {
   type CustomerHistory,
   type PaymentObservation,
 } from "./types.js";
+export {
+  InMemoryMasterDataStore,
+  dueDateFromTerms,
+  type MasterDataStore,
+  type Customer,
+  type Vendor,
+  type Item,
+  type ItemType,
+  type Address,
+} from "./masterdata.js";
+export {
+  invoiceToPostCommand,
+  billToPostCommand,
+  resolveInvoiceLines,
+  resolveBillLines,
+  sumLines,
+  DocumentError,
+  type InvoiceDoc,
+  type BillDoc,
+  type DocumentLine,
+  type ResolvedLine,
+  type DocPostContext,
+  type ResolveOptions,
+} from "./documents.js";
