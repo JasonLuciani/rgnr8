@@ -407,12 +407,15 @@ def render_connect_page(
     configured: bool,
     status: str | None,
     realm_id: str | None,
+    last_sync: "dict[str, str] | None" = None,
+    sync_flag: str = "",
 ) -> str:
     """The connections page: QuickBooks Online status + a connect / reconnect /
-    disconnect control. Self-contained (relative links only), reuses the shell
-    card/banner/btn CSS."""
+    disconnect control, a Sync-now action, and the last sync's summary.
+    Self-contained (relative links only), reuses the shell card/banner/btn CSS."""
     connect_href = f"/t/{escape(tenant)}/connect/qbo"
     disconnect_href = f"/t/{escape(tenant)}/connect/qbo/disconnect"
+    sync_href = f"/t/{escape(tenant)}/connect/qbo/sync"
 
     if not configured:
         body = (
@@ -433,9 +436,11 @@ def render_connect_page(
 
     if is_connected:
         action = (
+            f'<form method="post" action="{sync_href}" style="display:inline">'
+            f'<button class="btn" type="submit">Sync now</button></form> '
             f'<a class="btn ghost" style="text-decoration:none" href="{connect_href}">Reconnect</a> '
             f'<form method="post" action="{disconnect_href}" style="display:inline">'
-            f'<button class="btn" type="submit">Disconnect</button></form>'
+            f'<button class="btn ghost" type="submit">Disconnect</button></form>'
         )
     else:
         action = (
@@ -443,8 +448,39 @@ def render_connect_page(
             f'Connect QuickBooks</a>'
         )
 
+    # sync result banner
+    sync_note = ""
+    if sync_flag == "ok":
+        sync_note = '<div class="banner good">Synced from QuickBooks.</div>'
+    elif sync_flag == "error":
+        sync_note = ('<div class="banner warn">Couldn\'t reach QuickBooks just now — '
+                     'try Sync again in a moment.</div>')
+
+    # last-sync summary table
+    sync_block = ""
+    if last_sync is not None:
+        company = escape(last_sync.get("company", "")) or "your company"
+        rows = (
+            ("Cash on hand", last_sync.get("cash", ""), last_sync.get("bank_accounts", "0") + " bank account(s)"),
+            ("Open invoices (AR)", last_sync.get("ar_total", ""), last_sync.get("invoice_count", "0") + " invoice(s)"),
+            ("Open bills (AP)", last_sync.get("bill_count", "0") + " bill(s)", last_sync.get("ap_total", "")),
+        )
+        body = "".join(
+            f'<tr><td>{escape(label)}</td><td class="num">{escape(a)}</td>'
+            f'<td class="muted">{escape(b)}</td></tr>'
+            for (label, a, b) in rows
+        )
+        sync_block = (
+            f'<div class="card"><h2>Last sync — {company}</h2>'
+            '<table><thead><tr><th>Figure</th><th></th><th></th></tr></thead>'
+            f'<tbody>{body}</tbody></table>'
+            '<p class="muted" style="font-size:12px;margin-top:10px">These figures now '
+            'drive your cash outlook, briefing, and reports.</p></div>'
+        )
+
     return f"""<h1>Connections</h1>
     <p class="sub">{escape(tenant)} · connect QuickBooks Online to keep the books current</p>
+    {sync_note}
     <div class="card">
       <h2>QuickBooks Online</h2>
       {banner}
@@ -453,7 +489,8 @@ def render_connect_page(
       reports current. You'll be sent to Intuit to authorize access; we never see
       your QuickBooks password.</p>
       <div style="margin-top:12px">{action}</div>
-    </div>"""
+    </div>
+    {sync_block}"""
 
 
 # --- Scenario planning (in-shell what-if owner screen) ----------------------

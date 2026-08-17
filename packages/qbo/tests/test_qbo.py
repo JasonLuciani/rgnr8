@@ -68,6 +68,12 @@ class FakeHttp:
             return self._responses.pop(0)
         return self._token_blob("access-1", "refresh-1")
 
+    def get(self, url: str, headers: Mapping[str, str]) -> HttpResponse:
+        self.calls.append((url, "", headers))
+        if self._responses:
+            return self._responses.pop(0)
+        return HttpResponse(200, json.dumps({"QueryResponse": {}}))
+
 
 def _clock(t: datetime):
     return lambda: t
@@ -286,3 +292,98 @@ def test_sql_connection_store_roundtrip() -> None:
         assert store.get("acme") is None
     finally:
         conn.close()
+
+
+# --- Accounting API client ---------------------------------------------------
+def _qr(body: dict) -> HttpResponse:
+    return HttpResponse(200, json.dumps({"QueryResponse": body, "time": "2026-08-17T00:00:00Z"}))
+
+
+def test_api_client_query_builds_url_and_auth() -> None:
+    from rgnr8_qbo import QboApiClient
+
+    http = FakeHttp([_qr({"CompanyInfo": [{"CompanyName": "Sandbox Co"}]})])
+    client = QboApiClient(http=http, api_base="https://sandbox-quickbooks.api.intuit.com",
+                          realm_id="R9", access_token="tok-abc")
+    company = client.company_info()
+    assert company.name == "Sandbox Co"
+    url, _body, headers = http.calls[0]
+    assert url.startswith("https://sandbox-quickbooks.api.intuit.com/v3/company/R9/query?")
+    assert "minorversion=65" in url
+    assert "from+CompanyInfo" in url or "from%20CompanyInfo" in url
+    assert headers["Authorization"] == "Bearer tok-abc"
+
+
+def test_api_client_bank_accounts() -> None:
+    from rgnr8_qbo import QboApiClient
+
+    http = FakeHttp([_qr({"Account": [
+        {"Id": "35", "Name": "Checking", "AccountType": "Bank", "CurrentBalance": 1201.00},
+        {"Id": "36", "Name": "Savings", "AccountType": "Bank", "CurrentBalance": 800.50},
+    ]})])
+    client = QboApiClient(http=http, api_base="https://x", realm_id="R", access_token="t")
+    banks = client.bank_accounts()
+    assert [b.name for b in banks] == ["Checking", "Savings"]
+    assert banks[0].current_balance == "1201.0"
+    assert banks[1].current_balance == "800.5"
+
+
+def test_api_client_open_invoices_and_bills() -> None:
+    from rgnr8_qbo import QboApiClient
+
+    http = FakeHttp([
+        _qr({"Invoice": [
+            {"Id": "1", "DocNumber": "1001", "Balance": 150.00, "TxnDate": "2026-07-01",
+             "DueDate": "2026-07-31", "CustomerRef": {"value": "3", "name": "Amy's Bird Sanctuary"}},
+        ]}),
+        _qr({"Bill": [
+            {"Id": "7", "Balance": 400.00, "TxnDate": "2026-07-05", "DueDate": "2026-08-04",
+             "VendorRef": {"value": "9", "name": "Norton Lumber"}},
+        ]}),
+    ])
+    client = QboApiClient(http=http, api_base="https://x", realm_id="R", access_token="t")
+    invs = client.open_invoices()
+    assert invs[0].customer == "Amy's Bird Sanctuary" and invs[0].balance == "150.0"
+    bills = client.open_bills()
+    assert bills[0].vendor == "Norton Lumber" and bills[0].due_date == "2026-08-04"
+
+
+def test_api_client_raises_on_error_status() -> None:
+    from rgnr8_qbo import QboApiClient, QboApiError
+
+    http = FakeHttp([HttpResponse(401, '{"fault":"unauthorized"}')])
+    client = QboApiClient(http=http, api_base="https://x", realm_id="R", access_token="stale")
+    with pytest.raises(QboApiError):
+        client.bank_accounts()
+
+
+def test_api_client_empty_query_response_is_safe() -> None:
+    from rgnr8_qbo import QboApiClient
+
+    http = FakeHttp([_qr({})])  # no rows
+    client = QboApiClient(http=http, api_base="https://x", realm_id="R", access_token="t")
+    assert client.bank_accounts() == []
+
+
+def test_service_api_client_refreshes_and_builds() -> None:
+    # a connected tenant whose access token is near expiry -> refreshed, then a
+    # working api client is returned wired to the fresh token.
+    http = FakeHttp([
+        FakeHttp()._token_blob("fresh-access", "fresh-refresh"),   # refresh
+        _qr({"Account": [{"Id": "1", "Name": "Checking", "AccountType": "Bank",
+                          "CurrentBalance": 100.0}]}),               # query
+    ])
+    store = InMemoryConnectionStore()
+    _connect(store, access_exp=T0 + timedelta(seconds=10), refresh_exp=T0 + timedelta(days=80))
+    svc = _service(http, store)
+    client = svc.api_client("acme")
+    assert client is not None
+    banks = client.bank_accounts()
+    assert banks[0].name == "Checking"
+    # the query used the refreshed token
+    assert any("Bearer fresh-access" == h.get("Authorization") for _u, _b, h in http.calls)
+
+
+def test_service_api_client_none_when_not_connected() -> None:
+    svc = _service(FakeHttp(), InMemoryConnectionStore())
+    assert svc.api_client("nobody") is None

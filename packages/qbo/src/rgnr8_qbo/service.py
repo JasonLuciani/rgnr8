@@ -30,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from typing import Callable
 
+from .client import QboApiClient
 from .connection import ConnectionStore, QboConnection, QboStatus
 from .oauth import (
     HttpClient,
@@ -197,6 +198,20 @@ class QboConnectService:
         )
         self._store.save(refreshed)
         return refreshed
+
+    def api_client(self, tenant_id: str) -> QboApiClient | None:
+        """A ready-to-use Accounting API client for a connected tenant, with a
+        freshly-refreshed access token. ``None`` if the tenant isn't connected (or
+        its refresh token has lapsed → reconnect needed)."""
+        conn = self.ensure_fresh(tenant_id)
+        if conn is None or conn.status is not QboStatus.CONNECTED:
+            return None
+        return QboApiClient(
+            http=self._http,
+            api_base=self._config.api_base,
+            realm_id=conn.realm_id,
+            access_token=conn.access_token,
+        )
 
     def disconnect(self, tenant_id: str) -> bool:
         """Revoke at Intuit (best-effort) and drop the stored connection. Returns

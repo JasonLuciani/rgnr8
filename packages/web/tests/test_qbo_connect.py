@@ -179,3 +179,91 @@ def test_callback_is_public_but_requires_valid_state() -> None:
     app, _ = _app()
     r = app.handle(Request("GET", "/oauth/qbo/callback?code=c&state=nope&realmId=1"))
     assert r.status == 400
+
+
+# --- sync: pull the connected company into the forecast ----------------------
+class FakeHttpWithGet:
+    """Fake HTTP whose GETs return queued QBO query responses in order."""
+
+    def __init__(self, gets: list) -> None:
+        self._gets = list(gets)
+        self.get_calls: list[str] = []
+
+    def post(self, url: str, body: str, headers):  # pragma: no cover - unused here
+        return HttpResponse(200, json.dumps({
+            "access_token": "a", "refresh_token": "r", "expires_in": 3600,
+            "x_refresh_token_expires_in": 8_640_000, "token_type": "bearer"}))
+
+    def get(self, url: str, headers):
+        self.get_calls.append(url)
+        return self._gets.pop(0) if self._gets else HttpResponse(200, json.dumps({"QueryResponse": {}}))
+
+
+def _qr(body: dict) -> HttpResponse:
+    return HttpResponse(200, json.dumps({"QueryResponse": body}))
+
+
+def _connected_app():
+    from datetime import timedelta
+    from rgnr8_qbo import QboConnection, QboStatus
+
+    store = InMemoryConnectionStore()
+    store.save(QboConnection(
+        tenant_id="acme", realm_id="R42", access_token="live-tok", refresh_token="r",
+        access_expires_at=T0 + timedelta(hours=1), refresh_expires_at=T0 + timedelta(days=90),
+        status=QboStatus.CONNECTED, connected_at=T0,
+    ))
+    http = FakeHttpWithGet([
+        _qr({"CompanyInfo": [{"CompanyName": "Sandbox Co"}]}),
+        _qr({"Account": [
+            {"Id": "1", "Name": "Checking", "AccountType": "Bank", "CurrentBalance": 1201.00},
+            {"Id": "2", "Name": "Savings", "AccountType": "Bank", "CurrentBalance": 800.50},
+        ]}),
+        _qr({"Invoice": [
+            {"Id": "9", "DocNumber": "1001", "Balance": 150.00, "TxnDate": "2026-07-01",
+             "DueDate": "2026-08-01", "CustomerRef": {"name": "Amy"}},
+        ]}),
+        _qr({"Bill": [
+            {"Id": "5", "Balance": 400.00, "TxnDate": "2026-07-10", "DueDate": "2026-08-10",
+             "VendorRef": {"name": "Norton"}},
+        ]}),
+    ])
+    qbo = QboConnectService(CONFIG, http, store, state_secret=SECRET, clock=lambda: T0)
+    app = WebApp(
+        authenticator=JwtAuthenticator(SECRET, clock=lambda: NOW), users=_users(),
+        session_secret=SECRET, session_clock=lambda: NOW, qbo=qbo,
+    )
+    app.add_tenant("acme", "Acme Co", _inputs(),
+                   ForecastConfig(minimum_cash=usd("10000.00")), token="unused")
+    return app
+
+
+def test_sync_pulls_company_into_forecast() -> None:
+    app = _connected_app()
+    r = app.handle(Request("POST", "/t/acme/connect/qbo/sync", _h("owner@acme.com")))
+    assert r.status == 302
+    assert dict(r.extra_headers)["Location"] == "/t/acme/connect?sync=ok"
+
+    # the connect page now shows the last-sync summary with the real cash total
+    page = app.handle(Request("GET", "/t/acme/connect?sync=ok", _h("owner@acme.com")))
+    assert "Last sync" in page.body and "Sandbox Co" in page.body
+    assert "$2,001.50" in page.body      # 1201.00 + 800.50 bank balances
+    assert "Synced from QuickBooks" in page.body
+
+    # and the dashboard cash-today reflects the synced opening balance
+    home = app.handle(Request("GET", "/app", _h("owner@acme.com")))
+    assert "$2,001.50" in home.body
+
+
+def test_sync_requires_manage_connectors() -> None:
+    app = _connected_app()
+    r = app.handle(Request("POST", "/t/acme/connect/qbo/sync", _h("view@acme.com")))
+    assert r.status == 403
+
+
+def test_sync_without_connection_bounces_to_connect() -> None:
+    # configured QBO but tenant not connected -> redirect to connect (reconnect)
+    app, _ = _app()
+    r = app.handle(Request("POST", "/t/acme/connect/qbo/sync", _h("owner@acme.com")))
+    assert r.status == 302
+    assert dict(r.extra_headers)["Location"] == "/t/acme/connect"

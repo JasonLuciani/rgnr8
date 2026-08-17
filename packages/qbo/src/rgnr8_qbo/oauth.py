@@ -107,11 +107,14 @@ class HttpResponse:
 
 
 class HttpClient(Protocol):
-    """One generic POST is all the OAuth flow needs. ``body`` is already encoded
-    (form or JSON); ``headers`` carry the content type + auth. A fake implements
-    this for tests; :class:`UrllibHttpClient` is the real one."""
+    """A generic POST (for the OAuth token calls) and GET (for the Accounting API
+    reads). ``body`` is already encoded (form or JSON); ``headers`` carry the
+    content type + auth. A fake implements this for tests; :class:`UrllibHttpClient`
+    is the real one."""
 
     def post(self, url: str, body: str, headers: Mapping[str, str]) -> HttpResponse: ...
+
+    def get(self, url: str, headers: Mapping[str, str]) -> HttpResponse: ...
 
 
 class UrllibHttpClient:
@@ -121,10 +124,7 @@ class UrllibHttpClient:
     def __init__(self, *, timeout: float = 30.0) -> None:
         self._timeout = timeout
 
-    def post(self, url: str, body: str, headers: Mapping[str, str]) -> HttpResponse:
-        req = urllib.request.Request(url, data=body.encode("utf-8"), method="POST")
-        for key, value in headers.items():
-            req.add_header(key, value)
+    def _send(self, req: "urllib.request.Request") -> HttpResponse:
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # noqa: S310
                 return HttpResponse(status=int(resp.status), body=resp.read().decode("utf-8"))
@@ -132,6 +132,18 @@ class UrllibHttpClient:
             return HttpResponse(status=int(exc.code), body=exc.read().decode("utf-8", "replace"))
         except urllib.error.URLError as exc:  # network-level failure
             raise QboOAuthError(f"network error contacting Intuit: {exc.reason}") from exc
+
+    def post(self, url: str, body: str, headers: Mapping[str, str]) -> HttpResponse:
+        req = urllib.request.Request(url, data=body.encode("utf-8"), method="POST")
+        for key, value in headers.items():
+            req.add_header(key, value)
+        return self._send(req)
+
+    def get(self, url: str, headers: Mapping[str, str]) -> HttpResponse:
+        req = urllib.request.Request(url, method="GET")
+        for key, value in headers.items():
+            req.add_header(key, value)
+        return self._send(req)
 
 
 # --- flow --------------------------------------------------------------------

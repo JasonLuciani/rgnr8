@@ -25,6 +25,7 @@ from rgnr8_forecast import (
     Money,
     run_forecast,
 )
+from rgnr8_forecast.brand import format_money
 from rgnr8_scenario import (
     DelayCustomerPayment,
     OneTimeFlow,
@@ -72,6 +73,7 @@ from rgnr8_reports import (
     to_json,
 )
 from rgnr8_qbo import QboConnectService, QboStatus
+from .qbo_sync import QboSyncSummary, build_inputs_from_qbo
 
 from .store import InMemoryTenantStore, TenantDef, TenantState, TenantStore
 from .financial_package import (
@@ -227,6 +229,8 @@ class WebApp:
         # QuickBooks Online connect service (OAuth acquisition + token store).
         # When absent, the connect surface reports "not configured" rather than 404.
         self._qbo = qbo
+        # last successful QBO sync summary, per tenant (for the connect page).
+        self._qbo_last_sync: dict[str, QboSyncSummary] = {}
         self._tenants: dict[str, _Tenant] = {}
         self._tokens: dict[str, str] = {}  # bearer token -> tenant_id (default auth)
         # persistence for mutable owner state; in-memory unless a durable one is given
@@ -610,8 +614,9 @@ class WebApp:
         # /t/<tenant>/packages  -> sealed financial-package records (shell page)
         # /t/<tenant>/connect -> the connections page (QBO status + connect button)
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "connect":
+            sync_flag = req.query.get("sync", "")
             return self._require(subject, token_tenant, parts[1], P.MANAGE_CONNECTORS,
-                                 lambda t: self._connect_page(subject, t))
+                                 lambda t: self._connect_page(subject, t, sync_flag))
 
         # /t/<tenant>/connect/qbo -> start the QBO OAuth flow (redirect to Intuit)
         if len(parts) == 4 and parts[0] == "t" and parts[2] == "connect" and parts[3] == "qbo":
@@ -623,6 +628,12 @@ class WebApp:
                 and parts[3] == "qbo" and parts[4] == "disconnect" and req.method == "POST"):
             return self._require(subject, token_tenant, parts[1], P.MANAGE_CONNECTORS,
                                  lambda t: self._qbo_disconnect(subject, t))
+
+        # /t/<tenant>/connect/qbo/sync -> pull the connected company's data
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "connect"
+                and parts[3] == "qbo" and parts[4] == "sync" and req.method == "POST"):
+            return self._require(subject, token_tenant, parts[1], P.MANAGE_CONNECTORS,
+                                 lambda t: self._qbo_sync(subject, t))
 
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "packages":
             return self._require(subject, token_tenant, parts[1], P.VIEW_PACKAGE,
@@ -1355,18 +1366,31 @@ class WebApp:
                            "sections": [s.kind for s in spec.sections]})
 
     # --- QuickBooks Online connect (rgnr8-qbo) -------------------------------
-    def _connect_page(self, subject: str, t: _Tenant) -> Response:
+    def _connect_page(self, subject: str, t: _Tenant, sync_flag: str = "") -> Response:
         """The connections page: QBO status + a Connect / Reconnect / Disconnect
-        control. Shows a "not configured" note when no `QboConnectService` is
-        seated (dev, or before the Intuit app credentials are provided)."""
+        control, a Sync-now action, and the last sync's summary. Shows a "not
+        configured" note when no `QboConnectService` is seated."""
         from .screens import render_connect_page
         configured = self._qbo is not None
         conn = self._qbo.status(t.tenant_id) if self._qbo is not None else None
         status = conn.status.value if conn is not None else None
         realm = conn.realm_id if conn is not None else None
+        summary = self._qbo_last_sync.get(t.tenant_id)
+        last_sync = None
+        if summary is not None:
+            last_sync = {
+                "company": summary.company,
+                "cash": format_money(summary.cash),
+                "bank_accounts": str(summary.bank_accounts),
+                "invoice_count": str(summary.invoice_count),
+                "ar_total": format_money(summary.ar_total),
+                "bill_count": str(summary.bill_count),
+                "ap_total": format_money(summary.ap_total),
+            }
         return self._shell(subject, t, "connect",
                            render_connect_page(t.tenant_id, configured=configured,
-                                               status=status, realm_id=realm))
+                                               status=status, realm_id=realm,
+                                               last_sync=last_sync, sync_flag=sync_flag))
 
     def _qbo_begin(self, t: _Tenant) -> Response:
         """Redirect the owner to Intuit's authorize screen (signed, tenant-bound
@@ -1385,6 +1409,35 @@ class WebApp:
             self._audit.record(subject, "qbo.disconnected", self._session_clock(),
                                tenant_id=t.tenant_id, target=t.tenant_id)
         return _redirect(f"/t/{t.tenant_id}/connect")
+
+    def _qbo_sync(self, subject: str, t: _Tenant) -> Response:
+        """Pull the connected QuickBooks company and rebuild this tenant's forecast
+        inputs from it (cash, AR, AP), so the whole app reflects the live books.
+        501 if QBO isn't configured; if the tenant isn't connected (or its refresh
+        token lapsed) the connect page shows a reconnect prompt."""
+        if self._qbo is None:
+            return _json(501, {"error": "QuickBooks connect is not configured"})
+        client = self._qbo.api_client(t.tenant_id)
+        if client is None:
+            # not connected / needs reconnect — bounce back to the connect page
+            return _redirect(f"/t/{t.tenant_id}/connect")
+        as_of = date.fromtimestamp(self._session_clock())
+        try:
+            inputs, summary = build_inputs_from_qbo(client, as_of=as_of, currency=t.config.currency)
+        except Exception:
+            # a live API failure shouldn't 500 the owner; surface a soft error
+            return _redirect(f"/t/{t.tenant_id}/connect?sync=error")
+        # replace the tenant's inputs with the synced ones; invalidate the cache
+        # so the next forecast/briefing/report recomputes from the live books.
+        t.inputs = inputs
+        t._dirty = True
+        self._qbo_last_sync[t.tenant_id] = summary
+        if self._audit is not None:
+            self._audit.record(subject, "qbo.synced", self._session_clock(),
+                               tenant_id=t.tenant_id,
+                               target=f"cash={summary.cash.to_decimal_string()} "
+                                      f"ar={summary.invoice_count} ap={summary.bill_count}")
+        return _redirect(f"/t/{t.tenant_id}/connect?sync=ok")
 
     def _qbo_callback(self, req: Request) -> Response:
         """Intuit's OAuth redirect target. Verifies the signed `state` (which

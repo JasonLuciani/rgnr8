@@ -44,6 +44,15 @@ from .connection import (
     connection_from_dict,
     connection_to_dict,
 )
+from .client import (
+    MINOR_VERSION,
+    QboAccount,
+    QboApiClient,
+    QboApiError,
+    QboBill,
+    QboCompany,
+    QboInvoice,
+)
 from .service import (
     DEFAULT_STATE_TTL,
     QboConnectService,
@@ -83,4 +92,12 @@ __all__ = [
     "StateSigner",
     "StateError",
     "DEFAULT_STATE_TTL",
+    # api client
+    "QboApiClient",
+    "QboApiError",
+    "QboAccount",
+    "QboInvoice",
+    "QboBill",
+    "QboCompany",
+    "MINOR_VERSION",
 ]
