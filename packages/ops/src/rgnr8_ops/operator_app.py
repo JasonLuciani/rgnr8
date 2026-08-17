@@ -39,6 +39,7 @@ from rgnr8_web import (
 from .console import render_operator_console
 from .fleet import BetaTenant, Fleet
 from .platform import PlatformAdmin, PlatformError
+from .onboarding import OnboardingError, OnboardingRegistry, category_catalog, is_valid_category
 from .report import build_ops_report
 
 
@@ -83,6 +84,8 @@ class OperatorApp:
         self._admin = PlatformAdmin(
             billing, fleet, users, audit, clock=lambda: self._epoch()
         )
+        # Onboarding metadata: the chosen COA template + cutover/go-live status.
+        self._onboarding = OnboardingRegistry()
 
     # --- clock ---------------------------------------------------------------
     def _epoch(self) -> int:
@@ -136,6 +139,11 @@ class OperatorApp:
         if route == "/operator/audit" and req.method == "GET":
             return self._audit_json(req)
 
+        # The catalog of chart-of-accounts templates (by business category) an
+        # operator can pick from at onboarding.
+        if route == "/operator/coa-templates" and req.method == "GET":
+            return _json(200, {"templates": category_catalog()})
+
         # View-as: mint a short-lived token to see a client's account exactly as
         # one of its roles does. Any platform role may launch it (it's audited +
         # time-boxed + globally toggleable); support included, for debugging.
@@ -169,6 +177,16 @@ class OperatorApp:
                 return _json(403, {"error": "changing a plan requires the operator role"})
             return self._account_plan(req, parts[2], subject)
 
+        # /operator/tenant/<id>/cutover — mark / read RGNR8 go-live (system of record)
+        if len(parts) == 4 and parts[0] == "operator" and parts[1] == "tenant" and parts[3] == "cutover":
+            tenant_id = parts[2]
+            if req.method == "GET":
+                return self._cutover_status(tenant_id)
+            if req.method == "POST":
+                if role is not Role.OPERATOR:
+                    return _json(403, {"error": "cutover requires the operator role"})
+                return self._cutover_mark(req, tenant_id, subject)
+
         return _json(404, {"error": "not found"})
 
     # --- handlers ------------------------------------------------------------
@@ -195,6 +213,12 @@ class OperatorApp:
             return _json(400, {"error": f"missing required field {exc.args[0]!r}"})
         if not isinstance(dto, (dict, str)):
             return _json(400, {"error": "dto must be a forecast-inputs/1 object or JSON string"})
+
+        # Optional chart-of-accounts template choice (validated before any side
+        # effects). Recorded on success so the TS core seeds the right chart.
+        coa_category = str(data.get("coa_category", "")).strip()
+        if coa_category and not is_valid_category(coa_category):
+            return _json(400, {"error": f"unknown COA category {coa_category!r}"})
 
         try:
             minimum_cash = Money.from_decimal(str(data.get("minimum_cash")))
@@ -225,7 +249,11 @@ class OperatorApp:
             # a malformed DTO / bad amount surfaces as a 400, not a 500
             return _json(400, {"error": f"could not onboard: {exc}"})
 
-        return _json(201, self._summary(bt, account_id, owner_email))
+        if coa_category:
+            self._onboarding.set_coa_category(tenant_id, coa_category)
+        summary = self._summary(bt, account_id, owner_email)
+        summary["coa_category"] = coa_category or None
+        return _json(201, summary)
 
     def _view_as(self, req: Request, subject: str) -> Response:
         """Launch a view-as session: mint a token to see a tenant as a client role.
@@ -263,6 +291,53 @@ class OperatorApp:
             "expires_in": ttl_seconds,
             "token": token,
         })
+
+    def _cutover_status(self, tenant_id: str) -> Response:
+        if tenant_id not in self._fleet.tenants:
+            return _json(404, {"error": f"unknown tenant {tenant_id}"})
+        rec = self._onboarding.cutover(tenant_id)
+        return _json(200, {
+            "tenant_id": tenant_id,
+            "live": rec is not None,
+            "coa_category": self._onboarding.coa_category(tenant_id),
+            "cutover": None if rec is None else {
+                "source_system": rec.source_system,
+                "cutover_date": rec.cutover_date,
+                "marked_by": rec.marked_by,
+                "marked_at": rec.marked_at,
+                "opening_entry_id": rec.opening_entry_id or None,
+            },
+        })
+
+    def _cutover_mark(self, req: Request, tenant_id: str, operator: str) -> Response:
+        """Mark a client live on RGNR8 (system of record). Body:
+        {"source_system": "quickbooks|xero|other", "cutover_date": "YYYY-MM-DD",
+        "opening_entry_id"?: "..."}. The opening-balance journal itself is posted
+        by the TS core; this records the go-live for the console + audit trail."""
+        if tenant_id not in self._fleet.tenants:
+            return _json(404, {"error": f"unknown tenant {tenant_id}"})
+        try:
+            data = json.loads(req.body) if req.body else {}
+        except json.JSONDecodeError:
+            return _json(400, {"error": "invalid JSON body"})
+        if not isinstance(data, dict):
+            return _json(400, {"error": "body must be a JSON object"})
+        source_system = str(data.get("source_system", "")).strip()
+        cutover_date = str(data.get("cutover_date", "")).strip()
+        if not cutover_date:
+            return _json(400, {"error": "cutover_date is required"})
+        try:
+            rec = self._onboarding.mark_cutover(
+                tenant_id, source_system, cutover_date,
+                marked_by=operator, marked_at=self._epoch(),
+                opening_entry_id=str(data.get("opening_entry_id", "")),
+            )
+        except OnboardingError as exc:
+            return _json(400, {"error": str(exc)})
+        self._audit.record(operator, "tenant.cutover", self._epoch(), tenant_id=tenant_id,
+                           detail=f"{rec.source_system}@{rec.cutover_date}")
+        return _json(200, {"tenant_id": tenant_id, "live": True,
+                           "source_system": rec.source_system, "cutover_date": rec.cutover_date})
 
     def _tenant_users(self, tenant_id: str) -> Response:
         if tenant_id not in self._fleet.tenants:

@@ -39,6 +39,15 @@ from .store import FleetStore, FleetTenantRecord, InMemoryFleetStore, SqlFleetSt
 from .deploy import bootstrap_python_schemas
 from .config import ConfigError, Settings
 from .provisioning import Provisioning, build_provisioning
+from .onboarding import (
+    OnboardingRegistry,
+    OnboardingError,
+    CutoverRecord,
+    category_catalog,
+    is_valid_category,
+    BUSINESS_CATEGORIES,
+    SOURCE_SYSTEMS,
+)
 from .migrate import (
     Migration,
     MigrationDriftError,
@@ -98,6 +107,13 @@ __all__ = [
     "build_fleet_jobs",
     "build_worker",
     "Provisioning",
+    "OnboardingRegistry",
+    "OnboardingError",
+    "CutoverRecord",
+    "category_catalog",
+    "is_valid_category",
+    "BUSINESS_CATEGORIES",
+    "SOURCE_SYSTEMS",
     "build_provisioning",
     "FleetStore",
     "FleetTenantRecord",

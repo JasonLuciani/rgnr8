@@ -286,3 +286,54 @@ def test_operator_changes_a_clients_plan() -> None:
     assert billing.get_account("acct_seed").tier is Tier.ASSISTED
     assert app.handle(Request("POST", "/operator/account/nope/plan", op,
                               json.dumps({"tier": "assisted"}))).status == 404
+
+
+def test_coa_template_catalog_and_onboard_records_category() -> None:
+    app, fleet, admin, _billing, _dir, _audit = _app()
+    _bootstrap_tenant(admin)
+    op = {"authorization": f"Bearer {_staff_token(admin, fleet, 'dev@rgnr8.co', Role.OPERATOR)}"}
+
+    cat = json.loads(app.handle(Request("GET", "/operator/coa-templates", op)).body)
+    slugs = {t["slug"] for t in cat["templates"]}
+    assert "CONTRACTOR_TRADES" in slugs and len(cat["templates"]) == 9
+
+    body = json.dumps({
+        "account_id": "acct_c", "tenant_id": "contractco", "name": "Contract Co",
+        "recipient": "o@contractco.com", "dto": DTO, "minimum_cash": "10000.00",
+        "owner_email": "o@contractco.com", "tier": "co_delivery",
+        "coa_category": "CONTRACTOR_TRADES",
+    })
+    r = app.handle(Request("POST", "/operator/onboard", op, body))
+    assert r.status == 201, r.body
+    assert json.loads(r.body)["coa_category"] == "CONTRACTOR_TRADES"
+    # surfaced on the tenant's cutover/status view
+    st = json.loads(app.handle(Request("GET", "/operator/tenant/contractco/cutover", op)).body)
+    assert st["coa_category"] == "CONTRACTOR_TRADES" and st["live"] is False
+
+    # an unknown category is rejected up front
+    bad = json.dumps({**json.loads(body), "tenant_id": "x", "account_id": "acct_x", "coa_category": "SPACESHIP"})
+    assert app.handle(Request("POST", "/operator/onboard", op, bad)).status == 400
+
+
+def test_cutover_go_live_marks_system_of_record() -> None:
+    app, fleet, admin, _billing, _dir, audit = _app()
+    _bootstrap_tenant(admin)
+    op = {"authorization": f"Bearer {_staff_token(admin, fleet, 'dev@rgnr8.co', Role.OPERATOR)}"}
+    sup = {"authorization": f"Bearer {_staff_token(admin, fleet, 'sam@rgnr8.co', Role.SUPPORT)}"}
+
+    # support can read status but not mark cutover
+    assert app.handle(Request("GET", "/operator/tenant/seed/cutover", sup)).status == 200
+    assert app.handle(Request("POST", "/operator/tenant/seed/cutover", sup,
+                              json.dumps({"source_system": "quickbooks", "cutover_date": "2026-08-31"}))).status == 403
+
+    # operator marks go-live
+    r = app.handle(Request("POST", "/operator/tenant/seed/cutover", op,
+                           json.dumps({"source_system": "quickbooks", "cutover_date": "2026-08-31"})))
+    assert r.status == 200 and json.loads(r.body)["live"] is True
+    st = json.loads(app.handle(Request("GET", "/operator/tenant/seed/cutover", op)).body)
+    assert st["live"] is True and st["cutover"]["source_system"] == "quickbooks"
+    assert any(e.action == "tenant.cutover" for e in audit.events(tenant_id="seed"))
+
+    # a bad source system is a clean 400
+    assert app.handle(Request("POST", "/operator/tenant/seed/cutover", op,
+                              json.dumps({"source_system": "sage", "cutover_date": "2026-08-31"}))).status == 400
