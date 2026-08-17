@@ -2,9 +2,13 @@ import {
   AccountType,
   AccountSubtype,
   ChartOfAccounts,
+  USD,
   getCurrency,
+  templateAccounts,
   type Account,
   type AccountId,
+  type BusinessCategory,
+  type Currency,
   type TenantId,
 } from "@rgnr8/ledger-kernel";
 import { ACCOUNT_DDL } from "./accountSchema.js";
@@ -76,6 +80,21 @@ export class PgAccountStore {
   /** Persist every account in a chart (used to seed a tenant). */
   async saveChart(tenant: TenantId, coa: ChartOfAccounts): Promise<void> {
     for (const account of coa.list()) await this.upsert(tenant, account);
+  }
+
+  /**
+   * Seed a new tenant's chart of accounts from a business-category template
+   * (onboarding). Returns the accounts that were written. Idempotent via
+   * `upsert`, so re-seeding the same category is safe.
+   */
+  async seedFromTemplate(
+    tenant: TenantId,
+    category: BusinessCategory,
+    currency: Currency = USD,
+  ): Promise<Account[]> {
+    const accounts = templateAccounts(category, currency);
+    for (const account of accounts) await this.upsert(tenant, account);
+    return accounts;
   }
 
   /** All persisted accounts for a tenant as domain objects. */

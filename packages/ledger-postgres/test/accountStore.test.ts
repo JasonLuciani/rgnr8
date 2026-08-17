@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   AccountSubtype,
   AccountType,
+  BusinessCategory,
   ChartOfAccounts,
   USD,
   asAccountId,
@@ -65,4 +66,14 @@ test("accounts are isolated per tenant", async () => {
   await store.upsert(T2, acct("cash", "1000", "Beta Cash", AccountType.ASSET));
   assert.equal((await store.listAccounts(T1))[0]!.name, "Acme Cash");
   assert.equal((await store.listAccounts(T2))[0]!.name, "Beta Cash");
+});
+
+test("seedFromTemplate seeds a tenant's chart from a business-category template", async () => {
+  const store = await freshAccountStore();
+  const seeded = await store.seedFromTemplate(asTenantId("newco"), BusinessCategory.CONTRACTOR_TRADES);
+  assert.ok(seeded.length >= 25);
+  const loaded = await store.loadChart(asTenantId("newco"));
+  assert.ok(loaded.list().some((a) => a.name === "Job Materials"));
+  // rehydrated chart is valid (subtype/type consistent) and per-tenant
+  assert.equal((await store.listAccounts(asTenantId("other"))).length, 0);
 });
