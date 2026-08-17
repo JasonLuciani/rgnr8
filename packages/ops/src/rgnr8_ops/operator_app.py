@@ -136,6 +136,19 @@ class OperatorApp:
         if route == "/operator/audit" and req.method == "GET":
             return self._audit_json(req)
 
+        # View-as: mint a short-lived token to see a client's account exactly as
+        # one of its roles does. Any platform role may launch it (it's audited +
+        # time-boxed + globally toggleable); support included, for debugging.
+        if route == "/operator/view-as" and req.method == "POST":
+            return self._view_as(req, subject)
+
+        # The global on/off switch for view-as is an operator-only security
+        # setting ("turn it off once we're live").
+        if route == "/operator/view-as/toggle" and req.method == "POST":
+            if role is not Role.OPERATOR:
+                return _json(403, {"error": "toggling view-as requires the operator role"})
+            return self._view_as_toggle(req, subject)
+
         return _json(404, {"error": "not found"})
 
     # --- handlers ------------------------------------------------------------
@@ -193,6 +206,55 @@ class OperatorApp:
             return _json(400, {"error": f"could not onboard: {exc}"})
 
         return _json(201, self._summary(bt, account_id, owner_email))
+
+    def _view_as(self, req: Request, subject: str) -> Response:
+        """Launch a view-as session: mint a token to see a tenant as a client role.
+        Body: {"tenant_id": "...", "role": "owner|controller|bookkeeper|accountant|viewer",
+        "ttl_seconds"?: int}. A missing/empty role means a plain support session."""
+        try:
+            data = json.loads(req.body) if req.body else {}
+        except json.JSONDecodeError:
+            return _json(400, {"error": "invalid JSON body"})
+        if not isinstance(data, dict):
+            return _json(400, {"error": "body must be a JSON object"})
+        tenant_id = str(data.get("tenant_id", "")).strip()
+        if not tenant_id:
+            return _json(400, {"error": "tenant_id is required"})
+        role_raw = data.get("role")
+        view_as: Role | None = None
+        if role_raw not in (None, ""):
+            try:
+                view_as = Role(str(role_raw))
+            except ValueError:
+                return _json(400, {"error": f"unknown role {role_raw!r}"})
+        ttl = data.get("ttl_seconds", 900)
+        try:
+            ttl_seconds = int(ttl)
+        except (TypeError, ValueError):
+            return _json(400, {"error": "ttl_seconds must be an integer"})
+
+        try:
+            token = self._admin.view_as(subject, tenant_id, view_as, ttl_seconds=ttl_seconds)
+        except PlatformError as exc:
+            return _json(403, {"error": str(exc)})
+        return _json(200, {
+            "tenant_id": tenant_id,
+            "view_as": view_as.value if view_as is not None else None,
+            "expires_in": ttl_seconds,
+            "token": token,
+        })
+
+    def _view_as_toggle(self, req: Request, subject: str) -> Response:
+        """Enable/disable developer view-as globally. Body: {"enabled": bool}."""
+        try:
+            data = json.loads(req.body) if req.body else {}
+        except json.JSONDecodeError:
+            return _json(400, {"error": "invalid JSON body"})
+        if not isinstance(data, dict) or "enabled" not in data:
+            return _json(400, {"error": "body must be {\"enabled\": true|false}"})
+        enabled = bool(data["enabled"])
+        self._admin.set_view_as_enabled(enabled, operator=subject)
+        return _json(200, {"view_as_enabled": self._admin.view_as_enabled})
 
     def _resolve_tier(self, raw: object) -> Tier:
         if raw is None:

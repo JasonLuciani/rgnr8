@@ -186,3 +186,49 @@ def test_bad_json_body_is_400() -> None:
     r = app.handle(Request("POST", "/operator/onboard", hdr, "{not valid json"))
     assert r.status == 400
     assert "JSON" in r.body
+
+
+def test_operator_can_launch_view_as_and_it_is_audited() -> None:
+    from rgnr8_web import verify_jwt
+    app, fleet, admin, _billing, directory, audit = _app()
+    _bootstrap_tenant(admin)
+    token = _staff_token(admin, fleet, "dev@rgnr8.co", Role.OPERATOR)
+    hdr = {"authorization": f"Bearer {token}"}
+
+    r = app.handle(Request("POST", "/operator/view-as", hdr,
+                           json.dumps({"tenant_id": "seed", "role": "viewer", "ttl_seconds": 600})))
+    assert r.status == 200
+    body = json.loads(r.body)
+    assert body["view_as"] == "viewer" and body["tenant_id"] == "seed"
+    claims = verify_jwt(body["token"], SECRET, now=NOW_EPOCH)
+    assert claims["sub"] == "dev@rgnr8.co" and claims["view_as"] == "viewer"
+    assert any(e.action == "support.view_as" for e in audit.events(tenant_id="seed"))
+
+    # an unknown role is a clean 400
+    bad = app.handle(Request("POST", "/operator/view-as", hdr,
+                             json.dumps({"tenant_id": "seed", "role": "wizard"})))
+    assert bad.status == 400
+
+
+def test_view_as_toggle_is_operator_only_and_disables_role_view() -> None:
+    app, fleet, admin, _billing, _dir, _audit = _app()
+    _bootstrap_tenant(admin)
+    op = {"authorization": f"Bearer {_staff_token(admin, fleet, 'dev@rgnr8.co', Role.OPERATOR)}"}
+    sup = {"authorization": f"Bearer {_staff_token(admin, fleet, 'sam@rgnr8.co', Role.SUPPORT)}"}
+
+    # support cannot flip the global switch
+    assert app.handle(Request("POST", "/operator/view-as/toggle", sup,
+                              json.dumps({"enabled": False}))).status == 403
+    # operator disables view-as
+    off = app.handle(Request("POST", "/operator/view-as/toggle", op,
+                             json.dumps({"enabled": False})))
+    assert off.status == 200 and json.loads(off.body)["view_as_enabled"] is False
+
+    # now a role-scoped view-as is refused...
+    denied = app.handle(Request("POST", "/operator/view-as", op,
+                                json.dumps({"tenant_id": "seed", "role": "owner"})))
+    assert denied.status == 403
+    # ...but a plain support session (no role) still works
+    plain = app.handle(Request("POST", "/operator/view-as", op,
+                               json.dumps({"tenant_id": "seed"})))
+    assert plain.status == 200 and json.loads(plain.body)["view_as"] is None
