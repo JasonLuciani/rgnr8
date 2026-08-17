@@ -323,7 +323,18 @@ class AccessPolicy:
     def __init__(self, directory: UserDirectory) -> None:
         self._dir = directory
 
-    def permissions(self, user_id: str, tenant_id: str) -> frozenset[Permission]:
+    def permissions(
+        self, user_id: str, tenant_id: str, *, view_as: Role | None = None
+    ) -> frozenset[Permission]:
+        # "View as a role": a platform user (RGNR8 staff) may look at a tenant
+        # *exactly* as one of its roles would — the point is to reproduce what
+        # that role sees, so we return precisely that role's permission set and
+        # drop the operator's own cross-tenant powers. Ignored for anyone who
+        # doesn't actually hold a platform role (you can't grant yourself sight
+        # you don't have authority for).
+        if view_as is not None and not view_as.is_platform:
+            if self._dir.platform_role(user_id) is not None:
+                return role_permissions(view_as)
         perms: set[Permission] = set()
         m = self._dir.membership(user_id, tenant_id)
         if m is not None:
@@ -333,9 +344,15 @@ class AccessPolicy:
             perms |= role_permissions(pr)
         return frozenset(perms)
 
-    def can(self, user_id: str, tenant_id: str, permission: Permission) -> bool:
-        return permission in self.permissions(user_id, tenant_id)
+    def can(
+        self, user_id: str, tenant_id: str, permission: Permission, *, view_as: Role | None = None
+    ) -> bool:
+        return permission in self.permissions(user_id, tenant_id, view_as=view_as)
 
-    def role_in(self, user_id: str, tenant_id: str) -> Role | None:
+    def role_in(
+        self, user_id: str, tenant_id: str, *, view_as: Role | None = None
+    ) -> Role | None:
+        if view_as is not None and not view_as.is_platform and self._dir.platform_role(user_id) is not None:
+            return view_as
         m = self._dir.membership(user_id, tenant_id)
         return m.role if m is not None else None

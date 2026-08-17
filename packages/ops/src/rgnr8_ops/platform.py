@@ -34,12 +34,17 @@ class PlatformAdmin:
         audit: AuditSink | None = None,
         *,
         clock: Callable[[], int] | None = None,
+        view_as_enabled: bool = True,
     ) -> None:
         self._billing = billing
         self._fleet = fleet
         self._dir = directory
         self._audit = audit
         self._clock = clock if clock is not None else (lambda: int(time.time()))
+        # Master switch for the developer "view-as-role" capability. Left on for
+        # build/support today; flip it off (globally) once the product is in
+        # customers' hands and staff shouldn't be able to see into live books.
+        self._view_as_enabled = view_as_enabled
 
     # --- provisioning --------------------------------------------------------
     def provision_account(
@@ -81,21 +86,54 @@ class PlatformAdmin:
         self._record(operator, "platform_role.granted", target=user_id,
                      detail=role.value if role is not None else "revoked")
 
-    # --- support impersonation (audited, time-boxed) -------------------------
+    # --- support impersonation / view-as (audited, time-boxed) ---------------
     def impersonate(self, support_user: str, tenant_id: str, *, ttl_seconds: int = 900) -> str:
         """Mint a short-lived token to act as a client for support/debugging. Only
         RGNR8 staff (a platform role) may do this, and every use is logged."""
+        return self.view_as(support_user, tenant_id, view_as=None, ttl_seconds=ttl_seconds)
+
+    def view_as(
+        self, support_user: str, tenant_id: str, view_as: Role | None,
+        *, ttl_seconds: int = 900,
+    ) -> str:
+        """Mint a short-lived token that lets RGNR8 staff view a client's account
+        **exactly as one of its roles sees it** (owner / bookkeeper / accountant /
+        viewer). `view_as=None` is a plain support session (the operator's own
+        cross-tenant sight). Only a platform role may do this, it is time-boxed,
+        every use is audited, and the whole capability can be turned off with
+        `set_view_as_enabled(False)` once we're live.
+
+        The token's subject is the SUPPORT user, so every action taken while
+        viewing-as is attributable to staff — you cannot launder a change through
+        a client's identity."""
         role = self._dir.platform_role(support_user)
         if role is None or not role.is_platform:
-            raise PlatformError("impersonation requires a platform role")
+            raise PlatformError("view-as requires a platform role")
+        if view_as is not None:
+            if not self._view_as_enabled:
+                raise PlatformError("developer view-as is disabled")
+            if view_as.is_platform:
+                raise PlatformError(f"{view_as.value} is a platform role, not a client role to view as")
         if tenant_id not in self._fleet.tenants:
             raise PlatformError(f"unknown tenant {tenant_id}")
-        # the impersonation token carries the SUPPORT user as its subject, so every
-        # action taken while acting-as is attributable to them (not the tenant).
-        token = self._fleet.mint_token(tenant_id, subject=support_user, ttl_seconds=ttl_seconds)
-        self._record(support_user, "support.impersonate", tenant_id=tenant_id,
-                     detail=f"ttl={ttl_seconds}s")
+        token = self._fleet.mint_token(
+            tenant_id, subject=support_user, ttl_seconds=ttl_seconds,
+            view_as=view_as.value if view_as is not None else None,
+        )
+        action = "support.view_as" if view_as is not None else "support.impersonate"
+        detail = f"ttl={ttl_seconds}s" + (f" as={view_as.value}" if view_as is not None else "")
+        self._record(support_user, action, tenant_id=tenant_id, detail=detail)
         return token
+
+    def set_view_as_enabled(self, enabled: bool, *, operator: str) -> None:
+        """Globally enable/disable the developer view-as capability (the
+        "turn it off later" switch). Audited."""
+        self._view_as_enabled = enabled
+        self._record(operator, "platform.view_as_toggled", detail="enabled" if enabled else "disabled")
+
+    @property
+    def view_as_enabled(self) -> bool:
+        return self._view_as_enabled
 
     def _record(self, actor: str, action: str, *, tenant_id: str = "", account_id: str = "",
                 target: str = "", detail: str = "") -> None:

@@ -167,6 +167,14 @@ class JwtAuthenticator:
         tenant = claims.get(self._claim)
         return tenant if isinstance(tenant, str) else None
 
+    def view_as_for(self, headers: Mapping[str, str]) -> str | None:
+        """The `view_as` role claim (RGNR8-staff 'see as this role'), if present."""
+        claims = self._claims(headers)
+        if claims is None:
+            return None
+        v = claims.get("view_as")
+        return v if isinstance(v, str) else None
+
     def principal_for(self, headers: Mapping[str, str]) -> tuple[str, str] | None:
         """(tenant, subject). Subject comes from the `sub` claim (the user); it
         falls back to the tenant when the token carries no subject."""

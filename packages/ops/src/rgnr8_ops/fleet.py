@@ -225,15 +225,21 @@ class Fleet:
         return app
 
     def mint_token(self, tenant_id: str, *, subject: str | None = None,
-                   ttl_seconds: int = 3600) -> str:
+                   ttl_seconds: int = 3600, view_as: str | None = None) -> str:
         """A signed session JWT for a tenant (as a real IdP would hand out). The
         token always carries a `sub` (the acting principal) so downstream actions
-        and the audit log attribute correctly — defaults to the tenant's owner."""
+        and the audit log attribute correctly — defaults to the tenant's owner.
+        An optional `view_as` claim carries a client role RGNR8 staff want to see
+        the tenant *as* (owner/bookkeeper/viewer/…); the web app only honors it
+        for a real platform user."""
         if tenant_id not in self.tenants:
             raise KeyError(tenant_id)
         sub = subject if subject is not None else self.tenants[tenant_id].recipient
-        return sign_jwt({"sub": sub, "tenant": tenant_id, "exp": self._clock() + ttl_seconds},
-                        self._secret)
+        claims: dict[str, object] = {"sub": sub, "tenant": tenant_id,
+                                     "exp": self._clock() + ttl_seconds}
+        if view_as is not None:
+            claims["view_as"] = view_as
+        return sign_jwt(claims, self._secret)
 
     def delivery_runtime(self, deliverer: Deliverer) -> DeliveryRuntime:
         """The delivery runtime over this fleet's subscriptions + tenants."""

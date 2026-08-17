@@ -8,6 +8,7 @@ and a token may only reach its own tenant.
 
 from __future__ import annotations
 
+import contextvars
 import dataclasses
 import json
 import time
@@ -204,6 +205,13 @@ def _redirect(location: str, extra: "tuple[tuple[str, str], ...]" = ()) -> Respo
 
 def _json(status: int, payload: object) -> Response:
     return Response(status, json.dumps(payload), "application/json")
+
+
+# Per-request "view as this role" for RGNR8 staff (see rgnr8_ops.PlatformAdmin.
+# view_as). A ContextVar keeps it request-scoped and thread/async-safe without
+# threading an extra argument through every authorization call site. `handle`
+# resets it on each request; only a real platform user's token can set it.
+_VIEW_AS: contextvars.ContextVar[Role | None] = contextvars.ContextVar("rgnr8_view_as", default=None)
 
 
 class WebApp:
@@ -529,9 +537,59 @@ class WebApp:
                     return (t, t)
         return None
 
+    def _resolve_view_as(self, req: Request, subject: str) -> Role | None:
+        """The client role RGNR8 staff want to view this tenant *as*, from the
+        token's `view_as` claim. Honored ONLY when `subject` actually holds a
+        platform role — a normal user's token can never grant it — and only for a
+        real (non-platform) client role. Cheap-guarded: the (common) non-staff
+        case returns before any extra token verification."""
+        if self._users is None:
+            return None
+        if self._users.platform_role(subject) is None:
+            return None  # not RGNR8 staff → never view-as, no matter the claim
+        raw = self._view_as_claim(req)
+        if raw is None:
+            return None
+        try:
+            role = Role(raw)
+        except ValueError:
+            return None
+        return None if role.is_platform else role
+
+    def _view_as_claim(self, req: Request) -> str | None:
+        """Extract the raw `view_as` claim across the same token paths as
+        `_principal` (authenticator bearer/cookie, then dev session_secret)."""
+        if self._auth is not None:
+            vaf = getattr(self._auth, "view_as_for", None)
+            if callable(vaf):
+                got = vaf(req.headers)
+                if isinstance(got, str):
+                    return got
+                cookie = _cookie(req.headers, "rgnr8_session")
+                if cookie is not None:
+                    got = vaf({"authorization": f"Bearer {cookie}"})
+                    if isinstance(got, str):
+                        return got
+        if self._session_secret is not None:
+            cookie = _cookie(req.headers, "rgnr8_session")
+            token = cookie
+            if token is None:
+                auth = req.headers.get("authorization", "")
+                if auth.lower().startswith("bearer "):
+                    token = auth[7:].strip()
+            if token is not None:
+                try:
+                    claims = verify_jwt(token, self._session_secret, now=self._session_clock())
+                except JwtError:
+                    return None
+                v = claims.get("view_as")
+                return v if isinstance(v, str) else None
+        return None
+
     # --- routing -------------------------------------------------------------
     def handle(self, req: Request) -> Response:
         route = req.route
+        _VIEW_AS.set(None)  # reset per request; only a platform token re-sets it
 
         if route == "/health":
             return _json(200, {"status": "ok"})
@@ -568,6 +626,7 @@ class WebApp:
         if principal is None:
             return _json(401, {"error": "missing or invalid bearer token"})
         token_tenant, subject = principal
+        _VIEW_AS.set(self._resolve_view_as(req, subject))
 
         parts = [p for p in route.split("/") if p]
         P = Permission
@@ -781,7 +840,11 @@ class WebApp:
             return _json(403, {"error": "authorization not configured"})
         # RBAC: with a user directory, the caller needs the route's permission in
         # this tenant. Without one, access stays tenant-scoped (back-compat/dev).
-        if self._policy is not None and not self._policy.can(subject, wanted, permission):
+        # When RGNR8 staff are viewing-as a client role, authorization is
+        # evaluated as THAT role (so the experience matches what the role sees).
+        if self._policy is not None and not self._policy.can(
+            subject, wanted, permission, view_as=_VIEW_AS.get()
+        ):
             return _json(403, {"error": "insufficient role", "need": permission.value})
         return fn(self._tenants[wanted])
 
@@ -796,8 +859,9 @@ class WebApp:
             # no RBAC configured — tenant-scoped access, full owner-equivalent view
             return _json(200, {"subject": subject, "tenant": tenant, "role": None,
                                "permissions": [], "rbac": False})
-        perms = sorted(p.value for p in self._policy.permissions(subject, tenant))
-        role = self._policy.role_in(subject, tenant)
+        view_as = _VIEW_AS.get()
+        perms = sorted(p.value for p in self._policy.permissions(subject, tenant, view_as=view_as))
+        role = self._policy.role_in(subject, tenant, view_as=view_as)
         user = self._users.get_user(subject)
         if not perms:
             return _json(403, {"error": "no access to this business"})
@@ -809,6 +873,8 @@ class WebApp:
             "role": role.value if role is not None else None,
             "permissions": perms,
             "rbac": True,
+            # surfaced so the UI can show a "You are viewing as <role>" banner
+            "viewing_as": view_as.value if view_as is not None else None,
         })
 
     def _users_list(self, t: _Tenant) -> Response:
@@ -863,7 +929,11 @@ class WebApp:
 
     def _perms_role(self, subject: str, tenant: str) -> tuple[frozenset[Permission], Role | None]:
         if self._policy is not None:
-            return self._policy.permissions(subject, tenant), self._policy.role_in(subject, tenant)
+            va = _VIEW_AS.get()
+            return (
+                self._policy.permissions(subject, tenant, view_as=va),
+                self._policy.role_in(subject, tenant, view_as=va),
+            )
         # no RBAC directory → tenant-scoped access = full owner-equivalent view
         return frozenset(Permission), None
 

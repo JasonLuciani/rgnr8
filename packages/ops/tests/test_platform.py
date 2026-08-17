@@ -89,3 +89,51 @@ def test_grant_rejects_non_platform_role() -> None:
         assert False, "expected PlatformError"
     except PlatformError:
         pass
+
+
+def test_view_as_role_carries_the_role_claim_and_audits() -> None:
+    admin, directory, audit, _billing = _admin()
+    admin.provision_account("acct_1", "N", "b@n.com", Tier.CO_DELIVERY, operator="ops@rgnr8.co")
+    admin.onboard_business("acct_1", "northwind", "N", "o@n.com", _dto(),
+                           Money.from_decimal("25000.00"), "o@n.com", operator="ops@rgnr8.co")
+    admin.grant_platform_role("sam@rgnr8.co", Role.SUPPORT, operator="ops@rgnr8.co")
+
+    token = admin.view_as("sam@rgnr8.co", "northwind", Role.BOOKKEEPER, ttl_seconds=600)
+    claims = verify_jwt(token, SECRET, now=NOW)
+    assert claims["tenant"] == "northwind"
+    assert claims["sub"] == "sam@rgnr8.co"          # staff identity, not the client
+    assert claims["view_as"] == "bookkeeper"
+    ev = [e for e in audit.events(tenant_id="northwind") if e.action == "support.view_as"]
+    assert ev and "as=bookkeeper" in ev[0].detail
+
+
+def test_view_as_rejects_platform_role_as_target() -> None:
+    admin, _dir, _audit, _billing = _admin()
+    admin.provision_account("acct_1", "N", "b@n.com", Tier.CO_DELIVERY, operator="ops@rgnr8.co")
+    admin.onboard_business("acct_1", "northwind", "N", "o@n.com", _dto(),
+                           Money.from_decimal("25000.00"), "o@n.com", operator="ops@rgnr8.co")
+    admin.grant_platform_role("sam@rgnr8.co", Role.SUPPORT, operator="ops@rgnr8.co")
+    try:
+        admin.view_as("sam@rgnr8.co", "northwind", Role.OPERATOR)
+        assert False, "expected PlatformError (platform role is not a client role)"
+    except PlatformError:
+        pass
+
+
+def test_view_as_can_be_globally_disabled() -> None:
+    admin, _dir, audit, _billing = _admin()
+    admin.provision_account("acct_1", "N", "b@n.com", Tier.CO_DELIVERY, operator="ops@rgnr8.co")
+    admin.onboard_business("acct_1", "northwind", "N", "o@n.com", _dto(),
+                           Money.from_decimal("25000.00"), "o@n.com", operator="ops@rgnr8.co")
+    admin.grant_platform_role("sam@rgnr8.co", Role.SUPPORT, operator="ops@rgnr8.co")
+
+    admin.set_view_as_enabled(False, operator="ops@rgnr8.co")
+    assert admin.view_as_enabled is False
+    try:
+        admin.view_as("sam@rgnr8.co", "northwind", Role.OWNER)
+        assert False, "expected PlatformError when view-as disabled"
+    except PlatformError:
+        pass
+    # a plain support session (no role) still works even when view-as is off
+    admin.impersonate("sam@rgnr8.co", "northwind")
+    assert any(e.action == "platform.view_as_toggled" for e in audit.events())

@@ -97,3 +97,47 @@ def test_a_stranger_with_a_valid_token_but_no_membership_is_forbidden() -> None:
     r = _get(app, "/api/acme/today", "u-nobody")
     assert r.status == 403
     assert _get(app, "/api/acme/me", "u-nobody").status == 403
+
+def _tok_view_as(sub: str, view_as: str | None, tenant: str = "acme") -> str:
+    claims: dict[str, object] = {"sub": sub, "tenant": tenant, "exp": NOW + 3600}
+    if view_as is not None:
+        claims["view_as"] = view_as
+    return sign_jwt(claims, SECRET)
+
+
+def _app_with_staff() -> WebApp:
+    users = InMemoryUserDirectory()
+    users.upsert_user(User("u-owner", "owner@acme.com", "Owner"))
+    users.set_membership("u-owner", "acme", Role.OWNER)
+    # a support engineer with a PLATFORM role and no client membership
+    users.upsert_user(User("sam@rgnr8.co", "sam@rgnr8.co", "Sam (staff)"))
+    users.set_platform_role("sam@rgnr8.co", Role.SUPPORT)
+    app = WebApp(authenticator=JwtAuthenticator(SECRET, clock=lambda: NOW), users=users)
+    app.add_tenant("acme", "Acme Co", _inputs(), ForecastConfig(minimum_cash=Money.from_decimal("10000.00")),
+                   token="unused")
+    return app
+
+
+def test_staff_view_as_viewer_sees_exactly_viewer_permissions() -> None:
+    app = _app_with_staff()
+    tok = _tok_view_as("sam@rgnr8.co", "viewer")
+    r = app.handle(Request("GET", "/api/acme/me", {"authorization": f"Bearer {tok}"}, ""))
+    body = json.loads(r.body)
+    assert body["viewing_as"] == "viewer"
+    assert body["role"] == "viewer"
+    # viewer can read cash but NOT edit assumptions — even though Sam is staff
+    assert "edit_assumptions" not in body["permissions"]
+    assert app.handle(Request("GET", "/api/acme/today", {"authorization": f"Bearer {tok}"}, "")).status == 200
+    w = app.handle(Request("POST", "/api/acme/assumptions", {"authorization": f"Bearer {tok}"},
+                           '{"minimum_cash":"5000.00"}'))
+    assert w.status == 403  # blocked as a viewer would be
+
+
+def test_view_as_ignored_for_a_non_staff_user() -> None:
+    app = _app_with_staff()
+    # u-owner is NOT staff; a forged view_as claim must be ignored (stays owner)
+    tok = _tok_view_as("u-owner", "viewer")
+    body = json.loads(app.handle(Request("GET", "/api/acme/me", {"authorization": f"Bearer {tok}"}, "")).body)
+    assert body["viewing_as"] is None
+    assert body["role"] == "owner"
+    assert "edit_assumptions" in body["permissions"]
