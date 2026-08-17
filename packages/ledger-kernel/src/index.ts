@@ -36,6 +36,16 @@ export {
 
 export { ChartOfAccounts } from "./chartOfAccounts.js";
 export {
+  convert,
+  revalue,
+  fxRevaluationCommand,
+  FxRateTable,
+  type FxRate,
+  type RevaluationInput,
+  type Revaluation,
+  type FxRevaluationCommandOptions,
+} from "./fx.js";
+export {
   PeriodRegistry,
   InMemoryPeriodStore,
   type PeriodStore,
@@ -55,6 +65,14 @@ export {
   type TrialBalanceRow,
   type DateWindow,
 } from "./trialBalance.js";
+
+export {
+  DimensionRegistry,
+  DimensionError,
+  trialBalanceByDimension,
+  UNASSIGNED,
+  type DimensionDef,
+} from "./dimensions.js";
 
 export {
   LedgerError,
