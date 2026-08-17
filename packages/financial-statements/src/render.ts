@@ -5,8 +5,7 @@
  * engine: totals and lines in accessible tables.
  */
 
-import { RG_THEME_CSS, brandBar } from "@rgnr8/ledger-kernel";
-import type { Money } from "@rgnr8/ledger-kernel";
+import { Money, RG_THEME_CSS, brandBar } from "@rgnr8/ledger-kernel";
 import type {
   BalanceSheet,
   CashFlowStatement,
@@ -14,6 +13,9 @@ import type {
   PeriodComparison,
   StatementLine,
 } from "./statements.js";
+import type { TrialBalance } from "./accounts.js";
+import type { GlDetailAccount } from "./glDetail.js";
+import type { RetainedEarnings } from "./retainedEarnings.js";
 
 function esc(s: string): string {
   return s
@@ -138,6 +140,65 @@ export function renderPeriodComparison(pc: PeriodComparison): string {
     totalRowV("Net income", pc.netIncome) +
     "</tbody></table></div>";
   return card("Period Comparison", body);
+}
+
+/** Render a trial balance (debit/credit columns) fragment. */
+export function renderTrialBalance(tb: TrialBalance): string {
+  const zero = Money.zero(tb.currency);
+  let dr = zero;
+  let cr = zero;
+  const rows = tb.entries
+    .map((e) => {
+      const debit = e.signed.isNegative() ? zero : e.signed;
+      const credit = e.signed.isNegative() ? e.signed.negate() : zero;
+      dr = dr.plus(debit);
+      cr = cr.plus(credit);
+      return `<tr><td>${esc(e.code)}</td><td>${esc(e.name)}</td>${fmt(debit)}${fmt(credit)}</tr>`;
+    })
+    .join("");
+  const banner = dr.equals(cr)
+    ? '<div class="banner good">In balance — total debits = total credits</div>'
+    : '<div class="banner warn">Out of balance</div>';
+  const body =
+    banner +
+    '<div class="table-scroll"><table><thead><tr><th>Code</th><th>Account</th><th class="num">Debit</th><th class="num">Credit</th></tr></thead><tbody>' +
+    rows +
+    `<tr><td colspan="2" style="font-weight:700">Totals</td>${fmt(dr)}${fmt(cr)}</tr>` +
+    "</tbody></table></div>";
+  return card("Trial Balance", body);
+}
+
+/** Render a single account's GL detail (drill-down) fragment. */
+export function renderGlDetailAccount(acct: GlDetailAccount): string {
+  const rows = acct.rows
+    .map(
+      (r) =>
+        `<tr><td>${esc(r.date)}</td><td>${esc(r.memo)}</td>${fmt(r.debit)}${fmt(r.credit)}${fmt(
+          r.balance,
+        )}</tr>`,
+    )
+    .join("");
+  const body =
+    '<div class="table-scroll"><table><thead><tr><th>Date</th><th>Memo</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Balance</th></tr></thead><tbody>' +
+    `<tr><td colspan="4" style="font-weight:600">Opening balance</td>${fmt(acct.opening)}</tr>` +
+    rows +
+    `<tr><td colspan="2" style="font-weight:700">Closing balance</td>${fmt(acct.totalDebit)}${fmt(
+      acct.totalCredit,
+    )}${fmt(acct.closing)}</tr>` +
+    "</tbody></table></div>";
+  return card(`GL Detail — ${esc(acct.code)} ${esc(acct.name)}`, body);
+}
+
+/** Render a statement of retained earnings fragment. */
+export function renderRetainedEarnings(re: RetainedEarnings): string {
+  const body =
+    '<div class="table-scroll"><table><tbody>' +
+    totalRow("Beginning retained earnings", re.beginning, false) +
+    totalRow("Net income", re.netIncome, false) +
+    totalRow("Distributions", re.distributions.negate(), false) +
+    totalRow("Ending retained earnings", re.ending) +
+    "</tbody></table></div>";
+  return card("Statement of Retained Earnings", body);
 }
 
 export interface StatementReport {
