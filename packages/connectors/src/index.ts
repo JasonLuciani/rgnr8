@@ -44,6 +44,11 @@ export {
   type OpsConnectorStatusJson,
 } from "./health.js";
 export {
+  LedgerPostingSink,
+  type LedgerSinkOptions,
+  type LedgerSinkOutcome,
+} from "./postingSink.js";
+export {
   SyncRuntime,
   serveSync,
   InMemorySyncScheduleStore,

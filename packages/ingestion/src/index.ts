@@ -16,6 +16,7 @@ export { detectInternalTransfers, type TransferCandidate } from "./transfers.js"
 export { IngestionPipeline, type PipelineOptions } from "./pipeline.js";
 export { BankPlaidLikeAdapter } from "./adapters/bankPlaidLike.js";
 export { PayrollGustoLikeAdapter } from "./adapters/payrollGustoLike.js";
+export { QboLikeAdapter } from "./adapters/qboLike.js";
 export {
   parseOfx,
   parseStatementCsv,
