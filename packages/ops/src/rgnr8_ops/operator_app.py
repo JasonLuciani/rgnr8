@@ -28,15 +28,17 @@ from rgnr8_forecast import Money
 from rgnr8_billing import BillingError, BillingService, EntitlementError, Tier
 from rgnr8_web import (
     AuditSink,
+    AuthService,
     JwtError,
     Request,
     Response,
     Role,
     UserDirectory,
+    sign_jwt,
     verify_jwt,
 )
 
-from .console import render_operator_console
+from .console import render_operator_console, render_operator_login
 from .fleet import BetaTenant, Fleet
 from .platform import PlatformAdmin, PlatformError
 from .onboarding import (
@@ -47,6 +49,18 @@ from .onboarding import (
     is_valid_category,
 )
 from .report import build_ops_report
+
+
+def _redirect(location: str, extra: "tuple[tuple[str, str], ...]" = ()) -> Response:
+    return Response(302, "", "text/html; charset=utf-8", (("Location", location), *extra))
+
+
+def _cookie(headers: "dict[str, str]", name: str) -> str | None:
+    for part in headers.get("cookie", "").split(";"):
+        k, _, v = part.strip().partition("=")
+        if k == name:
+            return v or None
+    return None
 
 
 def _json(status: int, payload: object) -> Response:
@@ -78,6 +92,7 @@ class OperatorApp:
         jwt_secret: str,
         *,
         clock: Callable[[], datetime],
+        auth_service: AuthService | None = None,
     ) -> None:
         self._fleet = fleet
         self._billing = billing
@@ -85,6 +100,9 @@ class OperatorApp:
         self._audit = audit
         self._secret = jwt_secret
         self._clock = clock
+        # When set, staff can sign into the console in a browser (email+password
+        # → session cookie). Without it, the console is bearer-JWT only (as before).
+        self._auth_service = auth_service
         # One shared admin path with the platform API: provision + entitlement-
         # checked onboarding + owner seating + audit, all in PlatformAdmin.
         self._admin = PlatformAdmin(
@@ -105,9 +123,12 @@ class OperatorApp:
         platform role in the directory. Returns `(subject, platform_role)` on
         success, else the error `Response` to return."""
         auth = req.headers.get("authorization", "")
-        if not auth.lower().startswith("bearer "):
+        token = auth[7:].strip() if auth.lower().startswith("bearer ") else None
+        if token is None:
+            # browser session: the login cookie the console's sign-in set
+            token = _cookie(req.headers, "rgnr8_operator")
+        if not token:
             return _json(401, {"error": "missing bearer token"})
-        token = auth[7:].strip()
         try:
             claims = verify_jwt(token, self._secret, now=self._epoch())
         except JwtError:
@@ -120,6 +141,43 @@ class OperatorApp:
             return _json(403, {"error": "not RGNR8 staff"})
         return (sub, role)
 
+    def _login_post(self, req: Request) -> Response:
+        """Verify a staff credential and, only for a platform role, set a session
+        cookie. Non-committal on failure (never reveals why). Requires an
+        AuthService (the credential store) to be wired."""
+        if self._auth_service is None:
+            return _html(400, render_operator_login(error="Browser login is not configured."))
+        data = self._form_or_json(req.body)
+        email = str(data.get("email", "")).strip()
+        password = str(data.get("password", ""))
+        subject = self._auth_service.login(email, password) if "@" in email else None
+        if subject is None:
+            return _html(401, render_operator_login(error="Invalid email or password."))
+        role = self._dir.platform_role(subject)
+        if role is None or not role.is_platform:
+            # authenticated, but not RGNR8 staff — no console access
+            return _html(403, render_operator_login(error="Your account isn't RGNR8 staff."))
+        token = sign_jwt({"sub": subject, "role": role.value, "exp": self._epoch() + 8 * 3600},
+                         self._secret)
+        cookie = f"rgnr8_operator={token}; Path=/; Max-Age=28800; HttpOnly; SameSite=Lax"
+        self._audit.record(subject, "operator.login", self._epoch(), detail=role.value)
+        return _redirect("/operator", (("Set-Cookie", cookie),))
+
+    @staticmethod
+    def _form_or_json(body: str) -> dict[str, object]:
+        if not body:
+            return {}
+        stripped = body.lstrip()
+        if stripped.startswith("{"):
+            try:
+                parsed = json.loads(stripped)
+                return parsed if isinstance(parsed, dict) else {}
+            except json.JSONDecodeError:
+                return {}
+        # form-encoded (a browser <form> POST)
+        from urllib.parse import parse_qsl
+        return {k: v for k, v in parse_qsl(body)}
+
     # --- routing -------------------------------------------------------------
     def handle(self, req: Request) -> Response:
         route = req.route
@@ -127,6 +185,17 @@ class OperatorApp:
         # health is unauthenticated (load balancers / deploy checks)
         if route == "/health":
             return _json(200, {"status": "ok"})
+
+        # browser sign-in (unauthenticated): only when a credential service is wired
+        if route == "/operator/login" and req.method == "GET":
+            if self._auth_service is None:
+                return _json(404, {"error": "browser login is not configured"})
+            return _html(200, render_operator_login())
+        if route == "/operator/login" and req.method == "POST":
+            return self._login_post(req)
+        if route == "/operator/logout":
+            return _redirect("/operator/login",
+                             (("Set-Cookie", "rgnr8_operator=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"),))
 
         principal = self._staff(req)
         if isinstance(principal, Response):

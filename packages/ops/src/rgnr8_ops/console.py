@@ -129,7 +129,7 @@ def render_operator_console(
 <body>
 <header class="rg-bar">
   <span class="rg-lockup">{mark_svg(22, "#F2EFE6")}<span class="rg-wordmark">RGNR<span class="rg-8">8</span></span></span>
-  <span class="rg-who"><span>{_esc(operator)}</span><span class="rg-rolechip">Operator</span></span>
+  <span class="rg-who"><span>{_esc(operator)}</span><span class="rg-rolechip">Operator</span><a href="/operator/logout" style="color:#DDE6DD;text-decoration:underline;font-size:12px">Sign out</a></span>
 </header>
 <div class="wrap">
   <h1>Operator console</h1>
@@ -159,5 +159,43 @@ def render_operator_console(
 {rows or empty}
     </tbody>
   </table></div>
+</div>
+</body></html>"""
+
+
+def render_operator_login(*, error: str = "") -> str:
+    """A minimal, brand-consistent staff login for the operator console. Posts
+    email+password to /operator/login, which verifies the credential and (only for
+    a platform role) sets a session cookie."""
+    err = f'<div class="banner warn">{_esc(error)}</div>' if error else ""
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RGNR8 — operator sign in</title>
+<style>
+{RG_TOKENS_CSS}
+{RG_BASE_CSS}
+  .box{{max-width:380px;margin:8vh auto;padding:0 20px}}
+  h1{{font-size:20px;margin:0 0 4px;font-weight:800}}
+  .sub{{color:var(--rg-muted);margin:0 0 18px;font-size:13px}}
+  label{{display:block;font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--rg-muted);margin:12px 0 6px}}
+  input{{width:100%;padding:11px 12px;border:1px solid var(--rg-line);border-radius:10px;font:inherit;background:#fff;color:var(--rg-ink)}}
+  .btn{{padding:11px 16px;margin-top:16px;width:100%}}
+</style></head>
+<body>
+<header class="rg-bar">
+  <span class="rg-lockup">{mark_svg(22, "#F2EFE6")}<span class="rg-wordmark">RGNR<span class="rg-8">8</span></span></span>
+</header>
+<div class="box">
+  <div class="card">
+    <h1>Operator sign in</h1>
+    <p class="sub">RGNR8 staff only. Your account must hold an operator or support role.</p>
+    {err}
+    <form method="post" action="/operator/login">
+      <label>Work email</label><input name="email" type="email" placeholder="you@rgnr8.co" autocomplete="username">
+      <label>Password</label><input name="password" type="password" autocomplete="current-password">
+      <button class="btn" type="submit">Sign in</button>
+    </form>
+  </div>
 </div>
 </body></html>"""

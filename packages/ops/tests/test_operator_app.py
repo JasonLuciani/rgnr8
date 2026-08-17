@@ -378,3 +378,73 @@ def test_go_live_rejects_a_malformed_trial_balance() -> None:
     # empty trial balance → 400
     empty = json.dumps({"source_system": "quickbooks", "cutover_date": "2026-08-31", "source_accounts": []})
     assert app.handle(Request("POST", "/operator/tenant/seed/go-live", op, empty)).status == 400
+
+
+def _auth_app():
+    """An OperatorApp with a real credential service, plus a helper to register a
+    verified staff credential."""
+    from rgnr8_web import (
+        AuthService, InMemoryCredentialStore, InMemoryVerificationTokenStore,
+    )
+    billing = BillingService(InMemoryAccountStore(), FakeBillingProvider(), clock=lambda: NOW_EPOCH)
+    fleet = Fleet(jwt_secret=SECRET, clock=lambda: NOW_EPOCH)
+    directory = InMemoryUserDirectory()
+    audit = InMemoryAuditLog()
+    admin = PlatformAdmin(billing, fleet, directory, audit, clock=lambda: NOW_EPOCH)
+    svc = AuthService(
+        InMemoryCredentialStore(), InMemoryVerificationTokenStore(), audit,
+        clock=lambda: NOW_EPOCH, min_password_length=8,
+    )
+    app = OperatorApp(fleet, billing, directory, audit, SECRET, clock=lambda: NOW, auth_service=svc)
+
+    def register_staff(email: str, password: str, role: Role) -> None:
+        _cred, token = svc.signup(email, password)
+        svc.verify_email(token)
+        admin.grant_platform_role(email, role, operator="root@rgnr8.co")
+
+    return app, admin, svc, directory, audit, register_staff
+
+
+def test_browser_login_sets_session_cookie_for_staff() -> None:
+    app, admin, _svc, _dir, _audit, register_staff = _auth_app()
+    _bootstrap_tenant(admin)
+    register_staff("dev@rgnr8.co", "hunter2222", Role.OPERATOR)
+
+    # login page renders
+    assert app.handle(Request("GET", "/operator/login")).status == 200
+    # sign in → 302 with a session cookie
+    r = app.handle(Request("POST", "/operator/login", {"content-type": "application/json"},
+                           json.dumps({"email": "dev@rgnr8.co", "password": "hunter2222"})))
+    assert r.status == 302
+    set_cookie = str(r.headers.get("Set-Cookie", ""))
+    assert set_cookie.startswith("rgnr8_operator=")
+    token = set_cookie.split("=", 1)[1].split(";", 1)[0]
+
+    # the cookie authenticates the console (no bearer header needed)
+    console = app.handle(Request("GET", "/operator", {"cookie": f"rgnr8_operator={token}"}))
+    assert console.status == 200 and "Operator console" in console.body
+
+
+def test_browser_login_rejects_bad_password_and_non_staff() -> None:
+    app, admin, svc, _dir, _audit, register_staff = _auth_app()
+    _bootstrap_tenant(admin)
+    register_staff("dev@rgnr8.co", "hunter2222", Role.OPERATOR)
+    # wrong password → 401, no session cookie issued
+    bad = app.handle(Request("POST", "/operator/login", {"content-type": "application/json"},
+                             json.dumps({"email": "dev@rgnr8.co", "password": "nope"})))
+    assert bad.status == 401
+    assert not str(bad.headers.get("Set-Cookie", "")).startswith("rgnr8_operator=")
+
+    # a verified user who is NOT staff can authenticate but gets no console
+    svc.verify_email(svc.signup("owner@acme.com", "hunter2222")[1])
+    nonstaff = app.handle(Request("POST", "/operator/login", {"content-type": "application/json"},
+                                  json.dumps({"email": "owner@acme.com", "password": "hunter2222"})))
+    assert nonstaff.status == 403
+
+
+def test_logout_clears_the_session_cookie() -> None:
+    app, admin, _svc, _dir, _audit, register_staff = _auth_app()
+    _bootstrap_tenant(admin)
+    r = app.handle(Request("GET", "/operator/logout"))
+    assert r.status == 302
+    assert "Max-Age=0" in str(r.headers.get("Set-Cookie", ""))
