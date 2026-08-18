@@ -205,6 +205,54 @@ class LedgerClient:
             payload["memo"] = memo
         return self._call("POST", f"/t/{tenant}/{kind}/{doc_id}/payments", payload)
 
+    # --- the bank feed review inbox ------------------------------------------
+
+    def feed_inbox(
+        self, tenant: str, *, account_code: str = "", status: str = ""
+    ) -> LedgerResponse:
+        parts = []
+        if account_code:
+            parts.append(f"account_code={urllib.parse.quote(account_code)}")
+        if status:
+            parts.append(f"status={urllib.parse.quote(status)}")
+        qs = f"?{'&'.join(parts)}" if parts else ""
+        return self._call("GET", f"/t/{tenant}/feed{qs}")
+
+    def feed_deliver(
+        self, tenant: str, account_code: str, transactions: list[dict[str, object]],
+        *, source: str = "feed",
+    ) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/feed/{account_code}",
+            {"source": source, "transactions": transactions},
+        )
+
+    def feed_action(
+        self, tenant: str, txn_id: str, action: str, payload: Mapping[str, object] | None = None
+    ) -> LedgerResponse:
+        """action: accept | match | exclude | undo."""
+        return self._call(
+            "POST", f"/t/{tenant}/feed/txn/{urllib.parse.quote(txn_id)}/{action}",
+            dict(payload or {}),
+        )
+
+    def feed_bulk_accept(
+        self, tenant: str, min_confidence: float, *, account_code: str = ""
+    ) -> LedgerResponse:
+        payload: dict[str, object] = {"min_confidence": min_confidence}
+        if account_code:
+            payload["account_code"] = account_code
+        return self._call("POST", f"/t/{tenant}/feed/bulk-accept", payload)
+
+    def feed_rules(self, tenant: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/feed-rules")
+
+    def save_feed_rule(self, tenant: str, rule: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/feed-rules", dict(rule))
+
+    def delete_feed_rule(self, tenant: str, rule_id: str) -> LedgerResponse:
+        return self._call("DELETE", f"/t/{tenant}/feed-rules/{urllib.parse.quote(rule_id)}")
+
     # --- bank reconciliation -------------------------------------------------
 
     def reconcile_view(

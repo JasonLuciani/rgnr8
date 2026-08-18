@@ -91,6 +91,12 @@ from .owner_reports import render_owner_report
 from .ledger_client import LedgerClient
 from .arap_screens import render_aging as render_arap_aging, render_documents
 from .reconcile_screens import render_pick_account, render_reconcile
+from .inbox_screens import (
+    render_actioned,
+    render_feed_unavailable,
+    render_inbox,
+    render_rules,
+)
 from .books_screens import (
     render_books_home,
     render_books_statements,
@@ -195,6 +201,27 @@ class _Tenant:
 
 
 __version__ = "0.1.0"
+
+
+def _json_seq(v: object) -> "list[object]":
+    return list(v) if isinstance(v, (list, tuple)) else []
+
+
+def _minor_decimal(v: object) -> str:
+    """Integer minor units to a decimal string, exactly — never through a float."""
+    try:
+        n = int(str(v))
+    except (TypeError, ValueError):
+        return "0.00"
+    sign = "-" if n < 0 else ""
+    whole, frac = divmod(abs(n), 100)
+    return f"{sign}{whole}.{frac:02d}"
+
+
+def _suggested_code(suggestion: object) -> str:
+    if isinstance(suggestion, dict):
+        return str(suggestion.get("account_code", ""))
+    return ""
 
 
 def _qs_escape(text: str) -> str:
@@ -771,6 +798,39 @@ class WebApp:
             return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
                                  lambda t: self._arap_aging(subject, t, side, req.query))
 
+        # --- the bank feed review inbox ---
+        # /t/<tenant>/inbox -> the review queue (or an actioned list via ?status=)
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "inbox":
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._inbox_page(subject, t, req.query))
+        # /t/<tenant>/inbox/rules -> the categorization rules
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "inbox"
+                and parts[3] == "rules"):
+            if req.method == "POST":
+                return self._require(subject, token_tenant, parts[1], P.CATEGORIZE_TXNS,
+                                     lambda t: self._inbox_save_rule(subject, t, req.body))
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._inbox_rules_page(subject, t, req.query))
+        # /t/<tenant>/inbox/bulk-accept
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "inbox"
+                and parts[3] == "bulk-accept" and req.method == "POST"):
+            return self._require(subject, token_tenant, parts[1], P.CATEGORIZE_TXNS,
+                                 lambda t: self._inbox_bulk_accept(subject, t, req.body))
+        # /t/<tenant>/inbox/rules/<id>/delete
+        if (len(parts) == 6 and parts[0] == "t" and parts[2] == "inbox"
+                and parts[3] == "rules" and parts[5] == "delete" and req.method == "POST"):
+            rule_id = parts[4]
+            return self._require(subject, token_tenant, parts[1], P.CATEGORIZE_TXNS,
+                                 lambda t: self._inbox_delete_rule(subject, t, rule_id))
+        # /t/<tenant>/inbox/<txn>/accept|match|exclude|undo
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "inbox"
+                and req.method == "POST"
+                and parts[4] in ("accept", "match", "exclude", "undo")):
+            txn_id, action = parts[3], parts[4]
+            return self._require(subject, token_tenant, parts[1], P.CATEGORIZE_TXNS,
+                                 lambda t: self._inbox_action(subject, t, txn_id, action,
+                                                              req.body))
+
         # --- the books (general ledger) ---
         # /t/<tenant>/books -> trial balance + record a transaction
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "books":
@@ -1230,6 +1290,174 @@ class WebApp:
             return self._shell(subject, t, "books", render_books_unavailable(res.error()))
         return self._shell(subject, t, "books", render_register(t.tenant_id, res.body))
 
+    # --- the bank feed review inbox -------------------------------------------
+
+    def _inbox_json(self, t: _Tenant) -> Response:
+        """The real review queue as JSON, for the MCP tool and integrations."""
+        assert self._ledger is not None
+        res = self._ledger.feed_inbox(t.tenant_id)
+        if not res.ok:
+            return _json(502, {"error": res.error()})
+        rows = [r for r in _json_seq(res.body.get("items")) if isinstance(r, dict)]
+        return _json(200, {
+            "tenant": t.tenant_id,
+            "account": self._accounts.get(t.tenant_id, "Checking"),
+            "summary": {
+                "total": len(rows),
+                "matched": res.body.get("matched", 0),
+                "review": res.body.get("pending", 0),
+                "unmatched": 0,
+                "inflow": _minor_decimal(res.body.get("pending_in_minor")),
+                "outflow": _minor_decimal(res.body.get("pending_out_minor")),
+            },
+            "for_review": [
+                {
+                    "id": r.get("id"), "date": r.get("date"),
+                    "description": r.get("description"),
+                    "amount": _minor_decimal(r.get("amount_minor")),
+                    "suggested_account": _suggested_code(r.get("suggestion")),
+                    "status": "review",
+                    "counterparty": r.get("counterparty", ""),
+                }
+                for r in rows
+            ],
+        })
+
+    def _inbox_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        """The review queue, or one of the actioned lists when ?status= is given."""
+        if self._ledger is None:
+            return self._shell(subject, t, "inbox", render_feed_unavailable(
+                "No ledger service is configured for this deployment."))
+        status = query.get("status", "").strip().upper()
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_post = self._policy is None or Permission.CATEGORIZE_TXNS in perms
+
+        res = self._ledger.feed_inbox(t.tenant_id, status=status)
+        if not res.ok:
+            return self._shell(subject, t, "inbox", render_feed_unavailable(res.error()))
+        if status in ("POSTED", "MATCHED", "EXCLUDED"):
+            return self._shell(subject, t, "inbox",
+                               render_actioned(t.tenant_id, status, res.body, can_post=can_post))
+
+        accounts = self._ledger.accounts(t.tenant_id)
+        body = render_inbox(
+            t.tenant_id, res.body, accounts.body if accounts.ok else {},
+            can_post=can_post,
+            message=query.get("done", ""), error=query.get("err", ""),
+        )
+        return self._shell(subject, t, "inbox", body)
+
+    def _inbox_action(
+        self, subject: str, t: _Tenant, txn_id: str, action: str, body: str
+    ) -> Response:
+        """Accept, match, exclude or undo one bank line. The ledger service owns
+        every rule about what is allowed; this only shapes the request."""
+        back = f"/t/{t.tenant_id}/inbox"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+
+        payload: dict[str, object] = {}
+        if action == "accept":
+            code = str(data.get("category_code", "")).strip()
+            if not code:
+                return _redirect(
+                    f"{back}?err={_qs_escape('Choose an account before accepting')}")
+            payload["category_code"] = code
+        elif action == "match":
+            raw = str(data.get("match", "")).strip()
+            kind, _, doc_id = raw.partition(":")
+            if not kind or not doc_id:
+                return _redirect(f"{back}?err={_qs_escape('Choose what to match it to')}")
+            payload = {"doc_kind": kind, "doc_id": doc_id}
+        elif action == "exclude":
+            payload["reason"] = str(data.get("reason", "")).strip()
+
+        res = self._ledger.feed_action(t.tenant_id, txn_id, action, payload)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, f"feed.{action}", self._session_clock(),
+                               tenant_id=t.tenant_id, target=txn_id)
+        done = {
+            "accept": "Posted to the books",
+            "match": "Matched — the open item is settled",
+            "exclude": "Excluded — nothing was posted",
+            "undo": "Undone — a reversing entry was posted and the line is back in review",
+        }.get(action, "Done")
+        return _redirect(f"{back}?done={_qs_escape(done)}")
+
+    def _inbox_bulk_accept(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/inbox"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        try:
+            minimum = float(str(data.get("min_confidence", "")).strip())
+        except ValueError:
+            return _redirect(f"{back}?err={_qs_escape('Choose a confidence level')}")
+        res = self._ledger.feed_bulk_accept(t.tenant_id, minimum)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        accepted = res.body.get("accepted", 0)
+        skipped = res.body.get("skipped", 0)
+        if self._audit is not None:
+            self._audit.record(subject, "feed.bulk_accept", self._session_clock(),
+                               tenant_id=t.tenant_id, detail=f"{accepted} accepted")
+        return _redirect(
+            f"{back}?done={_qs_escape(f'Posted {accepted}; left {skipped} for you to look at')}")
+
+    def _inbox_rules_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "inbox", render_feed_unavailable())
+        res = self._ledger.feed_rules(t.tenant_id)
+        if not res.ok:
+            return self._shell(subject, t, "inbox", render_feed_unavailable(res.error()))
+        accounts = self._ledger.accounts(t.tenant_id)
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_post = self._policy is None or Permission.CATEGORIZE_TXNS in perms
+        body = render_rules(
+            t.tenant_id, res.body, accounts.body if accounts.ok else {},
+            can_post=can_post,
+            message=query.get("done", ""), error=query.get("err", ""),
+        )
+        return self._shell(subject, t, "inbox", body)
+
+    def _inbox_save_rule(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/inbox/rules"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        rule: dict[str, object] = {
+            "id": str(data.get("id", "")).strip(),
+            "account_code": str(data.get("account_code", "")).strip(),
+            "description_contains": str(data.get("description_contains", "")).strip(),
+            "counterparty_equals": str(data.get("counterparty_equals", "")).strip(),
+            "sign": str(data.get("sign", "")).strip(),
+            "auto_post": str(data.get("auto_post", "")).strip() in ("1", "true", "on"),
+        }
+        res = self._ledger.save_feed_rule(t.tenant_id, rule)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        would = res.body.get("would_match", 0)
+        if self._audit is not None:
+            self._audit.record(subject, "feed.rule_saved", self._session_clock(),
+                               tenant_id=t.tenant_id, target=str(rule["id"]))
+        return _redirect(
+            f"{back}?done={_qs_escape(f'Rule saved — it matches {would} waiting line(s)')}")
+
+    def _inbox_delete_rule(self, subject: str, t: _Tenant, rule_id: str) -> Response:
+        back = f"/t/{t.tenant_id}/inbox/rules"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        res = self._ledger.delete_feed_rule(t.tenant_id, rule_id)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "feed.rule_deleted", self._session_clock(),
+                               tenant_id=t.tenant_id, target=rule_id)
+        return _redirect(f"{back}?done={_qs_escape('Rule removed')}")
+
     # --- bank reconciliation --------------------------------------------------
 
     def _reconcile_pick(self, subject: str, t: _Tenant) -> Response:
@@ -1528,6 +1756,14 @@ class WebApp:
                                        permissions=perms, active="team", body_html=body, subject=subject))
 
     def _transactions_page(self, subject: str, t: _Tenant) -> Response:
+        """The bank register.
+
+        With a ledger service configured this IS the review inbox — the real
+        queue, backed by the tenant's durable feed, where accepting a line posts
+        a journal entry. The in-memory register below is only the demo surface
+        for a deployment with no ledger behind it, and it posts nothing."""
+        if self._ledger is not None:
+            return _redirect(f"/t/{t.tenant_id}/inbox")
         perms, role = self._perms_role(subject, t.tenant_id)
         can_cat = self._policy is None or Permission.CATEGORIZE_TXNS in perms
         txns = self._txns.get(t.tenant_id, [])
@@ -1963,7 +2199,11 @@ class WebApp:
 
     def _transactions_json(self, t: _Tenant) -> Response:
         """The bank register as JSON: summary + the for-review queue (the shape the
-        MCP `review_transactions` tool and partner integrations consume)."""
+        MCP `review_transactions` tool and partner integrations consume).
+
+        Served from the ledger service's real inbox when one is configured."""
+        if self._ledger is not None:
+            return self._inbox_json(t)
         from .transactions import summarize
         rows = self._txns.get(t.tenant_id, [])
         s = summarize(rows)

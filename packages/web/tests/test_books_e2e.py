@@ -120,6 +120,17 @@ def _service_get(base: str, path: str) -> Any:
         return json.loads(r.read().decode())
 
 
+def _service_post(base: str, path: str, payload: dict[str, Any]) -> Any:
+    """Write to the service directly — used to stand in for the bank sync."""
+    req = urllib.request.Request(
+        f"{base}{path}", data=json.dumps(payload).encode(),
+        headers={"authorization": f"Bearer {TOKEN}", "content-type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=5) as r:
+        return json.loads(r.read().decode())
+
+
 def test_owner_runs_their_books_end_to_end_against_the_real_service(ledger_service: str) -> None:
     base = ledger_service
     app = _app(base, ["northwind"])
@@ -388,3 +399,126 @@ def test_the_real_ledger_refuses_an_out_of_balance_reconciliation(ledger_service
              "statement_date=2026-08-31&statement_balance_minor=45000")
     assert "err=" in str(r.headers.get("Location", ""))
     assert "off%20by" in str(r.headers.get("Location", ""))
+
+
+def test_the_bank_feed_inbox_end_to_end_against_the_real_service(ledger_service: str) -> None:
+    """A week of bank activity, reviewed the way an owner actually would: write a
+    rule, accept the suggestion, match a deposit to the invoice it settles,
+    exclude a personal charge, and undo one mistake."""
+    base = ledger_service
+    app = _app(base, ["feedco"])
+    _seed(base, "feedco", "PROFESSIONAL_SERVICES")
+
+    # an invoice already raised — the deposit below should settle it, not book
+    # revenue a second time
+    _req(app, "feedco", "/t/feedco/customers", "POST", "name=Halcyon+LLC&terms_days=30")
+    _req(app, "feedco", "/t/feedco/invoices", "POST",
+         "id=INV-1&party_id=halcyon-llc&date=2026-08-01&memo=August+retainer"
+         "&amount1=5000.00&code1=4100")
+
+    _service_post(base, "/t/feedco/feed/1000", {
+        "source": "plaid-like",
+        "transactions": [
+            {"id": "bk-1", "date": "2026-08-03", "amount_minor": "500000",
+             "description": "DEPOSIT HALCYON LLC", "counterparty": "Halcyon LLC"},
+            {"id": "bk-2", "date": "2026-08-05", "amount_minor": "-24900",
+             "description": "SQ *COFFEE 1187", "counterparty": "Square"},
+            {"id": "bk-3", "date": "2026-08-09", "amount_minor": "-350000",
+             "description": "RIVERSIDE PROPERTIES RENT", "counterparty": "Riverside Properties"},
+            {"id": "bk-4", "date": "2026-08-11", "amount_minor": "-8900",
+             "description": "NETFLIX.COM", "counterparty": "Netflix"},
+        ],
+    })
+
+    # nothing from the FEED is in the books yet — a bank claim is not an
+    # accounting fact until somebody says what it was. Only the invoice has
+    # posted, and it moved no cash.
+    tb = _service_get(base, "/t/feedco/trial-balance")
+    cash = [r for r in tb["rows"] if r["code"] == "1000"]
+    assert not cash, "no cash has moved in the books yet"
+    assert any(r["code"] == "1200" for r in tb["rows"])   # only the invoice's AR
+
+    queue = _req(app, "feedco", "/t/feedco/inbox")
+    assert queue.status == 200
+    assert "4 to review" in queue.body
+    assert "DEPOSIT HALCYON LLC" in queue.body
+    assert "INV-1" in queue.body and "(exact)" in queue.body   # the match is offered
+
+    # a rule for the rent, written once
+    rule = _req(app, "feedco", "/t/feedco/inbox/rules", "POST",
+                "id=rent&description_contains=RIVERSIDE&sign=out&account_code=6300")
+    assert "matches%201%20waiting" in str(rule.headers.get("Location", ""))
+
+    # the rule pre-fills the rent line, and accepting posts it
+    with_rule = _req(app, "feedco", "/t/feedco/inbox")
+    assert '<option value="6300" selected>' in with_rule.body
+    assert "100% · from your rule" in with_rule.body
+    assert _req(app, "feedco", "/t/feedco/inbox/bk-3/accept", "POST",
+                "category_code=6300").status == 302
+
+    # the deposit settles the invoice rather than booking revenue twice
+    assert _req(app, "feedco", "/t/feedco/inbox/bk-1/match", "POST",
+                "match=invoice%3AINV-1").status == 302
+    inv = _req(app, "feedco", "/t/feedco/invoices")
+    assert "Paid" in inv.body
+
+    # coffee is a real cost; Netflix on the business card is not
+    _req(app, "feedco", "/t/feedco/inbox/bk-2/accept", "POST", "category_code=6400")
+    _req(app, "feedco", "/t/feedco/inbox/bk-4/exclude", "POST", "reason=Personal")
+
+    empty = _req(app, "feedco", "/t/feedco/inbox")
+    assert "All caught up" in empty.body
+
+    # the books now reflect exactly the four decisions
+    books = _req(app, "feedco", "/t/feedco/books")
+    assert "In balance" in books.body
+    tb = _service_get(base, "/t/feedco/trial-balance")
+    signed = {r["code"]: int(r["debit_minor"]) - int(r["credit_minor"]) for r in tb["rows"]}
+    assert signed["1000"] == 500000 - 350000 - 24900, "cash: deposit less rent and coffee"
+    assert signed["6300"] == 350000
+    assert signed["6400"] == 24900
+    assert signed.get("1200", 0) == 0, "the matched deposit cleared AR"
+    assert signed["4100"] == -500000, "revenue was booked once, by the invoice"
+
+    # one was miscategorized: undo it and it comes back to the queue
+    undo = _req(app, "feedco", "/t/feedco/inbox/bk-2/undo", "POST")
+    assert "reversing%20entry" in str(undo.headers.get("Location", ""))
+    again = _req(app, "feedco", "/t/feedco/inbox")
+    assert "1 to review" in again.body
+    # the original entry AND its reversal are both still in the journal
+    entries = _service_get(base, "/t/feedco/entries")["entries"]
+    assert any(e["status"] == "REVERSAL" for e in entries)
+
+
+def test_the_real_service_learns_from_what_was_categorized_before(ledger_service: str) -> None:
+    base = ledger_service
+    app = _app(base, ["learnco"])
+    _seed(base, "learnco", "PROFESSIONAL_SERVICES")
+    _service_post(base, "/t/learnco/feed/1000", {"transactions": [
+        {"id": "c-1", "date": "2026-08-04", "amount_minor": "-1200",
+         "description": "SQ *DAILY GRIND 4417", "counterparty": "Daily Grind"},
+    ]})
+    _req(app, "learnco", "/t/learnco/inbox/c-1/accept", "POST", "category_code=6400")
+
+    # a different card reference from the same vendor
+    _service_post(base, "/t/learnco/feed/1000", {"transactions": [
+        {"id": "c-2", "date": "2026-08-18", "amount_minor": "-1450",
+         "description": "SQ *DAILY GRIND 9902", "counterparty": "Daily Grind"},
+    ]})
+    page = _req(app, "learnco", "/t/learnco/inbox")
+    assert '<option value="6400" selected>' in page.body
+    assert "from your history" in page.body
+
+
+def test_a_feed_line_cannot_be_posted_into_a_closed_month(ledger_service: str) -> None:
+    base = ledger_service
+    app = _app(base, ["lockedco"])
+    _seed(base, "lockedco", "PROFESSIONAL_SERVICES")
+    _service_post(base, "/t/lockedco/feed/1000", {"transactions": [
+        {"id": "old-1", "date": "2026-07-15", "amount_minor": "-5000", "description": "LATE ARRIVAL"},
+    ]})
+    _service_post(base, "/t/lockedco/periods/2026-07/lock", {})
+    r = _req(app, "lockedco", "/t/lockedco/inbox/old-1/accept", "POST", "category_code=6400")
+    assert "err=" in str(r.headers.get("Location", ""))
+    # and it is still waiting rather than silently lost
+    assert "1 to review" in _req(app, "lockedco", "/t/lockedco/inbox").body

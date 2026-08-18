@@ -48,6 +48,21 @@ import {
 } from "./arap.js";
 import type { DocKind, DocRecord, PartyKind } from "./documents.js";
 import {
+  InboxError,
+  acceptTxn,
+  bulkAccept,
+  deliverFeed,
+  excludeTxn,
+  inboxView,
+  matchTxn,
+  ruleImpact,
+  ruleJson,
+  saveRule,
+  undoTxn,
+  type InboxContext,
+} from "./inbox.js";
+import type { FeedStatus } from "./feed.js";
+import {
   ReconcileError,
   finishReconciliation,
   reconcileView,
@@ -271,6 +286,42 @@ export class LedgerService {
         return await this.aging(tenant, rest[1] === "ar" ? "invoice" : "bill", req.query);
       }
 
+      // --- the bank feed review inbox ------------------------------------
+      if (rest[0] === "feed") {
+        // POST /feed/bulk-accept        — checked first: it is not an account code
+        if (rest.length === 2 && rest[1] === "bulk-accept" && req.method === "POST") {
+          return await this.feedBulkAccept(tenant, req.body);
+        }
+        // POST /feed/:accountCode        — land a batch of bank lines
+        if (rest.length === 2 && req.method === "POST") {
+          return await this.feedDeliver(tenant, rest[1]!, req.body);
+        }
+        // GET  /feed                     — the review queue
+        if (rest.length === 1 && req.method === "GET") {
+          return ok(await inboxView(this.inboxCtx(tenant), {
+            ...(req.query["account_code"] ? { accountCode: req.query["account_code"] } : {}),
+            ...(req.query["status"] ? { status: req.query["status"] as FeedStatus } : {}),
+          }));
+        }
+        // POST /feed/txn/:id/:action     — accept | match | exclude | undo
+        if (rest.length === 4 && rest[1] === "txn" && req.method === "POST") {
+          return await this.feedAction(tenant, rest[2]!, rest[3]!, req.body);
+        }
+      }
+      if (rest[0] === "feed-rules") {
+        if (rest.length === 1 && req.method === "GET") {
+          const rules = await this.backend.feed().listRules(String(tenant));
+          return ok({ tenant, rules: rules.map(ruleJson) });
+        }
+        if (rest.length === 1 && req.method === "POST") {
+          return await this.feedSaveRule(tenant, req.body);
+        }
+        if (rest.length === 2 && req.method === "DELETE") {
+          await this.backend.feed().deleteRule(String(tenant), rest[1]!);
+          return ok({ tenant, deleted: rest[1] });
+        }
+      }
+
       if (rest[0] === "ingest" && req.method === "POST") {
         return await this.ingest(tenant, req.body);
       }
@@ -281,6 +332,7 @@ export class LedgerService {
       if (err instanceof PeriodClosedError) return conflict(err.message);
       if (err instanceof ArApError) return bad(err.message);
       if (err instanceof ReconcileError) return bad(err.message);
+      if (err instanceof InboxError) return bad(err.message);
       return bad(err instanceof Error ? err.message : String(err));
     }
     return notFound("not found");
@@ -539,6 +591,68 @@ export class LedgerService {
         balance_minor: r.balance.minorUnits.toString(),
       })),
     });
+  }
+
+  // --- the bank feed review inbox -------------------------------------------
+
+  private inboxCtx(tenant: TenantId): InboxContext {
+    return {
+      backend: this.backend,
+      tenant,
+      currency: this.currency,
+      now: this.opts.now,
+    };
+  }
+
+  private async feedDeliver(
+    tenant: TenantId, accountCode: string, body: string,
+  ): Promise<ServiceResponse> {
+    const data = parseJson(body);
+    if (!data) return bad("invalid JSON body");
+    const txns = data["transactions"];
+    if (!Array.isArray(txns)) return bad("transactions must be an array");
+    const report = await deliverFeed(
+      this.inboxCtx(tenant), accountCode,
+      txns as Parameters<typeof deliverFeed>[2],
+      str(data["source"]) || "feed",
+    );
+    return created({ tenant, account_code: accountCode, ...report });
+  }
+
+  private async feedAction(
+    tenant: TenantId, id: string, action: string, body: string,
+  ): Promise<ServiceResponse> {
+    const data = parseJson(body) ?? {};
+    const ctx = this.inboxCtx(tenant);
+    switch (action) {
+      case "accept":
+        return ok(await acceptTxn(ctx, id, str(data["category_code"])));
+      case "match":
+        return ok(await matchTxn(ctx, id, str(data["doc_kind"]), str(data["doc_id"])));
+      case "exclude":
+        return ok(await excludeTxn(ctx, id, str(data["reason"])));
+      case "undo":
+        return ok(await undoTxn(ctx, id));
+      default:
+        return notFound(`unknown action ${action}`);
+    }
+  }
+
+  private async feedBulkAccept(tenant: TenantId, body: string): Promise<ServiceResponse> {
+    const data = parseJson(body);
+    if (!data) return bad("invalid JSON body");
+    const raw = data["min_confidence"];
+    const min = typeof raw === "number" ? raw : Number(str(raw));
+    const account = str(data["account_code"]).trim();
+    return ok(await bulkAccept(this.inboxCtx(tenant), min, account || undefined));
+  }
+
+  private async feedSaveRule(tenant: TenantId, body: string): Promise<ServiceResponse> {
+    const data = parseJson(body);
+    if (!data) return bad("invalid JSON body");
+    const ctx = this.inboxCtx(tenant);
+    const rule = await saveRule(ctx, data as Parameters<typeof saveRule>[1]);
+    return created({ tenant, rule: ruleJson(rule), would_match: await ruleImpact(ctx, rule) });
   }
 
   // --- bank reconciliation ---------------------------------------------------
