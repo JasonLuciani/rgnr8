@@ -50,6 +50,7 @@ from .client import (
     QboApiClient,
     QboApiError,
     QboBill,
+    QboBankTxn,
     QboCompany,
     QboInvoice,
 )
@@ -98,6 +99,7 @@ __all__ = [
     "QboAccount",
     "QboInvoice",
     "QboBill",
+    "QboBankTxn",
     "QboCompany",
     "MINOR_VERSION",
 ]

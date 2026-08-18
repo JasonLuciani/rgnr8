@@ -58,6 +58,25 @@ class QboBill:
 
 
 @dataclass(frozen=True, slots=True)
+class QboBankTxn:
+    """One bank/card movement as QuickBooks records it.
+
+    ``amount`` is a **signed** decimal-dollar string: negative for money out
+    (a Purchase), positive for money in (a Deposit). QuickBooks stores both as
+    positive totals on different entities, so the sign is applied here — once,
+    at the boundary — rather than left for every caller to get right.
+    """
+
+    id: str
+    kind: str          # "Purchase" | "Deposit"
+    txn_date: str
+    amount: str        # signed decimal dollars
+    description: str
+    counterparty: str
+    account: str       # the QBO bank account the movement is on
+
+
+@dataclass(frozen=True, slots=True)
 class QboCompany:
     name: str
     country: str = ""
@@ -170,6 +189,49 @@ class QboApiClient:
                 )
             )
         return out
+
+    def bank_transactions(self, *, since: str = "") -> list[QboBankTxn]:
+        """Purchases (money out) and Deposits (money in), newest activity first.
+
+        These are the raw movements a review inbox is built from — not summaries
+        or balances. ``since`` narrows to transactions on or after an ISO date,
+        which is what an incremental sync wants; QuickBooks has no cursor here,
+        so re-syncing an overlapping window is normal and the inbox is
+        idempotent by transaction id for exactly that reason.
+        """
+        where = f" where TxnDate >= '{since}'" if since else ""
+        out: list[QboBankTxn] = []
+
+        for r in self._rows(self.query(f"select * from Purchase{where}"), "Purchase"):
+            total = self._s(r, "TotalAmt", "0")
+            out.append(
+                QboBankTxn(
+                    id=f"qbo-purchase-{self._s(r, 'Id')}",
+                    kind="Purchase",
+                    txn_date=self._s(r, "TxnDate"),
+                    # QuickBooks stores a purchase as a positive total; from the
+                    # bank account's point of view it is money leaving.
+                    amount=f"-{total}" if not total.startswith("-") else total,
+                    description=self._s(r, "PrivateNote") or self._s(r, "DocNumber"),
+                    counterparty=self._ref_name(r, "EntityRef"),
+                    account=self._ref_name(r, "AccountRef"),
+                )
+            )
+
+        for r in self._rows(self.query(f"select * from Deposit{where}"), "Deposit"):
+            out.append(
+                QboBankTxn(
+                    id=f"qbo-deposit-{self._s(r, 'Id')}",
+                    kind="Deposit",
+                    txn_date=self._s(r, "TxnDate"),
+                    amount=self._s(r, "TotalAmt", "0"),
+                    description=self._s(r, "PrivateNote") or self._s(r, "DocNumber"),
+                    counterparty=self._ref_name(r, "EntityRef"),
+                    account=self._ref_name(r, "DepositToAccountRef"),
+                )
+            )
+
+        return sorted(out, key=lambda t: (t.txn_date, t.id))
 
     def company_info(self) -> QboCompany:
         """The connected company's name (and country)."""

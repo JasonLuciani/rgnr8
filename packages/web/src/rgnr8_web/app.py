@@ -75,6 +75,7 @@ from rgnr8_reports import (
 )
 from rgnr8_qbo import QboConnectService, QboStatus
 from .qbo_sync import QboSyncSummary, build_inputs_from_qbo
+from .qbo_ledger import LedgerSyncSummary, sync_qbo_to_ledger
 
 from .store import InMemoryTenantStore, TenantDef, TenantState, TenantStore
 from .financial_package import (
@@ -288,6 +289,7 @@ class WebApp:
         self._qbo = qbo
         # last successful QBO sync summary, per tenant (for the connect page).
         self._qbo_last_sync: dict[str, QboSyncSummary] = {}
+        self._qbo_last_ledger_sync: dict[str, LedgerSyncSummary] = {}
         self._tenants: dict[str, _Tenant] = {}
         self._tokens: dict[str, str] = {}  # bearer token -> tenant_id (default auth)
         # persistence for mutable owner state; in-memory unless a durable one is given
@@ -2297,10 +2299,22 @@ class WebApp:
                 "bill_count": str(summary.bill_count),
                 "ap_total": format_money(summary.ap_total),
             }
+        books = self._qbo_last_ledger_sync.get(t.tenant_id)
+        ledger_sync = None
+        if books is not None:
+            ledger_sync = {
+                "invoices": str(books.invoices),
+                "bills": str(books.bills),
+                "bank_new": str(books.bank_new),
+                "pending_review": str(books.pending_review),
+                "skipped": str(books.documents_skipped + books.bank_duplicates),
+                "errors": "; ".join(books.errors[:3]),
+            }
         return self._shell(subject, t, "connect",
                            render_connect_page(t.tenant_id, configured=configured,
                                                status=status, realm_id=realm,
-                                               last_sync=last_sync, sync_flag=sync_flag))
+                                               last_sync=last_sync, sync_flag=sync_flag,
+                                               ledger_sync=ledger_sync))
 
     def _qbo_begin(self, t: _Tenant) -> Response:
         """Redirect the owner to Intuit's authorize screen (signed, tenant-bound
@@ -2347,6 +2361,20 @@ class WebApp:
                                tenant_id=t.tenant_id,
                                target=f"cash={summary.cash.to_decimal_string()} "
                                       f"ar={summary.invoice_count} ap={summary.bill_count}")
+
+        # The forecast is a projection; the ledger is the record. With a ledger
+        # configured, the same sync brings the actual bookkeeping across — open
+        # items as real AR/AP documents, bank movements into the review queue
+        # (never straight into the books, because QuickBooks doesn't know this
+        # chart of accounts).
+        if self._ledger is not None:
+            ledger_summary = sync_qbo_to_ledger(client, self._ledger, t.tenant_id)
+            self._qbo_last_ledger_sync[t.tenant_id] = ledger_summary
+            if self._audit is not None:
+                self._audit.record(subject, "qbo.ledger_synced", self._session_clock(),
+                                   tenant_id=t.tenant_id, detail=ledger_summary.describe())
+            if not ledger_summary.ok:
+                return _redirect(f"/t/{t.tenant_id}/connect?sync=partial")
         return _redirect(f"/t/{t.tenant_id}/connect?sync=ok")
 
     def _qbo_callback(self, req: Request) -> Response:

@@ -203,7 +203,7 @@ def _qr(body: dict) -> HttpResponse:
     return HttpResponse(200, json.dumps({"QueryResponse": body}))
 
 
-def _connected_app():
+def _connected_app(*, ledger=None, extra_queries: list | None = None):
     from datetime import timedelta
     from rgnr8_qbo import QboConnection, QboStatus
 
@@ -227,6 +227,7 @@ def _connected_app():
             {"Id": "5", "Balance": 400.00, "TxnDate": "2026-07-10", "DueDate": "2026-08-10",
              "VendorRef": {"name": "Norton"}},
         ]}),
+        *(extra_queries or []),
     ])
     qbo = QboConnectService(CONFIG, http, store, state_secret=SECRET, clock=lambda: T0)
     app = WebApp(
@@ -235,6 +236,8 @@ def _connected_app():
     )
     app.add_tenant("acme", "Acme Co", _inputs(),
                    ForecastConfig(minimum_cash=usd("10000.00")), token="unused")
+    if ledger is not None:
+        app.set_ledger(ledger)
     return app
 
 
@@ -267,3 +270,74 @@ def test_sync_without_connection_bounces_to_connect() -> None:
     r = app.handle(Request("POST", "/t/acme/connect/qbo/sync", _h("owner@acme.com")))
     assert r.status == 302
     assert dict(r.extra_headers)["Location"] == "/t/acme/connect"
+
+
+# --- the same sync also feeds the LEDGER, not just the forecast --------------
+
+class RecordingLedgerTransport:
+    """A ledger that answers plausibly and remembers what it was asked to do."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str]] = []
+
+    def request(self, method: str, path: str, body: str, headers):
+        from rgnr8_web import LedgerResponse
+        self.calls.append((method, path, body))
+        if method == "GET" and (path.endswith("/invoices") or path.endswith("/bills")):
+            return LedgerResponse(200, {"documents": []})
+        if "/feed/" in path:
+            payload = json.loads(body)
+            n = len(payload["transactions"])
+            return LedgerResponse(201, {"received": n, "added": n, "duplicates": 0,
+                                        "auto_posted": 0, "pending": n})
+        return LedgerResponse(201, {"ok": True})
+
+
+def test_a_sync_brings_the_books_across_not_just_the_forecast() -> None:
+    from rgnr8_web import LedgerClient
+    transport = RecordingLedgerTransport()
+    app = _connected_app(
+        ledger=LedgerClient(transport),
+        extra_queries=[
+            # the ledger sync re-reads open items, then asks for bank movements
+            _qr({"Invoice": [
+                {"Id": "9", "DocNumber": "1001", "Balance": 150.00, "TxnDate": "2026-07-01",
+                 "DueDate": "2026-08-01", "CustomerRef": {"name": "Amy"}},
+            ]}),
+            _qr({"Bill": [
+                {"Id": "5", "Balance": 400.00, "TxnDate": "2026-07-10", "DueDate": "2026-08-10",
+                 "VendorRef": {"name": "Norton"}},
+            ]}),
+            _qr({"Purchase": [
+                {"Id": "77", "TotalAmt": 42.50, "TxnDate": "2026-07-14",
+                 "PrivateNote": "OFFICE DEPOT", "EntityRef": {"name": "Office Depot"}},
+            ]}),
+            _qr({"Deposit": []}),
+        ],
+    )
+    r = app.handle(Request("POST", "/t/acme/connect/qbo/sync", _h("owner@acme.com")))
+    assert r.status == 302
+    assert dict(r.extra_headers)["Location"] == "/t/acme/connect?sync=ok"
+
+    posts = [c for c in transport.calls if c[0] == "POST"]
+    paths = [c[1] for c in posts]
+    assert any(p.endswith("/invoices") for p in paths), "the open invoice became a document"
+    assert any(p.endswith("/bills") for p in paths)
+    assert any("/feed/1000" in p for p in paths), "the purchase went to the review queue"
+    # and NOTHING was posted straight to the general ledger
+    assert not any(p.endswith("/entries") for p in paths)
+
+    # the connect page reports both halves
+    page = app.handle(Request("GET", "/t/acme/connect", _h("owner@acme.com")))
+    assert "Brought into your books" in page.body
+    assert "queued for review rather than posted" in page.body
+    assert "/t/acme/inbox" in page.body
+
+
+def test_without_a_ledger_the_sync_still_feeds_the_forecast_alone() -> None:
+    app = _connected_app()
+    r = app.handle(Request("POST", "/t/acme/connect/qbo/sync", _h("owner@acme.com")))
+    assert r.status == 302
+    page = app.handle(Request("GET", "/t/acme/connect", _h("owner@acme.com")))
+    assert "Last sync" in page.body
+    assert "Brought into your books" not in page.body
