@@ -136,5 +136,17 @@ export {
   type AttachmentRecord,
   type SubjectKind,
 } from "./attachments.js";
+export {
+  InMemoryRecurringStore,
+  PgRecurringStore,
+  RECURRING_DDL,
+  RecurringError,
+  saveRecurring,
+  dueOccurrences,
+  runDue,
+  type RecurringStore,
+  type RecurringRecord,
+  type RecurringContext,
+} from "./recurring.js";
 export { rlsDdl, appRoleDdl, superuserWarning, TENANT_TABLES } from "./security.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";

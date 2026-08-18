@@ -26,6 +26,9 @@ import {
 import {
   InMemoryAttachmentStore, PgAttachmentStore, type AttachmentStore,
 } from "./attachments.js";
+import {
+  InMemoryRecurringStore, PgRecurringStore, type RecurringStore,
+} from "./recurring.js";
 import { rlsDdl } from "./security.js";
 
 /**
@@ -63,6 +66,8 @@ export interface LedgerBackend {
   dimensions(): DimensionStore;
   /** Receipts and documents evidencing what the books claim. */
   attachments(): AttachmentStore;
+  /** Memorized transactions with a schedule (rent, subscriptions, retainers). */
+  recurring(): RecurringStore;
   /** Create/verify schema. Safe to run repeatedly. */
   migrate(): Promise<void>;
 }
@@ -76,6 +81,7 @@ export class InMemoryBackend implements LedgerBackend {
   private readonly budgetStore = new InMemoryBudgetStore();
   private readonly dimensionStore = new InMemoryDimensionStore();
   private readonly attachmentStore = new InMemoryAttachmentStore();
+  private readonly recurringStore = new InMemoryRecurringStore();
   private readonly accounts = new Map<string, Map<string, Account>>();
   private readonly stores = new Map<string, InMemoryLedgerStore>();
   private readonly periodStores = new Map<string, InMemoryPeriodStore>();
@@ -150,6 +156,10 @@ export class InMemoryBackend implements LedgerBackend {
     return this.attachmentStore;
   }
 
+  recurring(): RecurringStore {
+    return this.recurringStore;
+  }
+
   async migrate(): Promise<void> {
     await this.docs.migrate();
     await this.reconStore.migrate();
@@ -158,6 +168,7 @@ export class InMemoryBackend implements LedgerBackend {
     await this.budgetStore.migrate();
     await this.dimensionStore.migrate();
     await this.attachmentStore.migrate();
+    await this.recurringStore.migrate();
   }
 }
 
@@ -177,6 +188,7 @@ export class PostgresBackend implements LedgerBackend {
   private readonly budgetStore: PgBudgetStore;
   private readonly dimensionStore: PgDimensionStore;
   private readonly attachmentStore: PgAttachmentStore;
+  private readonly recurringStore: PgRecurringStore;
 
   /**
    * @param pool     a connection pool.
@@ -201,6 +213,7 @@ export class PostgresBackend implements LedgerBackend {
     this.budgetStore = new PgBudgetStore(pool);
     this.dimensionStore = new PgDimensionStore(pool);
     this.attachmentStore = new PgAttachmentStore(pool);
+    this.recurringStore = new PgRecurringStore(pool);
   }
 
   async migrate(): Promise<void> {
@@ -213,6 +226,7 @@ export class PostgresBackend implements LedgerBackend {
     await this.budgetStore.migrate();
     await this.dimensionStore.migrate();
     await this.attachmentStore.migrate();
+    await this.recurringStore.migrate();
     // Last, once every table exists: make the database itself enforce tenant
     // isolation, so a query that forgets its tenant filter returns nothing
     // rather than everything.
@@ -247,6 +261,10 @@ export class PostgresBackend implements LedgerBackend {
 
   attachments(): AttachmentStore {
     return this.attachmentStore;
+  }
+
+  recurring(): RecurringStore {
+    return this.recurringStore;
   }
 
   chart(tenant: TenantId): Promise<ChartOfAccounts> {

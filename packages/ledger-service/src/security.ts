@@ -51,6 +51,9 @@ export const TENANT_TABLES: readonly string[] = Object.freeze([
   "dimension_def",
   // evidence
   "attachment",
+  // memorized transactions
+  "recurring_txn",
+  "recurring_txn_line",
 ]);
 
 /**

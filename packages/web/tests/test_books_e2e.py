@@ -905,3 +905,40 @@ def test_importing_a_statement_end_to_end_against_the_real_service(ledger_servic
     # it does NOT tie out, because the books really are missing 125.00
     assert view["difference_minor"] == "-12500"
     assert view["can_finish"] is False
+
+
+def test_recurring_transactions_end_to_end_against_the_real_service(ledger_service: str) -> None:
+    """Memorize rent, see three months due, post them, and confirm running again
+    cannot post them twice."""
+    base = ledger_service
+    app = _app(base, ["recurco"])
+    _seed(base, "recurco", "PROFESSIONAL_SERVICES")
+
+    made = _req(app, "recurco", "/t/recurco/books/recurring", "POST",
+                "name=Studio+rent&frequency=MONTHLY&interval=1&start_date=2026-06-01"
+                "&memo=Riverside&code1=6300&debit1=3,500.00&code2=1000&credit2=3500.00")
+    assert made.status == 302 and "err=" not in str(made.headers.get("Location", ""))
+
+    page = _req(app, "recurco", "/t/recurco/books/recurring?as_of=2026-08-31")
+    assert "3 due as of 2026-08-31" in page.body
+    assert "every month from 2026-06-01" in page.body
+    # nothing has posted just from looking
+    assert not _service_get(base, "/t/recurco/trial-balance")["rows"]
+
+    ran = _req(app, "recurco", "/t/recurco/books/recurring/run", "POST",
+               "as_of=2026-08-31")
+    assert ran.status == 200
+    assert "Posted 3" in ran.body
+
+    signed = _signed(base, "recurco")
+    assert signed["6300"] == 1050000, "three months of rent"
+    assert signed["1000"] == -1050000
+
+    # running again is safe
+    again = _req(app, "recurco", "/t/recurco/books/recurring/run", "POST",
+                 "as_of=2026-08-31")
+    assert "Posted 0" in again.body
+    assert _signed(base, "recurco")["6300"] == 1050000, "still three, not six"
+
+    empty = _req(app, "recurco", "/t/recurco/books/recurring?as_of=2026-08-31")
+    assert "Nothing due" in empty.body

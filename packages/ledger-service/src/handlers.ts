@@ -65,6 +65,14 @@ import {
 } from "./inbox.js";
 import type { FeedStatus } from "./feed.js";
 import {
+  RecurringError,
+  dueOccurrences,
+  recurringJson,
+  runDue,
+  saveRecurring,
+  type RecurringContext,
+} from "./recurring.js";
+import {
   AttachmentError,
   attachmentJson,
   listAttachments,
@@ -352,6 +360,42 @@ export class LedgerService {
         return await this.aging(tenant, rest[1] === "ar" ? "invoice" : "bill", req.query);
       }
 
+      // --- recurring transactions -----------------------------------------
+      if (rest[0] === "recurring") {
+        const ctx = this.recurringCtx(tenant);
+        if (rest.length === 1 && req.method === "GET") {
+          const list = await this.backend.recurring().list(String(tenant));
+          return ok({ tenant, recurring: list.map(recurringJson) });
+        }
+        if (rest.length === 1 && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          return created({
+            tenant,
+            recurring: recurringJson(
+              await saveRecurring(ctx, data as Parameters<typeof saveRecurring>[1]),
+            ),
+          });
+        }
+        if (rest.length === 2 && rest[1] === "due" && req.method === "GET") {
+          return ok({
+            tenant,
+            as_of: req.query["as_of"] ?? "",
+            due: await dueOccurrences(ctx, req.query["as_of"]),
+          });
+        }
+        if (rest.length === 2 && rest[1] === "run" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const only = str(data["id"]).trim();
+          return ok(await runDue(ctx, data["as_of"], only || undefined));
+        }
+        if (rest.length === 2 && req.method === "DELETE") {
+          await this.backend.recurring().remove(String(tenant), rest[1]!);
+          return ok({ tenant, removed: rest[1] });
+        }
+      }
+
       // --- attachments (the receipt behind the number) --------------------
       if (rest[0] === "attachments") {
         const ctx = this.attachmentCtx(tenant);
@@ -539,6 +583,7 @@ export class LedgerService {
       if (err instanceof ReportingError) return bad(err.message);
       if (err instanceof DimensionServiceError) return bad(err.message);
       if (err instanceof AttachmentError) return bad(err.message);
+      if (err instanceof RecurringError) return bad(err.message);
       return bad(err instanceof Error ? err.message : String(err));
     }
     return notFound("not found");
@@ -803,6 +848,14 @@ export class LedgerService {
         balance_minor: r.balance.minorUnits.toString(),
       })),
     });
+  }
+
+  // --- recurring transactions ------------------------------------------------
+
+  private recurringCtx(tenant: TenantId): RecurringContext {
+    return {
+      backend: this.backend, tenant, currency: this.currency, now: this.opts.now,
+    };
   }
 
   // --- attachments -----------------------------------------------------------

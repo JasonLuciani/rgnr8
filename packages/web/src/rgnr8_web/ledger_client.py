@@ -234,6 +234,32 @@ class LedgerClient:
             payload["memo"] = memo
         return self._call("POST", f"/t/{tenant}/{kind}/{doc_id}/payments", payload)
 
+    # --- recurring transactions ----------------------------------------------
+
+    def recurring(self, tenant: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/recurring")
+
+    def save_recurring(self, tenant: str, template: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/recurring", dict(template))
+
+    def delete_recurring(self, tenant: str, template_id: str) -> LedgerResponse:
+        return self._call(
+            "DELETE", f"/t/{tenant}/recurring/{urllib.parse.quote(template_id)}"
+        )
+
+    def recurring_due(self, tenant: str, as_of: str) -> LedgerResponse:
+        return self._call(
+            "GET", f"/t/{tenant}/recurring/due?as_of={urllib.parse.quote(as_of)}"
+        )
+
+    def run_recurring(
+        self, tenant: str, as_of: str, *, template_id: str = ""
+    ) -> LedgerResponse:
+        payload: dict[str, object] = {"as_of": as_of}
+        if template_id:
+            payload["id"] = template_id
+        return self._call("POST", f"/t/{tenant}/recurring/run", payload)
+
     # --- attachments ---------------------------------------------------------
 
     def attachments(

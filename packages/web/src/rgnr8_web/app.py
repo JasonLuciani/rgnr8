@@ -79,6 +79,9 @@ from .qbo_ledger import LedgerSyncSummary, sync_qbo_to_ledger
 from .ledger_forecast import LedgerFacts, forecast_from_ledger, provenance_split
 from .multipart import MultipartError, parse_multipart
 from .attachment_screens import render_attachments, render_attachments_unavailable
+from .recurring_screens import (
+    render_recurring, render_recurring_unavailable, render_run_result,
+)
 
 from .store import InMemoryTenantStore, TenantDef, TenantState, TenantStore
 from .financial_package import (
@@ -1006,6 +1009,27 @@ class WebApp:
             return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
                                  lambda t: self._books_register_page(subject, t, code))
 
+        # /t/<tenant>/books/recurring -> what's due, what's memorized
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "books"
+                and parts[3] == "recurring"):
+            if req.method == "POST":
+                return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                     lambda t: self._recurring_save(subject, t, req.body))
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._recurring_page(subject, t, req.query))
+        # /t/<tenant>/books/recurring/run -> post what's due
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "books"
+                and parts[3] == "recurring" and parts[4] == "run"
+                and req.method == "POST"):
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._recurring_run(subject, t, req.body))
+        # /t/<tenant>/books/recurring/<id>/delete
+        if (len(parts) == 6 and parts[0] == "t" and parts[2] == "books"
+                and parts[3] == "recurring" and parts[5] == "delete"
+                and req.method == "POST"):
+            template_id = parts[4]
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._recurring_delete(subject, t, template_id))
         # /t/<tenant>/books/dimensions -> classes and locations
         if (len(parts) == 4 and parts[0] == "t" and parts[2] == "books"
                 and parts[3] == "dimensions"):
@@ -1945,6 +1969,97 @@ class WebApp:
             self._audit.record(subject, "feed.rule_deleted", self._session_clock(),
                                tenant_id=t.tenant_id, target=rule_id)
         return _redirect(f"{back}?done={_qs_escape('Rule removed')}")
+
+    # --- recurring transactions --------------------------------------------------
+
+    def _recurring_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "books", render_recurring_unavailable())
+        as_of = query.get("as_of", "").strip() or self._today(t)
+        templates = self._ledger.recurring(t.tenant_id)
+        if not templates.ok:
+            return self._shell(subject, t, "books",
+                               render_recurring_unavailable(templates.error()))
+        due = self._ledger.recurring_due(t.tenant_id, as_of)
+        accounts = self._ledger.accounts(t.tenant_id)
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_post = self._policy is None or Permission.POST_JOURNAL in perms
+        return self._shell(subject, t, "books", render_recurring(
+            t.tenant_id, templates.body, due.body if due.ok else {},
+            accounts.body if accounts.ok else {}, as_of,
+            can_post=can_post,
+            message=query.get("done", ""), error=query.get("err", ""),
+        ))
+
+    def _recurring_save(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/books/recurring"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        lines: list[dict[str, object]] = []
+        try:
+            for i in range(1, 5):
+                code = str(data.get(f"code{i}", "")).strip()
+                if not code:
+                    continue
+                debit = self._amount_to_minor(str(data.get(f"debit{i}", "")))
+                credit = self._amount_to_minor(str(data.get(f"credit{i}", "")))
+                if debit and credit:
+                    raise ValueError(f"line {i}: enter a debit or a credit, not both")
+                if debit:
+                    lines.append({"account_code": code, "side": "DEBIT",
+                                  "amount_minor": str(debit)})
+                elif credit:
+                    lines.append({"account_code": code, "side": "CREDIT",
+                                  "amount_minor": str(credit)})
+        except ValueError as exc:
+            return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+
+        res = self._ledger.save_recurring(t.tenant_id, {
+            "name": str(data.get("name", "")).strip(),
+            "frequency": str(data.get("frequency", "MONTHLY")).strip(),
+            "interval": str(data.get("interval", "1")).strip() or "1",
+            "start_date": str(data.get("start_date", "")).strip(),
+            "end_date": str(data.get("end_date", "")).strip(),
+            "memo": str(data.get("memo", "")).strip(),
+            "lines": lines,
+        })
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "recurring.saved", self._session_clock(),
+                               tenant_id=t.tenant_id, target=str(data.get("name", "")))
+        return _redirect(f"{back}?done={_qs_escape('Memorized')}")
+
+    def _recurring_run(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/books/recurring"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        as_of = str(data.get("as_of", "")).strip() or self._today(t)
+        res = self._ledger.run_recurring(
+            t.tenant_id, as_of, template_id=str(data.get("id", "")).strip(),
+        )
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "recurring.run", self._session_clock(),
+                               tenant_id=t.tenant_id,
+                               detail=f"{res.body.get('posted', 0)} posted")
+        return self._shell(subject, t, "books",
+                           render_run_result(t.tenant_id, res.body, as_of))
+
+    def _recurring_delete(self, subject: str, t: _Tenant, template_id: str) -> Response:
+        back = f"/t/{t.tenant_id}/books/recurring"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        res = self._ledger.delete_recurring(t.tenant_id, template_id)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "recurring.removed", self._session_clock(),
+                               tenant_id=t.tenant_id, target=template_id)
+        return _redirect(f"{back}?done={_qs_escape('Removed')}")
 
     # --- classes and locations --------------------------------------------------
 
