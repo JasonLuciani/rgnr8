@@ -54,6 +54,10 @@ export const TENANT_TABLES: readonly string[] = Object.freeze([
   // memorized transactions
   "recurring_txn",
   "recurring_txn_line",
+  // the project layer
+  "cost_code",
+  "job",
+  "job_budget",
 ]);
 
 /**

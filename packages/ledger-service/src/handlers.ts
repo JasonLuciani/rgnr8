@@ -109,6 +109,18 @@ import {
   type PayrollContext,
 } from "./payroll.js";
 import {
+  JobError,
+  costCodeJson,
+  jobCostReport,
+  jobJson,
+  jobList,
+  saveCostCode,
+  saveJob,
+  saveJobBudget,
+  seedCostCodes,
+  type JobContext,
+} from "./jobs.js";
+import {
   ReconcileError,
   finishReconciliation,
   importStatement,
@@ -306,6 +318,10 @@ export class LedgerService {
         if (req.method === "POST") return await this.postEntry(tenant, req.body);
         if (req.method === "GET") return await this.listEntries(tenant, req.query);
       }
+      if (rest[0] === "entries" && rest.length === 3 && rest[2] === "reverse"
+          && req.method === "POST") {
+        return await this.reverseEntry(tenant, rest[1]!, req.body);
+      }
       if (rest[0] === "trial-balance" && req.method === "GET") {
         return await this.trialBalance(tenant, req.query);
       }
@@ -366,6 +382,71 @@ export class LedgerService {
         return ok(await ten99Report(
           { backend: this.backend, tenant, currency: this.currency }, rest[1],
         ));
+      }
+
+      // --- jobs: cost codes, projects, budgets ----------------------------
+      if (rest[0] === "cost-codes") {
+        const ctx = this.jobCtx(tenant);
+        if (rest.length === 1 && req.method === "GET") {
+          const list = await this.backend.jobs().listCostCodes(String(tenant));
+          return ok({ tenant, cost_codes: list.map(costCodeJson) });
+        }
+        if (rest.length === 1 && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          return created({
+            tenant, cost_code: costCodeJson(await saveCostCode(ctx, data)),
+          });
+        }
+        if (rest.length === 2 && rest[1] === "seed" && req.method === "POST") {
+          return created({ tenant, cost_codes: (await seedCostCodes(ctx)).map(costCodeJson) });
+        }
+      }
+
+      if (rest[0] === "jobs") {
+        const ctx = this.jobCtx(tenant);
+        if (rest.length === 1 && req.method === "GET") return ok(await jobList(ctx));
+        if (rest.length === 1 && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          return created({ tenant, job: jobJson(await saveJob(ctx, data)) });
+        }
+        if (rest.length === 2 && req.method === "GET") {
+          const job = await this.backend.jobs().getJob(String(tenant), rest[1]!);
+          if (!job) return notFound(`unknown job ${rest[1]}`);
+          const budget = await this.backend.jobs().listBudget(String(tenant), rest[1]!);
+          return ok({
+            tenant,
+            job: jobJson(job),
+            budget: budget.map((b) => ({
+              cost_code: b.costCode,
+              budget_cost_minor: b.budgetCostMinor,
+              revised_cost_minor: b.revisedCostMinor,
+              budget_revenue_minor: b.budgetRevenueMinor,
+            })),
+          });
+        }
+        if (rest.length === 3 && rest[2] === "budget" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const lines = await saveJobBudget(ctx, rest[1]!, data);
+          return ok({
+            tenant,
+            job_id: rest[1],
+            budget: lines.map((b) => ({
+              cost_code: b.costCode,
+              budget_cost_minor: b.budgetCostMinor,
+              revised_cost_minor: b.revisedCostMinor,
+              budget_revenue_minor: b.budgetRevenueMinor,
+            })),
+          });
+        }
+        if (rest.length === 3 && rest[2] === "cost" && req.method === "GET") {
+          const through = req.query["through"];
+          return ok(await jobCostReport(
+            ctx, rest[1]!, through ? { through } : {},
+          ));
+        }
       }
 
       // --- recurring transactions -----------------------------------------
@@ -593,6 +674,7 @@ export class LedgerService {
       if (err instanceof AttachmentError) return bad(err.message);
       if (err instanceof RecurringError) return bad(err.message);
       if (err instanceof Ten99Error) return bad(err.message);
+      if (err instanceof JobError) return bad(err.message);
       return bad(err instanceof Error ? err.message : String(err));
     }
     return notFound("not found");
@@ -662,6 +744,36 @@ export class LedgerService {
   }
 
   // --- journal --------------------------------------------------------------
+
+  /**
+   * Correct a posted entry the only way the ledger allows: by posting its
+   * mirror image. The original stays exactly where it is, which is what makes
+   * the journal something an auditor can read backwards.
+   */
+  private async reverseEntry(
+    tenant: TenantId, entryId: string, body: string,
+  ): Promise<ServiceResponse> {
+    const data = parseJson(body);
+    if (!data) return bad("invalid JSON body");
+    const original = await this.backend.store(tenant)
+      .getById(tenant, entryId as unknown as PostedEntry["id"]);
+    if (!original) return notFound(`unknown entry ${entryId}`);
+    const date = str(data["date"]).trim() || original.entryDate;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return bad("date must be YYYY-MM-DD");
+    const engine = new PostingEngine(
+      await this.backend.chart(tenant), this.backend.store(tenant), this.backend.periods(tenant),
+    );
+    const memo = str(data["memo"]).trim();
+    const reversal = await engine.reverse(tenant, original.id, {
+      idempotencyKey: asIdempotencyKey(`reverse:${entryId}`),
+      periodKey: asPeriodKey(date.slice(0, 7)),
+      entryDate: date,
+      postedAt: this.opts.now(),
+      provenance: provenanceFor("manual-reversal", date, this.opts.now()),
+      ...(memo ? { memo } : {}),
+    });
+    return created({ tenant, reversed: entryId, entry: entryJson(reversal) });
+  }
 
   private async postEntry(tenant: TenantId, body: string): Promise<ServiceResponse> {
     const data = parseJson(body);
@@ -865,6 +977,12 @@ export class LedgerService {
     return {
       backend: this.backend, tenant, currency: this.currency, now: this.opts.now,
     };
+  }
+
+  // --- jobs ------------------------------------------------------------------
+
+  private jobCtx(tenant: TenantId): JobContext {
+    return { backend: this.backend, tenant, currency: this.currency };
   }
 
   // --- attachments -----------------------------------------------------------

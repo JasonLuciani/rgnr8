@@ -230,6 +230,34 @@ export async function saveDimension(
 }
 
 /**
+ * `job` and `cost_code` are dimensions the business does not define — the jobs
+ * and cost codes it has created define them.
+ *
+ * Costing a job is the same act as classifying a cost, so it travels the same
+ * way: as a dimension on a journal line. That means every posting path already
+ * built — a bill, a bank feed line, payroll, a recurring template — costs a job
+ * without a single new code path, and the job report and the trial balance
+ * cannot disagree, because they are reading the same rows. The values are
+ * validated against the real jobs and cost codes, so a typo is refused exactly
+ * like a mistyped class.
+ */
+async function reservedDimensions(ctx: DimensionContext): Promise<DimensionRecord[]> {
+  const store = ctx.backend.jobs();
+  const jobs = await store.listJobs(String(ctx.tenant));
+  if (jobs.length === 0) return [];
+  const codes = await store.listCostCodes(String(ctx.tenant));
+  return [
+    { key: "job", label: "Job", values: jobs.map((j) => j.id), required: false },
+    {
+      key: "cost_code",
+      label: "Cost code",
+      values: codes.map((c) => c.code),
+      required: false,
+    },
+  ];
+}
+
+/**
  * Validate a command's line dimensions against the tenant's registry.
  *
  * Called before every post, so a typo is refused at the door rather than
@@ -245,7 +273,10 @@ export async function saveDimension(
 export async function validateDimensions(
   ctx: DimensionContext, command: PostCommand,
 ): Promise<void> {
-  const defs = await ctx.backend.dimensions().list(String(ctx.tenant));
+  const defs = [
+    ...await ctx.backend.dimensions().list(String(ctx.tenant)),
+    ...await reservedDimensions(ctx),
+  ];
   if (defs.length === 0) {
     // Nothing defined: a line carrying dimensions is a caller mistake, not a
     // silently-accepted free-text tag.

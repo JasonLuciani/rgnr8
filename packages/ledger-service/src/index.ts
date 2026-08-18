@@ -148,6 +148,32 @@ export {
   type RecurringRecord,
   type RecurringContext,
 } from "./recurring.js";
+export {
+  InMemoryJobStore,
+  PgJobStore,
+  JOB_DDL,
+  JOB_ACCOUNTS,
+  DEFAULT_COST_CODES,
+  JOB_DIMENSION,
+  COST_CODE_DIMENSION,
+  JobError,
+  ensureJobAccounts,
+  seedCostCodes,
+  saveCostCode,
+  saveJob,
+  saveJobBudget,
+  jobActuals,
+  jobCostReport,
+  jobList,
+  type JobStore,
+  type JobRecord,
+  type CostCodeRecord,
+  type JobBudgetLine,
+  type JobContext,
+  type BillingMethod,
+  type CostMethod,
+  type JobStatus,
+} from "./jobs.js";
 export { ten99Report, Ten99Error, type Ten99Context, type Ten99Json } from "./ten99.js";
 export { rlsDdl, appRoleDdl, superuserWarning, TENANT_TABLES } from "./security.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";

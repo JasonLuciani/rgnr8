@@ -88,21 +88,45 @@ const BASE: readonly TemplateLine[] = [
   { code: "6900", name: "Depreciation Expense", subtype: S.OTHER_EXPENSE },
 ];
 
+
+/**
+ * Job-costing accounts, shared by the categories that run work as projects.
+ *
+ * A contractor's P&L is not the interesting question — "did *this job* make
+ * money, and is it ahead of or behind its billing" is. That needs somewhere to
+ * park cost that has been incurred but not yet billed, somewhere to park
+ * billing that has run ahead of cost, and a retainage account for the 5–10%
+ * the customer holds back until the job is signed off. Without those three, a
+ * percent-complete schedule has nowhere to post and job profit is a guess.
+ */
+const JOB_COSTING: readonly TemplateLine[] = [
+  { code: "1250", name: "Costs in Excess of Billings", subtype: S.OTHER_CURRENT_ASSET },
+  { code: "1260", name: "Retainage Receivable", subtype: S.OTHER_CURRENT_ASSET },
+  { code: "1270", name: "Work in Progress", subtype: S.OTHER_CURRENT_ASSET },
+  { code: "2400", name: "Customer Deposits", subtype: S.OTHER_CURRENT_LIABILITY },
+  { code: "2450", name: "Billings in Excess of Costs", subtype: S.OTHER_CURRENT_LIABILITY },
+  { code: "5500", name: "Job Labor", subtype: S.COST_OF_GOODS_SOLD },
+];
+
 /** Category-specific accounts layered on top of the base. */
 const EXTRAS: Readonly<Record<BusinessCategory, readonly TemplateLine[]>> = {
   [BusinessCategory.SERVICE_GENERAL]: [],
   [BusinessCategory.PROFESSIONAL_SERVICES]: [
     { code: "4100", name: "Consulting Income", subtype: S.INCOME },
     { code: "4200", name: "Retainer Income", subtype: S.INCOME },
+    ...JOB_COSTING,
+    // Same account as the contractor's 1250, under the name a consultancy uses
+    // for it. Later lines win on a code collision, which is the point.
     { code: "1250", name: "Unbilled Receivables (WIP)", subtype: S.OTHER_CURRENT_ASSET },
     { code: "5100", name: "Subcontractor Costs", subtype: S.COST_OF_GOODS_SOLD },
     { code: "6610", name: "Continuing Education", subtype: S.EXPENSE },
   ],
   [BusinessCategory.CONTRACTOR_TRADES]: [
+    ...JOB_COSTING,
+    { code: "1300", name: "Materials Inventory", subtype: S.INVENTORY },
     { code: "4100", name: "Contract Income", subtype: S.INCOME },
     { code: "4200", name: "Change Orders", subtype: S.INCOME },
     { code: "1600", name: "Vehicles", subtype: S.FIXED_ASSET },
-    { code: "2400", name: "Customer Deposits", subtype: S.OTHER_CURRENT_LIABILITY },
     { code: "5100", name: "Job Materials", subtype: S.COST_OF_GOODS_SOLD },
     { code: "5200", name: "Subcontractors", subtype: S.COST_OF_GOODS_SOLD },
     { code: "5300", name: "Equipment Rental", subtype: S.COST_OF_GOODS_SOLD },
