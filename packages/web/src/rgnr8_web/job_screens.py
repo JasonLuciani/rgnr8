@@ -252,7 +252,9 @@ def _headline(
         f'{_pct(totals.get("percent_spent_ppm"))}.</p>'
     )
     actions = (
-        f'<a class="rg-btn" href="/t/{_esc(tenant)}/jobs">All jobs</a>'
+        f'<a class="rg-btn" href="/t/{_esc(tenant)}/jobs">All jobs</a> '
+        f'<a class="rg-btn" href="/t/{_esc(tenant)}/sales-orders">Orders</a> '
+        f'<a class="rg-btn" href="/t/{_esc(tenant)}/purchase-orders">Purchasing</a>'
     )
     return _card(f"{job.get('name')}", body, actions)
 

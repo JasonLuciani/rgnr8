@@ -84,6 +84,13 @@ from .recurring_screens import (
     render_recurring, render_recurring_unavailable, render_run_result,
 )
 from .job_screens import render_job, render_jobs, render_jobs_unavailable
+from .workorder_screens import (
+    render_work_order, render_work_orders, render_work_orders_unavailable,
+)
+from .order_screens import (
+    render_orders_unavailable, render_purchase_order, render_purchase_orders,
+    render_sales_order, render_sales_orders,
+)
 from .estimate_screens import (
     render_estimate, render_estimates, render_estimates_unavailable,
     render_pipeline, render_pipeline_unavailable,
@@ -883,6 +890,65 @@ class WebApp:
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "audit":
             return self._require(subject, token_tenant, parts[1], P.MANAGE_USERS,
                                  lambda t: self._audit_page(subject, t))
+
+        # --- work orders -------------------------------------------------------
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "work-orders":
+            if req.method == "POST":
+                return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                     lambda t: self._work_order_save(subject, t, req.body))
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._work_orders_page(subject, t, req.query))
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "work-orders"
+                and req.method == "GET"):
+            wo_id = parts[3]
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._work_order_page(subject, t, wo_id, req.query))
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "work-orders"
+                and parts[4] in ("entries", "complete") and req.method == "POST"):
+            wo_id, action = parts[3], parts[4]
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._work_order_action(
+                                     subject, t, wo_id, action, req.body))
+
+        # --- sales orders ------------------------------------------------------
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "sales-orders":
+            if req.method == "POST":
+                return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                     lambda t: self._sales_order_save(subject, t, req.body))
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._sales_orders_page(subject, t, req.query))
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "sales-orders"
+                and req.method == "GET"):
+            order_id = parts[3]
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._sales_order_page(subject, t, order_id,
+                                                                  req.query))
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "sales-orders"
+                and parts[4] == "invoice" and req.method == "POST"):
+            order_id = parts[3]
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._sales_order_invoice(
+                                     subject, t, order_id, req.body))
+
+        # --- purchase orders ---------------------------------------------------
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "purchase-orders":
+            if req.method == "POST":
+                return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                     lambda t: self._purchase_order_save(subject, t, req.body))
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._purchase_orders_page(subject, t, req.query))
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "purchase-orders"
+                and req.method == "GET"):
+            order_id = parts[3]
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._purchase_order_page(subject, t, order_id,
+                                                                     req.query))
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "purchase-orders"
+                and parts[4] in ("receipts", "bill") and req.method == "POST"):
+            order_id, action = parts[3], parts[4]
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._purchase_order_action(
+                                     subject, t, order_id, action, req.body))
 
         # --- estimates ---------------------------------------------------------
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "estimates":
@@ -2101,6 +2167,364 @@ class WebApp:
     # --- jobs -----------------------------------------------------------------
 
     # --- estimates and the pipeline -------------------------------------------
+
+    # --- work orders and the two kinds of order -------------------------------
+
+    def _work_orders_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "jobs", render_work_orders_unavailable())
+        job_id = query.get("job_id", "").strip()
+        orders = self._ledger.work_orders(t.tenant_id, job_id=job_id)
+        if not orders.ok:
+            return self._shell(subject, t, "jobs",
+                               render_work_orders_unavailable(orders.error()))
+        jobs = self._ledger.jobs(t.tenant_id)
+        employees = self._ledger.payroll_employees(t.tenant_id)
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_edit = self._policy is None or Permission.POST_JOURNAL in perms
+        return self._shell(subject, t, "jobs", render_work_orders(
+            t.tenant_id, orders.body,
+            jobs.body if jobs.ok else {},
+            employees.body if employees.ok else {},
+            can_edit=can_edit, job_filter=job_id,
+            message=query.get("done", ""), error=query.get("err", ""),
+        ))
+
+    def _work_order_page(
+        self, subject: str, t: _Tenant, wo_id: str, query: "dict[str, str]",
+    ) -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "jobs", render_work_orders_unavailable())
+        res = self._ledger.work_order(t.tenant_id, wo_id)
+        if not res.ok:
+            return self._shell(subject, t, "jobs", render_work_orders_unavailable(res.error()))
+        order = res.body.get("work_order")
+        if not isinstance(order, dict):
+            return self._shell(subject, t, "jobs",
+                               render_work_orders_unavailable("that work order came back empty"))
+        cost_codes = self._ledger.cost_codes(t.tenant_id)
+        employees = self._ledger.payroll_employees(t.tenant_id)
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_edit = self._policy is None or Permission.POST_JOURNAL in perms
+        return self._shell(subject, t, "jobs", render_work_order(
+            t.tenant_id, order,
+            cost_codes.body if cost_codes.ok else {},
+            employees.body if employees.ok else {},
+            can_edit=can_edit,
+            message=query.get("done", ""), error=query.get("err", ""),
+        ))
+
+    def _work_order_save(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/work-orders"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        res = self._ledger.save_work_order(t.tenant_id, {
+            "job_id": str(data.get("job_id", "")).strip(),
+            "title": str(data.get("title", "")).strip(),
+            "description": str(data.get("description", "")).strip(),
+            "scheduled_date": str(data.get("scheduled_date", "")).strip(),
+            "assignee_id": str(data.get("assignee_id", "")).strip(),
+        })
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "work_order.saved", self._session_clock(),
+                               tenant_id=t.tenant_id, target=str(data.get("title", "")))
+        return _redirect(f"{back}?done={_qs_escape('Scheduled')}")
+
+    def _work_order_action(
+        self, subject: str, t: _Tenant, wo_id: str, action: str, body: str,
+    ) -> Response:
+        back = f"/t/{t.tenant_id}/work-orders/{wo_id}"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        if action == "complete":
+            res = self._ledger.complete_work_order(
+                t.tenant_id, wo_id, str(data.get("date", "")).strip() or self._today(t),
+            )
+            note = "Marked complete"
+        else:
+            try:
+                quantity = _quantity_to_milli(str(data.get("quantity", "")))
+                cost = self._amount_to_minor(str(data.get("unit_cost", "")))
+                bill = self._amount_to_minor(str(data.get("unit_bill", "")))
+            except ValueError as exc:
+                return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+            entry: dict[str, object] = {
+                "kind": str(data.get("kind", "LABOR")).strip(),
+                "date": str(data.get("date", "")).strip(),
+                "cost_code": str(data.get("cost_code", "")).strip(),
+                "employee_id": str(data.get("employee_id", "")).strip(),
+                "quantity_milli": str(quantity),
+                "description": str(data.get("description", "")).strip(),
+                "billable": bool(str(data.get("billable", "")).strip()),
+            }
+            if cost is not None:
+                entry["unit_cost_minor"] = str(cost)
+            if bill is not None:
+                entry["unit_bill_minor"] = str(bill)
+            res = self._ledger.add_work_entry(t.tenant_id, wo_id, entry)
+            note = "Booked"
+            if res.ok and str(res.body.get("unposted_reason", "")):
+                note = f"Recorded, but not in the books: {res.body.get('unposted_reason')}"
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, f"work_order.{action}", self._session_clock(),
+                               tenant_id=t.tenant_id, target=wo_id)
+        return _redirect(f"{back}?done={_qs_escape(note)}")
+
+    def _order_lines(
+        self, data: "dict[str, object]", *, with_codes: bool,
+    ) -> list[dict[str, object]]:
+        lines: list[dict[str, object]] = []
+        for i in range(1, 5):
+            price = self._amount_to_minor(str(data.get(f"price{i}", "")))
+            if price is None:
+                continue
+            line: dict[str, object] = {
+                "description": str(data.get(f"desc{i}", "")).strip(),
+                "quantity_milli": str(_quantity_to_milli(str(data.get(f"qty{i}", "")))),
+            }
+            if with_codes:
+                line["unit_price_minor"] = str(price)
+                code = str(data.get(f"code{i}", "")).strip()
+                if code:
+                    line["cost_code"] = code
+            else:
+                line["unit_price_minor"] = str(price)
+            lines.append(line)
+        return lines
+
+    def _sales_orders_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "jobs", render_orders_unavailable())
+        orders = self._ledger.sales_orders(t.tenant_id)
+        if not orders.ok:
+            return self._shell(subject, t, "jobs", render_orders_unavailable(orders.error()))
+        backlog = self._ledger.backlog(t.tenant_id)
+        customers = self._ledger.parties(t.tenant_id, "customers")
+        jobs = self._ledger.jobs(t.tenant_id)
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_edit = self._policy is None or Permission.POST_JOURNAL in perms
+        return self._shell(subject, t, "jobs", render_sales_orders(
+            t.tenant_id, orders.body,
+            backlog.body if backlog.ok else {},
+            customers.body if customers.ok else {},
+            jobs.body if jobs.ok else {},
+            can_edit=can_edit,
+            message=query.get("done", ""), error=query.get("err", ""),
+        ))
+
+    def _sales_order_page(
+        self, subject: str, t: _Tenant, order_id: str, query: "dict[str, str]",
+    ) -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "jobs", render_orders_unavailable())
+        res = self._ledger.sales_order(t.tenant_id, order_id)
+        if not res.ok:
+            return self._shell(subject, t, "jobs", render_orders_unavailable(res.error()))
+        order = res.body.get("order")
+        if not isinstance(order, dict):
+            return self._shell(subject, t, "jobs",
+                               render_orders_unavailable("that order came back empty"))
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_edit = self._policy is None or Permission.POST_JOURNAL in perms
+        return self._shell(subject, t, "jobs", render_sales_order(
+            t.tenant_id, order, can_edit=can_edit,
+            message=query.get("done", ""), error=query.get("err", ""),
+        ))
+
+    def _sales_order_save(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/sales-orders"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        try:
+            lines = self._order_lines(data, with_codes=False)
+        except ValueError as exc:
+            return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+        if not lines:
+            return _redirect(f"{back}?err={_qs_escape('Add at least one line')}")
+        payload: dict[str, object] = {
+            "customer_id": str(data.get("customer_id", "")).strip(),
+            "date": str(data.get("date", "")).strip(),
+            "requested_date": str(data.get("requested_date", "")).strip(),
+            "memo": str(data.get("memo", "")).strip(),
+            "lines": lines,
+        }
+        for key in ("id", "job_id"):
+            if str(data.get(key, "")).strip():
+                payload[key] = str(data.get(key, "")).strip()
+        res = self._ledger.save_sales_order(t.tenant_id, payload)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "sales_order.saved", self._session_clock(),
+                               tenant_id=t.tenant_id, target=str(payload.get("id", "")))
+        return _redirect(f"{back}?done={_qs_escape('Order taken')}")
+
+    def _sales_order_invoice(
+        self, subject: str, t: _Tenant, order_id: str, body: str,
+    ) -> Response:
+        back = f"/t/{t.tenant_id}/sales-orders/{order_id}"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        lines: list[dict[str, object]] = []
+        try:
+            for key, raw in data.items():
+                if not key.startswith("qty"):
+                    continue
+                text = str(raw).strip()
+                line: dict[str, object] = {"line_no": int(key[3:])}
+                if text:
+                    line["quantity_milli"] = str(_quantity_to_milli(text))
+                lines.append(line)
+        except ValueError as exc:
+            return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+        res = self._ledger.invoice_sales_order(t.tenant_id, order_id, {
+            "id": str(data.get("id", "")).strip(),
+            "date": str(data.get("date", "")).strip() or self._today(t),
+            "lines": lines,
+        })
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "sales_order.invoiced", self._session_clock(),
+                               tenant_id=t.tenant_id, target=order_id)
+        return _redirect(f"{back}?done={_qs_escape('Invoice raised')}")
+
+    def _purchase_orders_page(
+        self, subject: str, t: _Tenant, query: "dict[str, str]",
+    ) -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "bills", render_orders_unavailable())
+        orders = self._ledger.purchase_orders(t.tenant_id)
+        if not orders.ok:
+            return self._shell(subject, t, "bills", render_orders_unavailable(orders.error()))
+        committed = self._ledger.committed_cost(t.tenant_id)
+        vendors = self._ledger.parties(t.tenant_id, "vendors")
+        jobs = self._ledger.jobs(t.tenant_id)
+        cost_codes = self._ledger.cost_codes(t.tenant_id)
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_edit = self._policy is None or Permission.POST_JOURNAL in perms
+        return self._shell(subject, t, "bills", render_purchase_orders(
+            t.tenant_id, orders.body,
+            committed.body if committed.ok else {},
+            vendors.body if vendors.ok else {},
+            jobs.body if jobs.ok else {},
+            cost_codes.body if cost_codes.ok else {},
+            can_edit=can_edit,
+            message=query.get("done", ""), error=query.get("err", ""),
+        ))
+
+    def _purchase_order_page(
+        self, subject: str, t: _Tenant, order_id: str, query: "dict[str, str]",
+    ) -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "bills", render_orders_unavailable())
+        res = self._ledger.purchase_order(t.tenant_id, order_id)
+        if not res.ok:
+            return self._shell(subject, t, "bills", render_orders_unavailable(res.error()))
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_edit = self._policy is None or Permission.POST_JOURNAL in perms
+        return self._shell(subject, t, "bills", render_purchase_order(
+            t.tenant_id, res.body, can_edit=can_edit,
+            message=query.get("done", ""), error=query.get("err", ""),
+        ))
+
+    def _purchase_order_save(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/purchase-orders"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        try:
+            lines = self._order_lines(data, with_codes=True)
+        except ValueError as exc:
+            return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+        if not lines:
+            return _redirect(f"{back}?err={_qs_escape('Add at least one line')}")
+        payload: dict[str, object] = {
+            "vendor_id": str(data.get("vendor_id", "")).strip(),
+            "date": str(data.get("date", "")).strip(),
+            "expected_date": str(data.get("expected_date", "")).strip(),
+            "memo": str(data.get("memo", "")).strip(),
+            "lines": lines,
+        }
+        for key in ("id", "job_id"):
+            if str(data.get(key, "")).strip():
+                payload[key] = str(data.get(key, "")).strip()
+        res = self._ledger.save_purchase_order(t.tenant_id, payload)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "purchase_order.saved", self._session_clock(),
+                               tenant_id=t.tenant_id, target=str(payload.get("id", "")))
+        return _redirect(f"{back}?done={_qs_escape('Order raised')}")
+
+    def _purchase_order_action(
+        self, subject: str, t: _Tenant, order_id: str, action: str, body: str,
+    ) -> Response:
+        back = f"/t/{t.tenant_id}/purchase-orders/{order_id}"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        if action == "receipts":
+            lines: list[dict[str, object]] = []
+            try:
+                for key, raw in data.items():
+                    if not key.startswith("qty"):
+                        continue
+                    text = str(raw).strip()
+                    line: dict[str, object] = {"line_no": int(key[3:])}
+                    if text:
+                        line["quantity_milli"] = str(_quantity_to_milli(text))
+                    lines.append(line)
+            except ValueError as exc:
+                return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+            res = self._ledger.receive_purchase_order(t.tenant_id, order_id, {
+                "date": str(data.get("date", "")).strip() or self._today(t),
+                "accrue": bool(str(data.get("accrue", "")).strip()),
+                "lines": lines,
+            })
+            note = "Delivery recorded"
+            if res.ok and str(res.body.get("accrued_minor", "0")) not in ("", "0"):
+                note = "Delivery recorded and accrued onto the job"
+        else:
+            bill_lines: list[dict[str, object]] = []
+            try:
+                for key, raw in data.items():
+                    if not key.startswith("price"):
+                        continue
+                    text = str(raw).strip()
+                    line = {"line_no": int(key[5:])}
+                    if text:
+                        price = self._amount_to_minor(text)
+                        if price is not None:
+                            line["unit_price_minor"] = str(price)
+                    bill_lines.append(line)
+            except ValueError as exc:
+                return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+            res = self._ledger.bill_purchase_order(t.tenant_id, order_id, {
+                "id": str(data.get("id", "")).strip(),
+                "date": str(data.get("date", "")).strip() or self._today(t),
+                "due_date": str(data.get("due_date", "")).strip(),
+                "accept_variance": bool(str(data.get("accept_variance", "")).strip()),
+                "lines": bill_lines,
+            })
+            note = "Bill entered"
+            variances = res.body.get("variances") if res.ok else None
+            if isinstance(variances, list) and variances:
+                note = f"Bill entered with {len(variances)} price variance(s) posted to the job"
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, f"purchase_order.{action}", self._session_clock(),
+                               tenant_id=t.tenant_id, target=order_id)
+        return _redirect(f"{back}?done={_qs_escape(note)}")
 
     def _estimates_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
         if self._ledger is None:
