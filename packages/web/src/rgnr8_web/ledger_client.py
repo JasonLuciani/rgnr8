@@ -234,6 +234,29 @@ class LedgerClient:
             payload["memo"] = memo
         return self._call("POST", f"/t/{tenant}/{kind}/{doc_id}/payments", payload)
 
+    # --- reporting -----------------------------------------------------------
+
+    def general_ledger(
+        self, tenant: str, *, frm: str = "", to: str = "", codes: str = ""
+    ) -> LedgerResponse:
+        parts = []
+        if frm:
+            parts.append(f"from={urllib.parse.quote(frm)}")
+        if to:
+            parts.append(f"to={urllib.parse.quote(to)}")
+        if codes:
+            parts.append(f"codes={urllib.parse.quote(codes)}")
+        qs = f"?{'&'.join(parts)}" if parts else ""
+        return self._call("GET", f"/t/{tenant}/gl{qs}")
+
+    def budget(self, tenant: str, period: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/budget/{urllib.parse.quote(period)}")
+
+    def save_budget(
+        self, tenant: str, period: str, lines: list[dict[str, object]]
+    ) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/budget", {"period": period, "lines": lines})
+
     # --- payroll -------------------------------------------------------------
 
     def payroll_employees(self, tenant: str) -> LedgerResponse:

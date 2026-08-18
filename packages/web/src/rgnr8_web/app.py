@@ -92,6 +92,7 @@ from .owner_reports import render_owner_report
 from .ledger_client import LedgerClient
 from .arap_screens import render_aging as render_arap_aging, render_documents
 from .reconcile_screens import render_pick_account, render_reconcile
+from .reporting_screens import render_budget, render_general_ledger
 from .payroll_screens import (
     render_payroll_home,
     render_payroll_run,
@@ -917,6 +918,19 @@ class WebApp:
             return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
                                  lambda t: self._books_register_page(subject, t, code))
 
+        # /t/<tenant>/books/gl -> general ledger detail across every account
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "books"
+                and parts[3] == "gl"):
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._gl_page(subject, t, req.query))
+        # /t/<tenant>/books/budget -> budget vs actual, and setting the budget
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "books"
+                and parts[3] == "budget"):
+            if req.method == "POST":
+                return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                     lambda t: self._budget_save(subject, t, req.body))
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._budget_page(subject, t, req.query))
         # /t/<tenant>/books/reconcile -> pick a bank account to reconcile
         if (len(parts) == 4 and parts[0] == "t" and parts[2] == "books"
                 and parts[3] == "reconcile"):
@@ -1709,6 +1723,79 @@ class WebApp:
             self._audit.record(subject, "feed.rule_deleted", self._session_clock(),
                                tenant_id=t.tenant_id, target=rule_id)
         return _redirect(f"{back}?done={_qs_escape('Rule removed')}")
+
+    # --- general ledger and budgets --------------------------------------------
+
+    def _gl_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "books", render_books_unavailable())
+        frm = query.get("from", "").strip()
+        to = query.get("to", "").strip()
+        res = self._ledger.general_ledger(
+            t.tenant_id, frm=frm, to=to, codes=query.get("codes", "").strip(),
+        )
+        if not res.ok:
+            return self._shell(subject, t, "books", render_books_unavailable(res.error()))
+        return self._shell(subject, t, "books",
+                           render_general_ledger(t.tenant_id, res.body, frm=frm, to=to))
+
+    def _budget_period(self, t: _Tenant, query: "dict[str, str]") -> str:
+        period = query.get("period", "").strip()
+        return period or self._today(t)[:7]
+
+    def _budget_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "books", render_books_unavailable())
+        period = self._budget_period(t, query)
+        res = self._ledger.budget(t.tenant_id, period)
+        if not res.ok:
+            return self._shell(subject, t, "books", render_books_unavailable(res.error()))
+        accounts = self._ledger.accounts(t.tenant_id)
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_post = self._policy is None or Permission.POST_JOURNAL in perms
+        return self._shell(subject, t, "books", render_budget(
+            t.tenant_id, period, res.body, accounts.body if accounts.ok else {},
+            can_post=can_post,
+            message=query.get("done", ""), error=query.get("err", ""),
+        ))
+
+    def _budget_save(self, subject: str, t: _Tenant, body: str) -> Response:
+        """Save a period's budget. A blank line is left unbudgeted rather than
+        recorded as a plan to earn or spend nothing — those are different claims."""
+        data = self._form_or_json(body)
+        period = str(data.get("period", "")).strip()
+        back = f"/t/{t.tenant_id}/books/budget?period={_qs_escape(period)}"
+        if self._ledger is None:
+            return _redirect(f"{back}&err=No+ledger+service+configured")
+
+        lines: list[dict[str, object]] = []
+        try:
+            for key, raw in data.items():
+                if not key.startswith("amount_"):
+                    continue
+                text = str(raw).strip()
+                if not text:
+                    continue
+                minor = self._amount_to_minor(text)
+                if minor is None:
+                    continue
+                lines.append({
+                    "account_code": key[len("amount_"):],
+                    "amount_minor": str(minor),
+                })
+        except ValueError as exc:
+            return _redirect(f"{back}&err={_qs_escape(str(exc))}")
+        if not lines:
+            return _redirect(f"{back}&err={_qs_escape('Enter at least one budget figure')}")
+
+        res = self._ledger.save_budget(t.tenant_id, period, lines)
+        if not res.ok:
+            return _redirect(f"{back}&err={_qs_escape(res.error())}")
+        saved = res.body.get("saved", 0)
+        if self._audit is not None:
+            self._audit.record(subject, "budget.saved", self._session_clock(),
+                               tenant_id=t.tenant_id, detail=f"{period}: {saved} lines")
+        return _redirect(f"{back}&done={_qs_escape(f'Budget saved — {saved} accounts')}")
 
     # --- bank reconciliation --------------------------------------------------
 

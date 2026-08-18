@@ -65,6 +65,13 @@ import {
 } from "./inbox.js";
 import type { FeedStatus } from "./feed.js";
 import {
+  ReportingError,
+  budgetReport,
+  generalLedger,
+  saveBudgetLines,
+  type ReportingContext,
+} from "./reporting.js";
+import {
   PayrollServiceError,
   createRun,
   liabilityView,
@@ -318,6 +325,34 @@ export class LedgerService {
         return await this.aging(tenant, rest[1] === "ar" ? "invoice" : "bill", req.query);
       }
 
+      // --- reporting ------------------------------------------------------
+      if (rest[0] === "gl" && rest.length === 1 && req.method === "GET") {
+        return ok(await generalLedger(this.reportingCtx(tenant), req.query));
+      }
+      if (rest[0] === "budget") {
+        const ctx = this.reportingCtx(tenant);
+        if (rest.length === 1 && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          return created({
+            tenant, ...(await saveBudgetLines(ctx, data as Parameters<typeof saveBudgetLines>[1])),
+          });
+        }
+        if (rest.length === 2 && req.method === "GET") {
+          return ok(await budgetReport(ctx, rest[1]));
+        }
+        if (rest.length === 2 && req.method === "DELETE") {
+          await this.backend.budgets().deleteBudget(String(tenant), rest[1]!);
+          return ok({ tenant, period: rest[1], cleared: true });
+        }
+        if (rest.length === 2 && rest[1] === "lines" && req.method === "GET") {
+          return ok({
+            tenant,
+            lines: await this.backend.budgets().listBudget(String(tenant)),
+          });
+        }
+      }
+
       // --- payroll --------------------------------------------------------
       if (rest[0] === "payroll") {
         const ctx = this.payrollCtx(tenant);
@@ -412,6 +447,7 @@ export class LedgerService {
       if (err instanceof ReconcileError) return bad(err.message);
       if (err instanceof InboxError) return bad(err.message);
       if (err instanceof PayrollServiceError) return bad(err.message);
+      if (err instanceof ReportingError) return bad(err.message);
       return bad(err instanceof Error ? err.message : String(err));
     }
     return notFound("not found");
@@ -670,6 +706,12 @@ export class LedgerService {
         balance_minor: r.balance.minorUnits.toString(),
       })),
     });
+  }
+
+  // --- reporting -------------------------------------------------------------
+
+  private reportingCtx(tenant: TenantId): ReportingContext {
+    return { backend: this.backend, tenant, currency: this.currency };
   }
 
   // --- payroll ---------------------------------------------------------------

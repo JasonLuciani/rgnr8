@@ -46,6 +46,8 @@ export const TENANT_TABLES: readonly string[] = Object.freeze([
   "payroll_employee",
   "payroll_run",
   "payroll_run_line",
+  // budgets
+  "budget_line",
 ]);
 
 /**

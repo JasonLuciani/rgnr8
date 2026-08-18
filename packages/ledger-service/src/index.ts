@@ -99,5 +99,16 @@ export {
   type EmployeeRecord,
   type PayrollContext,
 } from "./payroll.js";
+export {
+  generalLedger,
+  budgetReport,
+  saveBudgetLines,
+  InMemoryBudgetStore,
+  PgBudgetStore,
+  BUDGET_DDL,
+  ReportingError,
+  type BudgetStore,
+  type ReportingContext,
+} from "./reporting.js";
 export { rlsDdl, appRoleDdl, superuserWarning, TENANT_TABLES } from "./security.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";

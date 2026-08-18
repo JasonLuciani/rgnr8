@@ -659,3 +659,52 @@ def test_the_real_service_refuses_the_wrong_adjustment(ledger_service: str) -> N
     _req(app, "adjco", "/t/adjco/invoices/INV-1/payments", "POST", "amount=100.00")
     r = _req(app, "adjco", "/t/adjco/invoices/INV-1/credits", "POST", "amount=50.00")
     assert "refund%2C%20not%20a%20credit" in str(r.headers.get("Location", ""))
+
+
+def test_general_ledger_and_budget_against_the_real_service(ledger_service: str) -> None:
+    """The reports an accountant asks for, computed from the client's own books."""
+    base = ledger_service
+    app = _app(base, ["repco"])
+    _seed(base, "repco", "PROFESSIONAL_SERVICES")
+
+    for date_, memo, dr, cr, amount in [
+        ("2026-07-20", "July retainer", "1000", "4100", "4,000.00"),
+        ("2026-08-03", "August retainer", "1000", "4100", "12,000.00"),
+        ("2026-08-09", "Studio rent", "6300", "1000", "3,500.00"),
+        ("2026-08-21", "Software", "6500", "1000", "249.00"),
+    ]:
+        r = _req(app, "repco", "/t/repco/books/entries", "POST",
+                 f"date={date_}&memo={memo.replace(' ', '+')}"
+                 f"&code1={dr}&debit1={amount}&code2={cr}&credit2={amount}")
+        assert r.status == 302 and "err=" not in str(r.headers.get("Location", ""))
+
+    # the whole ledger, and it balances on screen
+    gl = _req(app, "repco", "/t/repco/books/gl")
+    assert gl.status == 200
+    assert "Debits equal credits across every account" in gl.body
+    assert "August retainer" in gl.body and "Studio rent" in gl.body
+    assert "$12,251.00" in gl.body            # closing cash
+
+    # August only: July folds into the opening balance rather than disappearing
+    august = _req(app, "repco", "/t/repco/books/gl?from=2026-08-01&to=2026-08-31")
+    assert "July retainer" not in august.body
+    assert "$4,000.00" in august.body         # ...but it is the opening
+
+    # budget the month, then compare
+    saved = _req(app, "repco", "/t/repco/books/budget", "POST",
+                 "period=2026-08&amount_4100=15,000.00&amount_6300=3500.00"
+                 "&amount_6500=400.00")
+    assert "Budget%20saved" in str(saved.headers.get("Location", ""))
+
+    page = _req(app, "repco", "/t/repco/books/budget?period=2026-08")
+    assert page.status == 200
+    assert "$15,000.00" in page.body and "$12,000.00" in page.body
+    assert "worse than planned" in page.body   # revenue missed
+    assert "better than planned" in page.body  # software under-spent
+    assert "on plan" in page.body              # rent exactly on budget
+
+    # the budget is the period's activity, not the balance carried into it
+    data = _service_get(base, "/t/repco/budget/2026-08")
+    revenue = [l for l in data["lines"] if l["code"] == "4100"][0]
+    assert revenue["actual_minor"] == "1200000", "July's 4,000 is not in August"
+    assert revenue["favorable"] is False
