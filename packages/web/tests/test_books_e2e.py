@@ -111,6 +111,15 @@ def _seed(base: str, tenant: str, category: str) -> None:
         assert r.status == 201
 
 
+def _service_get(base: str, path: str) -> Any:
+    """Read the service directly — used only to learn entry ids the UI renders."""
+    req = urllib.request.Request(
+        f"{base}{path}", headers={"authorization": f"Bearer {TOKEN}"}, method="GET"
+    )
+    with urllib.request.urlopen(req, timeout=5) as r:
+        return json.loads(r.read().decode())
+
+
 def test_owner_runs_their_books_end_to_end_against_the_real_service(ledger_service: str) -> None:
     base = ledger_service
     app = _app(base, ["northwind"])
@@ -306,3 +315,76 @@ def test_a_viewer_cannot_invoice_or_collect(ledger_service: str) -> None:
     # but they can still look
     assert app.handle(Request("GET", "/t/gated/invoices",
                               {"authorization": f"Bearer {tok}"}, "")).status == 200
+
+
+def test_owner_reconciles_a_bank_account_against_the_real_service(ledger_service: str) -> None:
+    """The month-end ritual: three transactions on the books, two on the bank
+    statement. The owner ticks those two, the difference falls to zero, and
+    finishing locks them in. The third is the outstanding check."""
+    base = ledger_service
+    app = _app(base, ["reconco"])
+    _seed(base, "reconco", "PROFESSIONAL_SERVICES")
+
+    _req(app, "reconco", "/t/reconco/books/entries", "POST",
+         "date=2026-08-03&memo=Client+deposit&code1=1000&debit1=5,000.00"
+         "&code2=4100&credit2=5000.00")
+    _req(app, "reconco", "/t/reconco/books/entries", "POST",
+         "date=2026-08-05&memo=Software&code1=6400&debit1=200.00&code2=1000&credit2=200.00")
+    _req(app, "reconco", "/t/reconco/books/entries", "POST",
+         "date=2026-08-30&memo=Check+not+cashed&code1=6400&debit1=50.00&code2=1000&credit2=50.00")
+
+    # the account shows up as reconcilable
+    pick = _req(app, "reconco", "/t/reconco/books/reconcile")
+    assert pick.status == 200 and "Business Checking" in pick.body
+
+    # the statement says $4,800.00 on 2026-08-31 — the check hasn't cleared
+    url = "/t/reconco/books/reconcile/1000?statement_date=2026-08-31&statement_balance=4,800.00"
+    page = _req(app, "reconco", url)
+    assert page.status == 200
+    assert "Client deposit" in page.body and "Check not cashed" in page.body
+    assert "$4,800.00" in page.body          # still the whole difference
+    assert "Finish reconciliation" not in page.body
+
+    # find the two entry ids the statement covers and tick them
+    entries = _service_get(base, "/t/reconco/accounts/1000/reconcile"
+                                 "?statement_date=2026-08-31&statement_balance_minor=480000")
+    to_tick = [ln["entry_id"] for ln in entries["lines"] if ln["memo"] != "Check not cashed"]
+    assert len(to_tick) == 2
+    for entry_id in to_tick:
+        r = _req(app, "reconco", "/t/reconco/books/reconcile/1000/toggle", "POST",
+                 f"entry_id={entry_id}&cleared=1&statement_date=2026-08-31"
+                 "&statement_balance_minor=480000")
+        assert r.status == 302 and "err=" not in str(r.headers.get("Location", ""))
+
+    balanced = _req(app, "reconco", url)
+    assert "Finish reconciliation" in balanced.body
+    assert "Ticked" in balanced.body
+
+    done = _req(app, "reconco", "/t/reconco/books/reconcile/1000/finish", "POST",
+                "statement_date=2026-08-31&statement_balance_minor=480000")
+    assert done.status == 302
+    assert "done=" in str(done.headers.get("Location", ""))
+
+    after = _req(app, "reconco", url)
+    assert "Reconciled" in after.body
+    assert "2026-08-31" in after.body
+    # the outstanding check is still open, so September starts $50 short
+    assert "-$50.00" in after.body
+
+
+def test_the_real_ledger_refuses_an_out_of_balance_reconciliation(ledger_service: str) -> None:
+    base = ledger_service
+    app = _app(base, ["offbyco"])
+    _seed(base, "offbyco", "PROFESSIONAL_SERVICES")
+    _req(app, "offbyco", "/t/offbyco/books/entries", "POST",
+         "date=2026-08-03&memo=Deposit&code1=1000&debit1=500.00&code2=4100&credit2=500.00")
+    view = _service_get(base, "/t/offbyco/accounts/1000/reconcile"
+                              "?statement_date=2026-08-31&statement_balance_minor=45000")
+    entry_id = view["lines"][0]["entry_id"]
+    _req(app, "offbyco", "/t/offbyco/books/reconcile/1000/toggle", "POST",
+         f"entry_id={entry_id}&cleared=1&statement_date=2026-08-31"
+         "&statement_balance_minor=45000")
+    r = _req(app, "offbyco", "/t/offbyco/books/reconcile/1000/finish", "POST",
+             "statement_date=2026-08-31&statement_balance_minor=45000")
+    assert "err=" in str(r.headers.get("Location", ""))
+    assert "off%20by" in str(r.headers.get("Location", ""))

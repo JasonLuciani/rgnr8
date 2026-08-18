@@ -145,7 +145,8 @@ def render_books_home(
     )
     actions = (
         f'<span><a class="btn-link" href="/t/{_esc(tenant)}/books/accounts">Chart of accounts</a>'
-        f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/statements">Statements</a></span>'
+        f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/statements">Statements</a>'
+        f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/reconcile">Reconcile</a></span>'
     )
     out = ""
     if message:

@@ -28,7 +28,8 @@
     "@rgnr8/financial-statements": "^0.1.0",
     "pg": "^8.13.1",
     "@rgnr8/ingestion": "^0.1.0",
-    "@rgnr8/subledger": "^0.1.0"
+    "@rgnr8/subledger": "^0.1.0",
+    "@rgnr8/reconciliation": "^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

@@ -267,3 +267,105 @@ export function finishBankReconciliation(
   }
   register.markReconciled(recon.accountId, recon.newlyClearedEntryIds, recon.periodEnd);
 }
+
+// --- manual tick-off reconciliation -----------------------------------------
+
+export interface ManualReconciliation {
+  readonly accountId: string;
+  readonly statementDate: string;
+  readonly statementBalance: Money;
+  /** Sum of every line already RECONCILED in a prior session. */
+  readonly reconciledBalance: Money;
+  /** Sum of the lines ticked in this session. */
+  readonly clearedThisSession: Money;
+  /** reconciledBalance + clearedThisSession — what the bank should show. */
+  readonly clearedBalance: Money;
+  /** statementBalance − clearedBalance. Zero means it ties out. */
+  readonly difference: Money;
+  /** Entry ids ticked but not yet locked in. */
+  readonly clearedEntryIds: readonly string[];
+  /** Lines still not ticked — the ones not on this statement. */
+  readonly unclearedLines: readonly RegisterLine[];
+  readonly clearedLines: readonly RegisterLine[];
+  readonly canFinish: boolean;
+}
+
+/**
+ * The reconciliation an owner actually performs: they hold a bank statement,
+ * tick the register lines that appear on it, and the difference must reach
+ * zero before the period can be locked in.
+ *
+ * This is the counterpart to {@link reconcileBankAccount}, which auto-matches
+ * against imported statement *lines*. Here the human does the matching and all
+ * we need from the statement is its **ending balance and date** — which is what
+ * a paper or PDF statement actually gives you.
+ *
+ * Lines already RECONCILED from earlier sessions are folded into
+ * `reconciledBalance`, so a completed month never has to be re-ticked.
+ */
+export function manualReconciliation(
+  lines: readonly RegisterLine[],
+  statementDate: string,
+  statementBalance: Money,
+): ManualReconciliation {
+  const currency = statementBalance.currency;
+  let reconciledBalance = Money.zero(currency);
+  let clearedThisSession = Money.zero(currency);
+  const clearedEntryIds: string[] = [];
+  const unclearedLines: RegisterLine[] = [];
+  const clearedLines: RegisterLine[] = [];
+  let accountId = "";
+
+  for (const line of lines) {
+    accountId = line.accountId;
+    if (line.status === "RECONCILED") {
+      reconciledBalance = reconciledBalance.plus(line.amount);
+      continue;
+    }
+    if (line.status === "CLEARED") {
+      clearedThisSession = clearedThisSession.plus(line.amount);
+      clearedEntryIds.push(line.entryId);
+      clearedLines.push(line);
+      continue;
+    }
+    unclearedLines.push(line);
+  }
+
+  const clearedBalance = reconciledBalance.plus(clearedThisSession);
+  const difference = statementBalance.minus(clearedBalance);
+  return {
+    accountId,
+    statementDate,
+    statementBalance,
+    reconciledBalance,
+    clearedThisSession,
+    clearedBalance,
+    difference,
+    clearedEntryIds,
+    unclearedLines,
+    clearedLines,
+    // Nothing to lock in is not a reconciliation; a zero difference with at
+    // least one ticked line is.
+    canFinish: difference.isZero() && clearedEntryIds.length > 0,
+  };
+}
+
+/**
+ * Lock in a manual reconciliation: every ticked line becomes RECONCILED and the
+ * account's reconciled-through date advances. Refuses unless it ties out.
+ */
+export function finishManualReconciliation(
+  recon: ManualReconciliation,
+  register: ClearedRegister,
+): void {
+  if (!recon.canFinish) {
+    // Two distinct failures, and telling an owner "off by 0.00" for the second
+    // one is worse than saying nothing: it reads like a bug in the software.
+    throw new Error(
+      recon.clearedEntryIds.length === 0
+        ? "cannot finish: nothing has been ticked off against this statement yet"
+        : `cannot finish: off by ${recon.difference.toDecimalString()}`,
+    );
+  }
+  register.markReconciled(recon.accountId, recon.clearedEntryIds, recon.statementDate);
+}

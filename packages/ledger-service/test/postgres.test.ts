@@ -157,4 +157,93 @@ describe("real PostgreSQL", { skip: URL_ ? false : "set RGNR8_TEST_DATABASE_URL 
 
     await poolB.end();
   });
+
+  test("a finished reconciliation survives a restart and stays locked", async () => {
+    const tenant = `recon_${`${Date.now()}`.slice(-8)}`;
+
+    // --- instance #1: post three transactions, tick the two on the statement ---
+    const poolA = new pg.Pool({ connectionString: URL_ });
+    const backendA = new PostgresBackend(poolA as never);
+    await backendA.migrate();
+    const svcA = new LedgerService(backendA, { now: () => NOW });
+    const callA = (
+      method: string, path: string, body: unknown = "", query: Record<string, string> = {},
+    ): Promise<{ status: number; body: unknown }> =>
+      svcA.handle({
+        method, path, query,
+        body: typeof body === "string" ? body : JSON.stringify(body),
+        headers: {},
+      });
+
+    await callA("POST", `/t/${tenant}/accounts/seed`, { category: "PROFESSIONAL_SERVICES" });
+    const post = async (date: string, memo: string, minor: string): Promise<string> => {
+      const into = !minor.startsWith("-");
+      const abs = into ? minor : minor.slice(1);
+      const r = await callA("POST", `/t/${tenant}/entries`, {
+        date, memo,
+        lines: into
+          ? [
+              { code: "1000", side: "DEBIT", amount_minor: abs },
+              { code: "4100", side: "CREDIT", amount_minor: abs },
+            ]
+          : [
+              { code: "6400", side: "DEBIT", amount_minor: abs },
+              { code: "1000", side: "CREDIT", amount_minor: abs },
+            ],
+      });
+      assert.equal(r.status, 201, JSON.stringify(r.body));
+      const body = r.body as Record<string, unknown>;
+      return String((body["entry"] as Record<string, unknown>)["id"]);
+    };
+    const deposit = await post("2026-08-03", "Client deposit", "500000");
+    const software = await post("2026-08-05", "Software", "-20000");
+    await post("2026-08-30", "Check not cashed", "-5000");
+
+    const STMT = { statement_date: "2026-08-31", statement_balance_minor: "480000" };
+    for (const entryId of [deposit, software]) {
+      const r = await callA("POST", `/t/${tenant}/accounts/1000/reconcile/toggle`, {
+        entry_id: entryId, cleared: true, ...STMT,
+      });
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+    }
+    const fin = await callA("POST", `/t/${tenant}/accounts/1000/reconcile/finish`, STMT);
+    assert.equal(fin.status, 200, JSON.stringify(fin.body));
+    assert.equal((fin.body as Record<string, unknown>)["reconciled_entries"], 2);
+    await poolA.end(); // the process that reconciled goes away
+
+    // --- instance #2: the tick marks are still there ---
+    const poolB = new pg.Pool({ connectionString: URL_ });
+    const svcB = new LedgerService(new PostgresBackend(poolB as never), { now: () => NOW });
+    const callB = (
+      method: string, path: string, body: unknown = "", query: Record<string, string> = {},
+    ): Promise<{ status: number; body: unknown }> =>
+      svcB.handle({
+        method, path, query,
+        body: typeof body === "string" ? body : JSON.stringify(body),
+        headers: {},
+      });
+
+    const view = (await callB("GET", `/t/${tenant}/accounts/1000/reconcile`, "", {
+      statement_date: "2026-09-30", statement_balance_minor: "475000",
+    })).body as Record<string, unknown>;
+    assert.equal(view["reconciled_through"], "2026-08-31");
+    assert.equal(view["reconciled_balance_minor"], "480000");
+    const lines = view["lines"] as Array<Record<string, unknown>>;
+    assert.equal(lines.filter((l) => l["status"] === "RECONCILED").length, 2);
+    // the outstanding check is the only thing left to tick, and it is exactly
+    // what September is short by
+    assert.equal(view["cleared_this_session_minor"], "0");
+    assert.equal(view["difference_minor"], "-5000");
+    assert.equal(lines.filter((l) => l["status"] === "UNCLEARED").length, 1);
+
+    // and a reconciled line cannot be un-ticked by the new instance either
+    const undo = await callB("POST", `/t/${tenant}/accounts/1000/reconcile/toggle`, {
+      entry_id: deposit, cleared: false,
+      statement_date: "2026-09-30", statement_balance_minor: "475000",
+    });
+    assert.equal(undo.status, 400);
+    assert.match(String((undo.body as Record<string, unknown>)["error"]), /locked in/);
+
+    await poolB.end();
+  });
 });

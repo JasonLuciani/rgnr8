@@ -90,6 +90,7 @@ from .openapi import build_openapi
 from .owner_reports import render_owner_report
 from .ledger_client import LedgerClient
 from .arap_screens import render_aging as render_arap_aging, render_documents
+from .reconcile_screens import render_pick_account, render_reconcile
 from .books_screens import (
     render_books_home,
     render_books_statements,
@@ -795,6 +796,26 @@ class WebApp:
             return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
                                  lambda t: self._books_register_page(subject, t, code))
 
+        # /t/<tenant>/books/reconcile -> pick a bank account to reconcile
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "books"
+                and parts[3] == "reconcile"):
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._reconcile_pick(subject, t))
+        # /t/<tenant>/books/reconcile/<code> -> the reconciliation worksheet
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "books"
+                and parts[3] == "reconcile"):
+            code = parts[4]
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._reconcile_page(subject, t, code, req.query))
+        # /t/<tenant>/books/reconcile/<code>/toggle|finish -> tick a line, or lock it in
+        if (len(parts) == 6 and parts[0] == "t" and parts[2] == "books"
+                and parts[3] == "reconcile" and req.method == "POST"
+                and parts[5] in ("toggle", "finish")):
+            code, action = parts[4], parts[5]
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._reconcile_action(subject, t, code, action,
+                                                                  req.body))
+
         # /t/<tenant>  -> Cash outlook (shell page)
         if len(parts) == 2 and parts[0] == "t":
             return self._require(subject, token_tenant, parts[1], P.VIEW_CASH,
@@ -1208,6 +1229,73 @@ class WebApp:
         if not res.ok:
             return self._shell(subject, t, "books", render_books_unavailable(res.error()))
         return self._shell(subject, t, "books", render_register(t.tenant_id, res.body))
+
+    # --- bank reconciliation --------------------------------------------------
+
+    def _reconcile_pick(self, subject: str, t: _Tenant) -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "books", render_books_unavailable())
+        res = self._ledger.accounts(t.tenant_id)
+        if not res.ok:
+            return self._shell(subject, t, "books", render_books_unavailable(res.error()))
+        return self._shell(subject, t, "books", render_pick_account(t.tenant_id, res.body))
+
+    def _reconcile_page(
+        self, subject: str, t: _Tenant, code: str, query: "dict[str, str]"
+    ) -> Response:
+        """The worksheet. The statement date and balance live in the query string,
+        so a reconciliation session is a bookmarkable URL rather than server state."""
+        if self._ledger is None:
+            return self._shell(subject, t, "books", render_books_unavailable())
+        date = query.get("statement_date", "").strip() or self._today(t)
+        raw = query.get("statement_balance", "").strip()
+        minor = query.get("statement_balance_minor", "").strip()
+        if not minor:
+            try:
+                minor = str(self._amount_to_minor(raw) or 0)
+            except ValueError as exc:
+                minor = "0"
+                query = dict(query, err=str(exc))
+        res = self._ledger.reconcile_view(t.tenant_id, code, date, minor)
+        if not res.ok:
+            return self._shell(subject, t, "books", render_books_unavailable(res.error()))
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_post = self._policy is None or Permission.POST_JOURNAL in perms
+        body = render_reconcile(
+            t.tenant_id, res.body, can_post=can_post,
+            message=query.get("done", ""), error=query.get("err", ""),
+        )
+        return self._shell(subject, t, "books", body)
+
+    def _reconcile_action(
+        self, subject: str, t: _Tenant, code: str, action: str, body: str
+    ) -> Response:
+        data = self._form_or_json(body)
+        date = str(data.get("statement_date", "")).strip()
+        minor = str(data.get("statement_balance_minor", "")).strip() or "0"
+        back = (f"/t/{t.tenant_id}/books/reconcile/{code}"
+                f"?statement_date={_qs_escape(date)}&statement_balance_minor={_qs_escape(minor)}")
+        if self._ledger is None:
+            return _redirect(f"{back}&err=No+ledger+service+configured")
+
+        if action == "toggle":
+            res = self._ledger.reconcile_toggle(
+                t.tenant_id, code, str(data.get("entry_id", "")).strip(),
+                str(data.get("cleared", "")).strip() in ("1", "true", "on"), date, minor,
+            )
+            if not res.ok:
+                return _redirect(f"{back}&err={_qs_escape(res.error())}")
+            return _redirect(back)
+
+        res = self._ledger.reconcile_finish(t.tenant_id, code, date, minor)
+        if not res.ok:
+            return _redirect(f"{back}&err={_qs_escape(res.error())}")
+        count = res.body.get("reconciled_entries", 0)
+        if self._audit is not None:
+            self._audit.record(subject, "bank.reconciled", self._session_clock(),
+                               tenant_id=t.tenant_id, detail=f"{code} through {date}")
+        return _redirect(
+            f"{back}&done={_qs_escape(f'Reconciled {count} transactions through {date}')}")
 
     def _books_statements_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
         if self._ledger is None:

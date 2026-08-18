@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -203,6 +204,44 @@ class LedgerClient:
         if memo:
             payload["memo"] = memo
         return self._call("POST", f"/t/{tenant}/{kind}/{doc_id}/payments", payload)
+
+    # --- bank reconciliation -------------------------------------------------
+
+    def reconcile_view(
+        self, tenant: str, code: str, statement_date: str, statement_balance_minor: str
+    ) -> LedgerResponse:
+        qs = (
+            f"?statement_date={urllib.parse.quote(statement_date)}"
+            f"&statement_balance_minor={urllib.parse.quote(statement_balance_minor)}"
+        )
+        return self._call("GET", f"/t/{tenant}/accounts/{code}/reconcile{qs}")
+
+    def reconcile_toggle(
+        self, tenant: str, code: str, entry_id: str, cleared: bool,
+        statement_date: str, statement_balance_minor: str,
+    ) -> LedgerResponse:
+        return self._call(
+            "POST",
+            f"/t/{tenant}/accounts/{code}/reconcile/toggle",
+            {
+                "entry_id": entry_id,
+                "cleared": cleared,
+                "statement_date": statement_date,
+                "statement_balance_minor": statement_balance_minor,
+            },
+        )
+
+    def reconcile_finish(
+        self, tenant: str, code: str, statement_date: str, statement_balance_minor: str
+    ) -> LedgerResponse:
+        return self._call(
+            "POST",
+            f"/t/{tenant}/accounts/{code}/reconcile/finish",
+            {
+                "statement_date": statement_date,
+                "statement_balance_minor": statement_balance_minor,
+            },
+        )
 
     def aging(self, tenant: str, side: str, *, as_of: str = "") -> LedgerResponse:
         """side: "ar" or "ap"."""

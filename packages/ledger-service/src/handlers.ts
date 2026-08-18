@@ -47,6 +47,13 @@ import {
   type RecordPaymentRequest,
 } from "./arap.js";
 import type { DocKind, DocRecord, PartyKind } from "./documents.js";
+import {
+  ReconcileError,
+  finishReconciliation,
+  reconcileView,
+  toggleCleared,
+  type ReconcileContext,
+} from "./reconcile.js";
 
 /**
  * The service's request handlers — pure `(request) => response`, with no HTTP
@@ -206,6 +213,24 @@ export class LedgerService {
       if (rest[0] === "accounts" && rest.length === 3 && rest[2] === "register" && req.method === "GET") {
         return await this.register(tenant, rest[1]!, req.query);
       }
+      // --- bank reconciliation -------------------------------------------
+      if (rest[0] === "accounts" && rest[2] === "reconcile") {
+        const code = rest[1]!;
+        if (rest.length === 3 && req.method === "GET") {
+          return ok(
+            await reconcileView(
+              this.reconCtx(tenant), code,
+              req.query["statement_date"], req.query["statement_balance_minor"],
+            ),
+          );
+        }
+        if (rest.length === 4 && rest[3] === "toggle" && req.method === "POST") {
+          return await this.reconToggle(tenant, code, req.body);
+        }
+        if (rest.length === 4 && rest[3] === "finish" && req.method === "POST") {
+          return await this.reconFinish(tenant, code, req.body);
+        }
+      }
       if (rest[0] === "entries" && rest.length === 1) {
         if (req.method === "POST") return await this.postEntry(tenant, req.body);
         if (req.method === "GET") return await this.listEntries(tenant, req.query);
@@ -255,6 +280,7 @@ export class LedgerService {
     } catch (err) {
       if (err instanceof PeriodClosedError) return conflict(err.message);
       if (err instanceof ArApError) return bad(err.message);
+      if (err instanceof ReconcileError) return bad(err.message);
       return bad(err instanceof Error ? err.message : String(err));
     }
     return notFound("not found");
@@ -513,6 +539,44 @@ export class LedgerService {
         balance_minor: r.balance.minorUnits.toString(),
       })),
     });
+  }
+
+  // --- bank reconciliation ---------------------------------------------------
+
+  private reconCtx(tenant: TenantId): ReconcileContext {
+    return {
+      backend: this.backend,
+      recon: this.backend.recon(),
+      tenant,
+      currency: this.currency,
+    };
+  }
+
+  private async reconToggle(
+    tenant: TenantId, code: string, body: string,
+  ): Promise<ServiceResponse> {
+    const data = parseJson(body);
+    if (!data) return bad("body must be a JSON object");
+    const cleared = data["cleared"];
+    if (typeof cleared !== "boolean") return bad("cleared must be true or false");
+    await toggleCleared(this.reconCtx(tenant), code, str(data["entry_id"]), cleared);
+    return ok(
+      await reconcileView(
+        this.reconCtx(tenant), code, data["statement_date"], data["statement_balance_minor"],
+      ),
+    );
+  }
+
+  private async reconFinish(
+    tenant: TenantId, code: string, body: string,
+  ): Promise<ServiceResponse> {
+    const data = parseJson(body);
+    if (!data) return bad("body must be a JSON object");
+    return ok(
+      await finishReconciliation(
+        this.reconCtx(tenant), code, data["statement_date"], data["statement_balance_minor"],
+      ),
+    );
   }
 
   // --- AR / AP --------------------------------------------------------------

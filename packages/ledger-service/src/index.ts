@@ -32,4 +32,17 @@ export {
   ArApError,
   DEFAULT_CONTROLS,
 } from "./arap.js";
+export {
+  reconcileView,
+  toggleCleared,
+  finishReconciliation,
+  InMemoryReconStore,
+  PgReconStore,
+  RECON_DDL,
+  ReconcileError,
+  type ReconStore,
+  type ReconcileView,
+  type ReconcileContext,
+  type FinishResult,
+} from "./reconcile.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";

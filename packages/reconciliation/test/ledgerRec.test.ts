@@ -20,6 +20,8 @@ import {
   ClearedRegister,
   bankRegister,
   finishBankReconciliation,
+  finishManualReconciliation,
+  manualReconciliation,
   reconcileBankAccount,
   type Statement,
   type StatementLine,
@@ -172,4 +174,90 @@ test("already-reconciled lines are not re-matched in a later reconciliation", as
   assert.equal(r2.status, "BALANCED");
   assert.equal(r2.newlyClearedEntryIds.length, 1);
   assert.equal(r2.matched[0]?.book.id, r2.newlyClearedEntryIds[0]);
+});
+
+// --- manual tick-off (the reconciliation an owner actually performs) ---------
+
+test("manual reconciliation ties out when the ticked lines match the statement", async () => {
+  const store = await seed([
+    cashEntry("d1", "2026-08-03", "500.00"),
+    cashEntry("p1", "2026-08-05", "-200.00"),
+    cashEntry("p2", "2026-08-28", "-50.00"), // written but not on the statement yet
+  ]);
+  const reg = new ClearedRegister();
+  const entries = await store.list(TENANT);
+
+  // nothing ticked: the difference is the whole statement balance
+  let recon = manualReconciliation(
+    bankRegister(entries, CASH, USD, reg), "2026-08-31", usd("300.00"),
+  );
+  assert.equal(recon.difference.toDecimalString(), "300.00");
+  assert.equal(recon.canFinish, false);
+  assert.equal(recon.unclearedLines.length, 3);
+
+  // tick the two that appear on the statement
+  const ids = bankRegister(entries, CASH, USD, reg)
+    .filter((l) => l.memo !== "p2")
+    .map((l) => l.entryId);
+  for (const id of ids) reg.setStatus("gl.cash", id, "CLEARED");
+
+  recon = manualReconciliation(bankRegister(entries, CASH, USD, reg), "2026-08-31", usd("300.00"));
+  assert.equal(recon.clearedThisSession.toDecimalString(), "300.00");
+  assert.ok(recon.difference.isZero());
+  assert.equal(recon.unclearedLines.length, 1); // the in-transit p2
+  assert.ok(recon.canFinish);
+
+  finishManualReconciliation(recon, reg);
+  const after = bankRegister(entries, CASH, USD, reg);
+  assert.equal(after.filter((l) => l.status === "RECONCILED").length, 2);
+  assert.equal(reg.reconciledThrough("gl.cash"), "2026-08-31");
+});
+
+test("a prior month's reconciled lines carry forward and are not re-ticked", async () => {
+  const store = await seed([
+    cashEntry("d1", "2026-08-03", "500.00"),
+    cashEntry("d2", "2026-09-04", "300.00"),
+  ]);
+  const reg = new ClearedRegister();
+  const entries = await store.list(TENANT);
+
+  // August: tick and finish d1
+  const augLines = bankRegister(entries, CASH, USD, reg);
+  reg.setStatus("gl.cash", augLines[0]!.entryId, "CLEARED");
+  finishManualReconciliation(
+    manualReconciliation(bankRegister(entries, CASH, USD, reg), "2026-08-31", usd("500.00")),
+    reg,
+  );
+
+  // September: d1 is already reconciled, so it counts toward the opening
+  const sep = manualReconciliation(bankRegister(entries, CASH, USD, reg), "2026-09-30", usd("800.00"));
+  assert.equal(sep.reconciledBalance.toDecimalString(), "500.00");
+  assert.equal(sep.unclearedLines.length, 1); // only d2 needs ticking
+  assert.equal(sep.difference.toDecimalString(), "300.00");
+
+  reg.setStatus("gl.cash", sep.unclearedLines[0]!.entryId, "CLEARED");
+  const done = manualReconciliation(bankRegister(entries, CASH, USD, reg), "2026-09-30", usd("800.00"));
+  assert.ok(done.canFinish);
+});
+
+test("an out-of-balance reconciliation refuses to finish", async () => {
+  const store = await seed([cashEntry("d1", "2026-08-03", "500.00")]);
+  const reg = new ClearedRegister();
+  const entries = await store.list(TENANT);
+  reg.setStatus("gl.cash", bankRegister(entries, CASH, USD, reg)[0]!.entryId, "CLEARED");
+  // the statement says 450 but we ticked 500 — someone mis-ticked or a txn is missing
+  const recon = manualReconciliation(bankRegister(entries, CASH, USD, reg), "2026-08-31", usd("450.00"));
+  assert.equal(recon.difference.toDecimalString(), "-50.00");
+  assert.equal(recon.canFinish, false);
+  assert.throws(() => finishManualReconciliation(recon, reg), /off by/);
+});
+
+test("ticking nothing is not a reconciliation, even at a zero balance", async () => {
+  const store = await seed([]);
+  const reg = new ClearedRegister();
+  const recon = manualReconciliation(
+    bankRegister(await store.list(TENANT), CASH, USD, reg), "2026-08-31", usd("0.00"),
+  );
+  assert.ok(recon.difference.isZero());
+  assert.equal(recon.canFinish, false);
 });

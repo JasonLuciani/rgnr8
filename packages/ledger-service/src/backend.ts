@@ -16,6 +16,7 @@ import {
   PgDocumentStore,
   type DocumentStore,
 } from "./documents.js";
+import { InMemoryReconStore, PgReconStore, type ReconStore } from "./reconcile.js";
 
 /**
  * The storage seam the ledger service runs on.
@@ -40,6 +41,8 @@ export interface LedgerBackend {
   periods(tenant: TenantId): PeriodStore;
   /** AR/AP source documents (invoices, bills, parties, payments). */
   documents(): DocumentStore;
+  /** Bank-reconciliation cleared/reconciled status, keyed by (account, entry). */
+  recon(): ReconStore;
   /** Create/verify schema. Safe to run repeatedly. */
   migrate(): Promise<void>;
 }
@@ -47,6 +50,7 @@ export interface LedgerBackend {
 /** In-memory backend — local dev and tests. Nothing survives a restart. */
 export class InMemoryBackend implements LedgerBackend {
   private readonly docs = new InMemoryDocumentStore();
+  private readonly reconStore = new InMemoryReconStore();
   private readonly accounts = new Map<string, Map<string, Account>>();
   private readonly stores = new Map<string, InMemoryLedgerStore>();
   private readonly periodStores = new Map<string, InMemoryPeriodStore>();
@@ -97,8 +101,13 @@ export class InMemoryBackend implements LedgerBackend {
     return this.docs;
   }
 
-  migrate(): Promise<void> {
-    return this.docs.migrate();
+  recon(): ReconStore {
+    return this.reconStore;
+  }
+
+  async migrate(): Promise<void> {
+    await this.docs.migrate();
+    await this.reconStore.migrate();
   }
 }
 
@@ -112,22 +121,29 @@ export class PostgresBackend implements LedgerBackend {
   private readonly accounts: PgAccountStore;
   private readonly periodStore: SqlPeriodStore;
   private readonly docs: PgDocumentStore;
+  private readonly reconStore: PgReconStore;
 
   constructor(pool: Pool) {
     this.ledger = new PgLedgerStore(pool);
     this.accounts = new PgAccountStore(pool);
     this.periodStore = new SqlPeriodStore(pool);
     this.docs = new PgDocumentStore(pool);
+    this.reconStore = new PgReconStore(pool);
   }
 
   async migrate(): Promise<void> {
     await this.ledger.migrate();
     await this.accounts.migrate();
     await this.docs.migrate();
+    await this.reconStore.migrate();
   }
 
   documents(): DocumentStore {
     return this.docs;
+  }
+
+  recon(): ReconStore {
+    return this.reconStore;
   }
 
   chart(tenant: TenantId): Promise<ChartOfAccounts> {

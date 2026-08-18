@@ -24,9 +24,12 @@ export {
   bankRegister,
   reconcileBankAccount,
   finishBankReconciliation,
+  manualReconciliation,
+  finishManualReconciliation,
   type ClearStatus,
   type RegisterLine,
   type BankReconciliation,
+  type ManualReconciliation,
   type BankReconStatus,
   type ReconcileBankOptions,
 } from "./ledgerRec.js";
