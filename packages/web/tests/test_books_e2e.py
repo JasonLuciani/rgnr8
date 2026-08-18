@@ -1017,3 +1017,178 @@ def test_1099_contractors_end_to_end_against_the_real_service(ledger_service: st
     other = _req(app2, "othercorp", "/t/othercorp/books/1099?year=2026")
     assert "Dana" not in other.body
     assert "Nobody was paid enough to need a form this year" in other.body
+
+
+def test_a_whole_job_end_to_end_against_the_real_service(ledger_service: str) -> None:
+    """A contractor's job from the phone call to the final release of retainage,
+    driven through the web app against the real ledger service.
+
+    Lead → customer → opportunity → estimate → job → purchase order → delivery →
+    vendor bill → crew hours → progress bill → deposit applied → work in progress
+    → retainage released. Everything a job does, in the order it does it, with
+    the books in balance at the end.
+    """
+    base = ledger_service
+    app = _app(base, ["buildco"])
+    _seed(base, "buildco", "CONTRACTOR_TRADES")
+    _service_post(base, "/t/buildco/cost-codes/seed", {})
+
+    # 1. the phone call
+    _req(app, "buildco", "/t/buildco/leads", "POST",
+         "name=Dana+Harper&company=Harper+Residence&source=Referral&owner=jason")
+    converted = _req(app, "buildco", "/t/buildco/leads/dana-harper-harper-residence/convert",
+                     "POST")
+    assert converted.status == 302, converted.headers
+    customer = "harper-residence"
+
+    _req(app, "buildco", "/t/buildco/opportunities", "POST",
+         f"name=Kitchen+remodel&customer_id={customer}&value=85,000.00"
+         "&stage=PROPOSAL&expected_close_date=2026-06-15")
+
+    # nothing about a pipeline touches the books
+    assert not _service_get(base, "/t/buildco/trial-balance")["rows"]
+
+    # 2. the estimate — cost and price, not just price
+    made = _req(app, "buildco", "/t/buildco/estimates", "POST",
+                f"id=EST-1&customer_id={customer}&date=2026-05-01&memo=Harper+kitchen"
+                "&desc1=Framing+labor&code1=LAB&qty1=400&cost1=65.00&markup1=20&account1=4100"
+                "&desc2=Cabinets&code2=MAT&qty2=1&cost2=40,000.00&markup2=15&account2=4100")
+    assert made.status == 302 and "err=" not in str(made.headers.get("Location", ""))
+    estimate = _service_get(base, "/t/buildco/estimates/EST-1")["estimate"]
+    assert estimate["totals"]["cost_minor"] == "6600000", "26,000 of labor + 40,000 of cabinets"
+    assert estimate["totals"]["price_minor"] == "7720000"
+    assert estimate["totals"]["margin_ppm"] == 145_078, "14.5% margin on a 17% markup"
+
+    # 3. they accepted: the job exists and its budget came from the cost lines
+    accepted = _req(app, "buildco", "/t/buildco/estimates/EST-1/accept", "POST",
+                    "job_name=Harper+kitchen&billing_method=PROGRESS"
+                    "&start_date=2026-06-01&retainage=10")
+    assert accepted.status == 302 and "err=" not in str(accepted.headers.get("Location", ""))
+    job = _service_get(base, "/t/buildco/jobs")["jobs"][0]
+    job_id = job["id"]
+    assert job["contract_minor"] == "7720000"
+    assert job["retainage_ppm"] == 100_000
+    budget = _service_get(base, f"/t/buildco/jobs/{job_id}")["budget"]
+    assert {b["cost_code"]: b["budget_cost_minor"] for b in budget} == {
+        "LAB": "2600000", "MAT": "4000000",
+    }
+
+    # 4. the schedule of values has to add up to the contract
+    short = _service_post_raw(base, f"/t/buildco/jobs/{job_id}/schedule", {
+        "lines": [{"description": "Everything", "scheduled_value_minor": "7000000"}],
+    })
+    assert short["status"] == 400 and "have to agree" in short["error"]
+    _service_post(base, f"/t/buildco/jobs/{job_id}/schedule", {
+        "lines": [
+            {"description": "Framing", "cost_code": "LAB",
+             "scheduled_value_minor": "3120000"},
+            {"description": "Cabinets", "cost_code": "MAT",
+             "scheduled_value_minor": "4600000"},
+        ],
+    })
+
+    # 5. a deposit before anything starts — a liability, not income
+    _req(app, "buildco", f"/t/buildco/jobs/{job_id}/deposits", "POST",
+         "amount=20,000.00&date=2026-05-20")
+    assert _signed(base, "buildco")["2400"] == -2000000
+    assert "4100" not in _signed(base, "buildco"), "taking money is not earning it"
+
+    # 6. materials on a purchase order — committed before it is spent
+    _req(app, "buildco", "/t/buildco/vendors", "POST", "name=BuildMart+Supply")
+    po = _req(app, "buildco", "/t/buildco/purchase-orders", "POST",
+              f"id=PO-1&vendor_id=buildmart-supply&job_id={job_id}&date=2026-06-05"
+              "&expected_date=2026-06-20&desc1=Cabinets&code1=MAT&qty1=1&price1=40,000.00")
+    assert po.status == 302 and "err=" not in str(po.headers.get("Location", ""))
+    cost = _service_get(base, f"/t/buildco/jobs/{job_id}/cost")
+    mat = [r for r in cost["rows"] if r["cost_code"] == "MAT"][0]
+    assert mat["actual_cost_minor"] == "0" and mat["committed_minor"] == "4000000"
+
+    # they turn up, and the cost goes on the job before the invoice does
+    _req(app, "buildco", "/t/buildco/purchase-orders/PO-1/receipts", "POST",
+         "date=2026-06-20&accrue=1")
+    assert _signed(base, "buildco")["2150"] == -4000000, "goods received, not invoiced"
+    mat = [r for r in _service_get(base, f"/t/buildco/jobs/{job_id}/cost")["rows"]
+           if r["cost_code"] == "MAT"][0]
+    assert mat["actual_cost_minor"] == "4000000"
+
+    # the invoice comes in higher: refused, then accepted deliberately
+    refused = _service_post_raw(base, "/t/buildco/purchase-orders/PO-1/bill", {
+        "id": "BILL-1", "date": "2026-06-25",
+        "lines": [{"line_no": 1, "unit_price_minor": "4200000"}],
+    })
+    assert refused["status"] == 400 and "accept the variance" in refused["error"]
+    billed = _req(app, "buildco", "/t/buildco/purchase-orders/PO-1/bill", "POST",
+                  "id=BILL-1&date=2026-06-25&price1=42,000.00&accept_variance=1")
+    assert "1%20price%20variance" in str(billed.headers.get("Location", ""))
+    signed = _signed(base, "buildco")
+    assert signed.get("2150", 0) == 0, "the accrual cleared"
+    assert signed["5100"] == 4200000, "the job carries what was actually charged"
+    assert signed["2000"] == -4200000
+
+    # 7. the crew: payroll first, then hours allocated onto the job
+    _service_post(base, "/t/buildco/payroll/employees", {
+        "id": "marco", "name": "Marco Diaz",
+        "cost_rate_minor": "5200", "bill_rate_minor": "11000",
+    })
+    _req(app, "buildco", "/t/buildco/books/entries", "POST",
+         "date=2026-07-05&memo=Payroll&code1=6200&debit1=15,000.00"
+         "&code2=1000&credit2=15,000.00")
+    wo = _req(app, "buildco", "/t/buildco/work-orders", "POST",
+              f"title=Frame+it&job_id={job_id}&scheduled_date=2026-07-06&assignee_id=marco")
+    assert wo.status == 302 and "err=" not in str(wo.headers.get("Location", ""))
+    wo_id = _service_get(base, "/t/buildco/work-orders")["work_orders"][0]["id"]
+    _req(app, "buildco", f"/t/buildco/work-orders/{wo_id}/entries", "POST",
+         "kind=LABOR&date=2026-07-06&cost_code=LAB&employee_id=marco"
+         "&quantity=200&billable=1&description=Framing")
+    signed = _signed(base, "buildco")
+    assert signed["5500"] == 1040000, "200 hours at the burdened 52.00"
+    assert signed["6200"] == 460000, "…taken out of the payroll line, not added to it"
+    assert signed["5500"] + signed["6200"] == 1500000, "labor did not multiply"
+
+    # 8. a progress bill, with a tenth held back
+    application = _req(app, "buildco", f"/t/buildco/jobs/{job_id}/bill/progress", "POST",
+                       "id=APP-1&date=2026-07-31&pct1=40&pct2=100")
+    assert application.status == 302
+    assert "retainage" in str(application.headers.get("Location", ""))
+    signed = _signed(base, "buildco")
+    gross = 1248000 + 4600000
+    assert signed["1260"] == gross // 10, "held back, and not in accounts receivable"
+    assert signed["4100"] == -gross, "all of it was earned"
+    assert signed["1200"] == gross - gross // 10
+
+    # the deposit draws down against it
+    _req(app, "buildco", f"/t/buildco/jobs/{job_id}/deposits/apply", "POST",
+         "invoice_id=APP-1&date=2026-07-31")
+    signed = _signed(base, "buildco")
+    assert signed.get("2400", 0) == 0, "the deposit is used up"
+    assert signed["1200"] == gross - gross // 10 - 2000000
+
+    # 9. work in progress: earned against billed, posted as a delta
+    wip = _service_get(base, "/t/buildco/wip?through=2026-07-31")["rows"][0]
+    assert wip["cost_to_date_minor"] == "5240000"
+    assert wip["billed_minor"] == str(gross)
+    posted = _req(app, "buildco", "/t/buildco/books/wip", "POST",
+                  "date=2026-07-31&through=2026-07-31")
+    assert posted.status == 302 and "err=" not in str(posted.headers.get("Location", ""))
+    before = _signed(base, "buildco")
+    _req(app, "buildco", "/t/buildco/books/wip", "POST",
+         "date=2026-07-31&through=2026-07-31")
+    assert _signed(base, "buildco") == before, "running it twice cannot compound"
+
+    # 10. the job's own numbers, and the books still in balance
+    cost = _service_get(base, f"/t/buildco/jobs/{job_id}/cost")
+    assert cost["totals"]["actual_cost_minor"] == "5240000"
+    assert cost["totals"]["committed_minor"] == "0", "the order was billed"
+    tb = _service_get(base, "/t/buildco/trial-balance")
+    assert tb["in_balance"] is True
+
+    # 11. the last of it: retainage released once the job is signed off
+    revenue_before = _signed(base, "buildco")["4100"]
+    released = _service_post_raw(base, f"/t/buildco/jobs/{job_id}/retainage/release", {
+        "id": "RET-1", "date": "2026-12-01",
+    })
+    assert released["status"] == 201, released
+    signed = _signed(base, "buildco")
+    assert signed.get("1260", 0) == 0, "nothing held back any more"
+    assert signed["4100"] == revenue_before, "and releasing it invented no revenue"
+    assert _service_get(base, "/t/buildco/trial-balance")["in_balance"] is True

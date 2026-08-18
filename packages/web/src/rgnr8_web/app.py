@@ -1068,6 +1068,22 @@ class WebApp:
             job_id = parts[3]
             return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
                                  lambda t: self._job_deposit(subject, t, job_id, req.body))
+        # /t/<tenant>/jobs/<id>/deposits/apply -> draw it down against an invoice
+        if (len(parts) == 6 and parts[0] == "t" and parts[2] == "jobs"
+                and parts[4] == "deposits" and parts[5] == "apply"
+                and req.method == "POST"):
+            job_id = parts[3]
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._job_deposit_apply(subject, t, job_id,
+                                                                   req.body))
+        # /t/<tenant>/jobs/<id>/retainage/release
+        if (len(parts) == 6 and parts[0] == "t" and parts[2] == "jobs"
+                and parts[4] == "retainage" and parts[5] == "release"
+                and req.method == "POST"):
+            job_id = parts[3]
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._job_retainage_release(subject, t, job_id,
+                                                                       req.body))
 
         # --- invoicing (AR) and bills (AP) ---
         if len(parts) >= 3 and parts[0] == "t" and parts[2] in ("invoices", "bills"):
@@ -3235,6 +3251,58 @@ class WebApp:
             self._audit.record(subject, "job.deposit", self._session_clock(),
                                tenant_id=t.tenant_id, target=job_id)
         return _redirect(f"{back}?done={_qs_escape('Deposit recorded as a liability')}")
+
+    def _job_deposit_apply(
+        self, subject: str, t: _Tenant, job_id: str, body: str,
+    ) -> Response:
+        back = f"/t/{t.tenant_id}/jobs/{job_id}"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        request: dict[str, object] = {
+            "invoice_id": str(data.get("invoice_id", "")).strip(),
+            "date": str(data.get("date", "")).strip() or self._today(t),
+        }
+        try:
+            amount = self._amount_to_minor(str(data.get("amount", "")))
+        except ValueError as exc:
+            return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+        if amount is not None:
+            request["amount_minor"] = str(amount)
+        res = self._ledger.apply_deposit(t.tenant_id, job_id, request)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "job.deposit_applied", self._session_clock(),
+                               tenant_id=t.tenant_id, target=job_id)
+        return _redirect(f"{back}?done={_qs_escape('Deposit applied to the invoice')}")
+
+    def _job_retainage_release(
+        self, subject: str, t: _Tenant, job_id: str, body: str,
+    ) -> Response:
+        back = f"/t/{t.tenant_id}/jobs/{job_id}"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        request: dict[str, object] = {
+            "id": str(data.get("id", "")).strip(),
+            "date": str(data.get("date", "")).strip() or self._today(t),
+        }
+        try:
+            amount = self._amount_to_minor(str(data.get("amount", "")))
+        except ValueError as exc:
+            return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+        if amount is not None:
+            request["amount_minor"] = str(amount)
+        res = self._ledger.release_retainage(t.tenant_id, job_id, request)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "job.retainage_released", self._session_clock(),
+                               tenant_id=t.tenant_id, target=job_id)
+        return _redirect(
+            f"{back}?done={_qs_escape('Retainage released — no revenue was invented')}"
+        )
 
     def _recurring_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
         if self._ledger is None:
