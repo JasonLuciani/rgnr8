@@ -515,6 +515,338 @@ class LedgerClient:
     def go_live(self, tenant: str, request: Mapping[str, object]) -> LedgerResponse:
         return self._call("POST", f"/t/{tenant}/go-live", dict(request))
 
+    # --- the project layer ---------------------------------------------------
+    #
+    # Jobs, estimates, orders, work orders, purchasing, billing, stock and the
+    # pipeline. Every one of these is a thin pass-through: the rules live in the
+    # service, and a second copy of them here is a second thing to get wrong.
+
+    def cost_codes(self, tenant: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/cost-codes")
+
+    def save_cost_code(self, tenant: str, code: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/cost-codes", dict(code))
+
+    def seed_cost_codes(self, tenant: str) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/cost-codes/seed", {})
+
+    def jobs(self, tenant: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/jobs")
+
+    def job(self, tenant: str, job_id: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/jobs/{urllib.parse.quote(job_id)}")
+
+    def save_job(self, tenant: str, job: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/jobs", dict(job))
+
+    def save_job_budget(
+        self, tenant: str, job_id: str, lines: list[dict[str, object]]
+    ) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/jobs/{urllib.parse.quote(job_id)}/budget", {"lines": lines}
+        )
+
+    def job_cost(self, tenant: str, job_id: str, *, through: str = "") -> LedgerResponse:
+        q = f"?through={urllib.parse.quote(through)}" if through else ""
+        return self._call("GET", f"/t/{tenant}/jobs/{urllib.parse.quote(job_id)}/cost{q}")
+
+    def job_work_orders(self, tenant: str, job_id: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/jobs/{urllib.parse.quote(job_id)}/work-orders")
+
+    def job_billing(self, tenant: str, job_id: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/jobs/{urllib.parse.quote(job_id)}/billing")
+
+    def save_schedule(
+        self, tenant: str, job_id: str, lines: list[dict[str, object]]
+    ) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/jobs/{urllib.parse.quote(job_id)}/schedule", {"lines": lines}
+        )
+
+    def save_milestones(
+        self, tenant: str, job_id: str, milestones: list[dict[str, object]]
+    ) -> LedgerResponse:
+        return self._call(
+            "POST",
+            f"/t/{tenant}/jobs/{urllib.parse.quote(job_id)}/milestones",
+            {"milestones": milestones},
+        )
+
+    def bill_job(
+        self, tenant: str, job_id: str, method: str, request: Mapping[str, object]
+    ) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/jobs/{urllib.parse.quote(job_id)}/bill/{method}", dict(request)
+        )
+
+    def release_retainage(
+        self, tenant: str, job_id: str, request: Mapping[str, object]
+    ) -> LedgerResponse:
+        return self._call(
+            "POST",
+            f"/t/{tenant}/jobs/{urllib.parse.quote(job_id)}/retainage/release",
+            dict(request),
+        )
+
+    def take_deposit(
+        self, tenant: str, job_id: str, request: Mapping[str, object]
+    ) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/jobs/{urllib.parse.quote(job_id)}/deposits", dict(request)
+        )
+
+    def apply_deposit(
+        self, tenant: str, job_id: str, request: Mapping[str, object]
+    ) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/jobs/{urllib.parse.quote(job_id)}/deposits/apply", dict(request)
+        )
+
+    def estimates(self, tenant: str, *, everything: bool = False) -> LedgerResponse:
+        q = "?all=1" if everything else ""
+        return self._call("GET", f"/t/{tenant}/estimates{q}")
+
+    def estimate(self, tenant: str, estimate_id: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/estimates/{urllib.parse.quote(estimate_id)}")
+
+    def save_estimate(self, tenant: str, estimate: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/estimates", dict(estimate))
+
+    def revise_estimate(
+        self, tenant: str, estimate_id: str, estimate: Mapping[str, object]
+    ) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/estimates/{urllib.parse.quote(estimate_id)}/revise",
+            dict(estimate),
+        )
+
+    def set_estimate_status(self, tenant: str, estimate_id: str, status: str) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/estimates/{urllib.parse.quote(estimate_id)}/status",
+            {"status": status},
+        )
+
+    def accept_estimate(
+        self, tenant: str, estimate_id: str, request: Mapping[str, object]
+    ) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/estimates/{urllib.parse.quote(estimate_id)}/accept",
+            dict(request),
+        )
+
+    def invoice_estimate(
+        self, tenant: str, estimate_id: str, request: Mapping[str, object]
+    ) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/estimates/{urllib.parse.quote(estimate_id)}/invoice",
+            dict(request),
+        )
+
+    def sales_orders(self, tenant: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/sales-orders")
+
+    def sales_order(self, tenant: str, order_id: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/sales-orders/{urllib.parse.quote(order_id)}")
+
+    def save_sales_order(self, tenant: str, order: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/sales-orders", dict(order))
+
+    def invoice_sales_order(
+        self, tenant: str, order_id: str, request: Mapping[str, object]
+    ) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/sales-orders/{urllib.parse.quote(order_id)}/invoice",
+            dict(request),
+        )
+
+    def set_sales_order_status(self, tenant: str, order_id: str, status: str) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/sales-orders/{urllib.parse.quote(order_id)}/status",
+            {"status": status},
+        )
+
+    def backlog(self, tenant: str, *, job_id: str = "") -> LedgerResponse:
+        q = f"?job_id={urllib.parse.quote(job_id)}" if job_id else ""
+        return self._call("GET", f"/t/{tenant}/sales-orders/backlog{q}")
+
+    def work_orders(self, tenant: str, *, job_id: str = "") -> LedgerResponse:
+        q = f"?job_id={urllib.parse.quote(job_id)}" if job_id else ""
+        return self._call("GET", f"/t/{tenant}/work-orders{q}")
+
+    def work_order(self, tenant: str, work_order_id: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/work-orders/{urllib.parse.quote(work_order_id)}")
+
+    def save_work_order(self, tenant: str, order: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/work-orders", dict(order))
+
+    def complete_work_order(self, tenant: str, work_order_id: str, date: str) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/work-orders/{urllib.parse.quote(work_order_id)}/complete",
+            {"date": date},
+        )
+
+    def add_work_entry(
+        self, tenant: str, work_order_id: str, entry: Mapping[str, object]
+    ) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/work-orders/{urllib.parse.quote(work_order_id)}/entries",
+            dict(entry),
+        )
+
+    def purchase_orders(self, tenant: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/purchase-orders")
+
+    def purchase_order(self, tenant: str, order_id: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/purchase-orders/{urllib.parse.quote(order_id)}")
+
+    def save_purchase_order(self, tenant: str, order: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/purchase-orders", dict(order))
+
+    def receive_purchase_order(
+        self, tenant: str, order_id: str, request: Mapping[str, object]
+    ) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/purchase-orders/{urllib.parse.quote(order_id)}/receipts",
+            dict(request),
+        )
+
+    def bill_purchase_order(
+        self, tenant: str, order_id: str, request: Mapping[str, object]
+    ) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/purchase-orders/{urllib.parse.quote(order_id)}/bill",
+            dict(request),
+        )
+
+    def committed_cost(self, tenant: str, *, job_id: str = "") -> LedgerResponse:
+        q = f"?job_id={urllib.parse.quote(job_id)}" if job_id else ""
+        return self._call("GET", f"/t/{tenant}/purchase-orders/committed{q}")
+
+    def wip(self, tenant: str, *, through: str = "") -> LedgerResponse:
+        q = f"?through={urllib.parse.quote(through)}" if through else ""
+        return self._call("GET", f"/t/{tenant}/wip{q}")
+
+    def post_wip(self, tenant: str, request: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/wip/post", dict(request))
+
+    def inventory(self, tenant: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/inventory")
+
+    def inventory_items(self, tenant: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/inventory/items")
+
+    def inventory_item(self, tenant: str, sku: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/inventory/items/{urllib.parse.quote(sku)}")
+
+    def save_item(self, tenant: str, item: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/inventory/items", dict(item))
+
+    def receive_stock(self, tenant: str, request: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/inventory/receipts", dict(request))
+
+    def issue_stock(self, tenant: str, request: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/inventory/issues", dict(request))
+
+    def count_stock(self, tenant: str, request: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/inventory/counts", dict(request))
+
+    def leads(self, tenant: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/leads")
+
+    def save_lead(self, tenant: str, lead: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/leads", dict(lead))
+
+    def convert_lead(
+        self, tenant: str, lead_id: str, request: Mapping[str, object]
+    ) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/leads/{urllib.parse.quote(lead_id)}/convert", dict(request)
+        )
+
+    def opportunities(self, tenant: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/opportunities")
+
+    def save_opportunity(self, tenant: str, opportunity: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/opportunities", dict(opportunity))
+
+    def opportunity_estimate(
+        self, tenant: str, opportunity_id: str, estimate: Mapping[str, object]
+    ) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/opportunities/{urllib.parse.quote(opportunity_id)}/estimate",
+            dict(estimate),
+        )
+
+    def close_opportunity(
+        self, tenant: str, opportunity_id: str, outcome: str, request: Mapping[str, object]
+    ) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/opportunities/{urllib.parse.quote(opportunity_id)}/{outcome}",
+            dict(request),
+        )
+
+    def pipeline(self, tenant: str, *, owner: str = "") -> LedgerResponse:
+        q = f"?owner={urllib.parse.quote(owner)}" if owner else ""
+        return self._call("GET", f"/t/{tenant}/pipeline{q}")
+
+    def crm_events(self, tenant: str, *, since: int = 0) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/events?since={since}")
+
+    def entity_groups(self, tenant: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/consolidation/groups")
+
+    def entity_group(self, tenant: str, group_id: str) -> LedgerResponse:
+        return self._call(
+            "GET", f"/t/{tenant}/consolidation/groups/{urllib.parse.quote(group_id)}"
+        )
+
+    def save_entity_group(self, tenant: str, group: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/consolidation/groups", dict(group))
+
+    def save_elimination(
+        self, tenant: str, group_id: str, elimination: Mapping[str, object]
+    ) -> LedgerResponse:
+        return self._call(
+            "POST",
+            f"/t/{tenant}/consolidation/groups/{urllib.parse.quote(group_id)}/eliminations",
+            dict(elimination),
+        )
+
+    def consolidation_report(
+        self, tenant: str, group_id: str, *, through: str = "", allow_mismatch: bool = False
+    ) -> LedgerResponse:
+        params = []
+        if through:
+            params.append(f"through={urllib.parse.quote(through)}")
+        if allow_mismatch:
+            params.append("allow_mismatch=1")
+        q = ("?" + "&".join(params)) if params else ""
+        return self._call(
+            "GET",
+            f"/t/{tenant}/consolidation/groups/{urllib.parse.quote(group_id)}/report{q}",
+        )
+
+    def consolidated_statements(
+        self, tenant: str, group_id: str, frm: str, to: str
+    ) -> LedgerResponse:
+        return self._call(
+            "GET",
+            f"/t/{tenant}/consolidation/groups/{urllib.parse.quote(group_id)}/statements"
+            f"{_qs(frm, to)}",
+        )
+
+    def reverse_entry(
+        self, tenant: str, entry_id: str, *, date: str = "", memo: str = ""
+    ) -> LedgerResponse:
+        payload: dict[str, object] = {}
+        if date:
+            payload["date"] = date
+        if memo:
+            payload["memo"] = memo
+        return self._call(
+            "POST", f"/t/{tenant}/entries/{urllib.parse.quote(entry_id)}/reverse", payload
+        )
+
     def lock_period(self, tenant: str, period: str) -> LedgerResponse:
         return self._call("POST", f"/t/{tenant}/periods/{period}/lock", {})
 

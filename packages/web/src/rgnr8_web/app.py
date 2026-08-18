@@ -83,6 +83,7 @@ from .ten99_screens import render_ten99, render_ten99_unavailable
 from .recurring_screens import (
     render_recurring, render_recurring_unavailable, render_run_result,
 )
+from .job_screens import render_job, render_jobs, render_jobs_unavailable
 
 from .store import InMemoryTenantStore, TenantDef, TenantState, TenantStore
 from .financial_package import (
@@ -862,6 +863,38 @@ class WebApp:
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "audit":
             return self._require(subject, token_tenant, parts[1], P.MANAGE_USERS,
                                  lambda t: self._audit_page(subject, t))
+
+        # --- jobs: the project layer -----------------------------------------
+        # /t/<tenant>/jobs -> every job, and the form to start one
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "jobs":
+            if req.method == "POST":
+                return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                     lambda t: self._job_save(subject, t, req.body))
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._jobs_page(subject, t, req.query))
+        # /t/<tenant>/jobs/<id> -> the project hub
+        if len(parts) == 4 and parts[0] == "t" and parts[2] == "jobs" and req.method == "GET":
+            job_id = parts[3]
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._job_page(subject, t, job_id, req.query))
+        # /t/<tenant>/jobs/<id>/budget
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "jobs"
+                and parts[4] == "budget" and req.method == "POST"):
+            job_id = parts[3]
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._job_budget_save(subject, t, job_id, req.body))
+        # /t/<tenant>/jobs/<id>/bill/<method>
+        if (len(parts) == 6 and parts[0] == "t" and parts[2] == "jobs"
+                and parts[4] == "bill" and req.method == "POST"):
+            job_id, method = parts[3], parts[5]
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._job_bill(subject, t, job_id, method, req.body))
+        # /t/<tenant>/jobs/<id>/deposits
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "jobs"
+                and parts[4] == "deposits" and req.method == "POST"):
+            job_id = parts[3]
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._job_deposit(subject, t, job_id, req.body))
 
         # --- invoicing (AR) and bills (AP) ---
         if len(parts) >= 3 and parts[0] == "t" and parts[2] in ("invoices", "bills"):
@@ -2001,6 +2034,204 @@ class WebApp:
         ))
 
     # --- recurring transactions --------------------------------------------------
+
+    # --- jobs -----------------------------------------------------------------
+
+    def _jobs_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "jobs", render_jobs_unavailable())
+        jobs = self._ledger.jobs(t.tenant_id)
+        if not jobs.ok:
+            return self._shell(subject, t, "jobs", render_jobs_unavailable(jobs.error()))
+        customers = self._ledger.parties(t.tenant_id, "customers")
+        accounts = self._ledger.accounts(t.tenant_id)
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_edit = self._policy is None or Permission.POST_JOURNAL in perms
+        return self._shell(subject, t, "jobs", render_jobs(
+            t.tenant_id, jobs.body,
+            customers.body if customers.ok else {},
+            accounts.body if accounts.ok else {},
+            can_edit=can_edit,
+            message=query.get("done", ""), error=query.get("err", ""),
+        ))
+
+    def _job_page(
+        self, subject: str, t: _Tenant, job_id: str, query: "dict[str, str]",
+    ) -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "jobs", render_jobs_unavailable())
+        detail = self._ledger.job(t.tenant_id, job_id)
+        if not detail.ok:
+            return self._shell(subject, t, "jobs", render_jobs_unavailable(detail.error()))
+        cost = self._ledger.job_cost(t.tenant_id, job_id)
+        work_orders = self._ledger.job_work_orders(t.tenant_id, job_id)
+        billing = self._ledger.job_billing(t.tenant_id, job_id)
+        cost_codes = self._ledger.cost_codes(t.tenant_id)
+        # The WIP row is the only place earned-vs-billed lives; a job with no
+        # schedule simply has none, and the page says less rather than guessing.
+        wip = self._ledger.wip(t.tenant_id)
+        wip_row = None
+        if wip.ok:
+            rows = wip.body.get("rows")
+            for row in rows if isinstance(rows, list) else []:
+                if isinstance(row, dict) and row.get("job_id") == job_id:
+                    wip_row = row
+                    break
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_edit = self._policy is None or Permission.POST_JOURNAL in perms
+        return self._shell(subject, t, "jobs", render_job(
+            t.tenant_id, detail.body,
+            cost.body if cost.ok else {},
+            work_orders.body if work_orders.ok else {},
+            billing.body if billing.ok else {},
+            wip_row,
+            cost_codes.body if cost_codes.ok else {},
+            can_edit=can_edit,
+            message=query.get("done", ""), error=query.get("err", ""),
+        ))
+
+    def _job_save(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/jobs"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        try:
+            contract = self._amount_to_minor(str(data.get("contract", ""))) or 0
+            retainage = _percent_to_ppm(str(data.get("retainage", "")))
+        except ValueError as exc:
+            return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+        payload: dict[str, object] = {
+            "name": str(data.get("name", "")).strip(),
+            "customer_id": str(data.get("customer_id", "")).strip(),
+            "billing_method": str(data.get("billing_method", "TIME_AND_MATERIALS")).strip(),
+            "contract_minor": str(contract),
+            "retainage_ppm": retainage,
+            "start_date": str(data.get("start_date", "")).strip(),
+            "end_date": str(data.get("end_date", "")).strip(),
+            "memo": str(data.get("memo", "")).strip(),
+        }
+        revenue = str(data.get("revenue_account_code", "")).strip()
+        if revenue:
+            payload["revenue_account_code"] = revenue
+        if str(data.get("id", "")).strip():
+            payload["id"] = str(data.get("id", "")).strip()
+        if str(data.get("status", "")).strip():
+            payload["status"] = str(data.get("status", "")).strip()
+        res = self._ledger.save_job(t.tenant_id, payload)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        job = res.body.get("job")
+        job_id = str(job.get("id")) if isinstance(job, dict) else ""
+        if self._audit is not None:
+            self._audit.record(subject, "job.saved", self._session_clock(),
+                               tenant_id=t.tenant_id, target=job_id)
+        return _redirect(f"{back}/{job_id}?done={_qs_escape('Job opened')}")
+
+    def _job_budget_save(
+        self, subject: str, t: _Tenant, job_id: str, body: str,
+    ) -> Response:
+        back = f"/t/{t.tenant_id}/jobs/{job_id}"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        lines: list[dict[str, object]] = []
+        try:
+            for key, raw in data.items():
+                if not key.startswith("bid_"):
+                    continue
+                code = key[4:]
+                bid = self._amount_to_minor(str(raw))
+                revised_raw = str(data.get(f"revised_{code}", ""))
+                revised = self._amount_to_minor(revised_raw)
+                if bid is None and revised is None:
+                    continue
+                line: dict[str, object] = {
+                    "cost_code": code, "budget_cost_minor": str(bid or 0),
+                }
+                if revised is not None:
+                    line["revised_cost_minor"] = str(revised)
+                lines.append(line)
+        except ValueError as exc:
+            return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+        res = self._ledger.save_job_budget(t.tenant_id, job_id, lines)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "job.budget", self._session_clock(),
+                               tenant_id=t.tenant_id, target=job_id)
+        return _redirect(f"{back}?done={_qs_escape('Budget saved')}")
+
+    def _job_bill(
+        self, subject: str, t: _Tenant, job_id: str, method: str, body: str,
+    ) -> Response:
+        back = f"/t/{t.tenant_id}/jobs/{job_id}"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        request: dict[str, object] = {
+            "id": str(data.get("id", "")).strip(),
+            "date": str(data.get("date", "")).strip(),
+        }
+        if method == "progress":
+            lines: list[dict[str, object]] = []
+            try:
+                for key, raw in data.items():
+                    if not key.startswith("pct"):
+                        continue
+                    text = str(raw).strip()
+                    if not text:
+                        continue
+                    lines.append({
+                        "line_no": int(key[3:]),
+                        "percent_ppm": _percent_to_ppm(text),
+                    })
+            except ValueError as exc:
+                return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+            request["lines"] = lines
+        elif method == "milestone":
+            request["milestone_id"] = str(data.get("milestone_id", "")).strip()
+        elif method == "time-and-materials":
+            if str(data.get("through", "")).strip():
+                request["through"] = str(data.get("through", "")).strip()
+            if str(data.get("summarize", "")).strip():
+                request["summarize"] = True
+        else:
+            return _redirect(f"{back}?err={_qs_escape('Unknown billing method')}")
+
+        res = self._ledger.bill_job(t.tenant_id, job_id, method, request)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "job.billed", self._session_clock(),
+                               tenant_id=t.tenant_id, target=str(request.get("id", "")))
+        retainage = str(res.body.get("retainage_minor", "0"))
+        note = "Invoice raised"
+        if retainage not in ("", "0"):
+            note = f"Invoice raised; {retainage} minor units held as retainage"
+        return _redirect(f"{back}?done={_qs_escape(note)}")
+
+    def _job_deposit(self, subject: str, t: _Tenant, job_id: str, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/jobs/{job_id}"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        try:
+            amount = self._amount_to_minor(str(data.get("amount", "")))
+        except ValueError as exc:
+            return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+        if not amount:
+            return _redirect(f"{back}?err={_qs_escape('Enter the deposit amount')}")
+        res = self._ledger.take_deposit(t.tenant_id, job_id, {
+            "date": str(data.get("date", "")).strip() or self._today(t),
+            "amount_minor": str(amount),
+            "memo": str(data.get("memo", "")).strip(),
+        })
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "job.deposit", self._session_clock(),
+                               tenant_id=t.tenant_id, target=job_id)
+        return _redirect(f"{back}?done={_qs_escape('Deposit recorded as a liability')}")
 
     def _recurring_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
         if self._ledger is None:
