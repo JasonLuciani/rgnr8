@@ -359,6 +359,32 @@ test("applying a deposit closes the invoice and clears the liability", async () 
   assert.equal(after["1200"] ?? 0n, 0n);
 });
 
+test("applying a deposit relieves that job's deposit, not the pooled balance", async () => {
+  const s = await ready();
+  await call(s, "POST", "/t/acme/jobs", {
+    id: "other", customer_id: "harper", name: "Other job",
+    billing_method: "TIME_AND_MATERIALS", contract_minor: "0",
+  });
+  await call(s, "POST", "/t/acme/jobs/harper/deposits", {
+    date: "2026-05-15", amount_minor: "2000000",
+  });
+  await call(s, "POST", "/t/acme/jobs/other/deposits", {
+    date: "2026-05-15", amount_minor: "500000",
+  });
+  await call(s, "POST", "/t/acme/jobs/harper/schedule", SCHEDULE);
+  await call(s, "POST", "/t/acme/jobs/harper/bill/progress", {
+    id: "APP-1", date: "2026-06-30", lines: [{ line_no: 1, percent_ppm: 1_000_000 }],
+  });
+  await call(s, "POST", "/t/acme/jobs/harper/deposits/apply", {
+    invoice_id: "APP-1", date: "2026-06-30",
+  });
+
+  const harper = ((await view(s))["totals"] as Row)["deposit_held_minor"];
+  assert.equal(harper, "650000", "what is left of this job's deposit");
+  const other = ((await view(s, "other"))["totals"] as Row)["deposit_held_minor"];
+  assert.equal(other, "500000", "…and the other job's is untouched");
+});
+
 test("applying more deposit than was taken is refused", async () => {
   const s = await ready();
   await call(s, "POST", "/t/acme/jobs/harper/deposits", {

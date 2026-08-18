@@ -116,6 +116,14 @@ export interface RecordPaymentRequest {
   readonly amount_minor: string | number;
   readonly bank_code?: string;
   readonly memo?: string;
+  /**
+   * Dimensions for the *cash* side of the payment. Normally there are none —
+   * money is money. They matter when the "bank account" is a job-scoped
+   * liability: drawing a customer deposit down against an invoice has to
+   * relieve that job's deposit, not the pooled balance, or the job goes on
+   * claiming it holds money it has already used.
+   */
+  readonly dimensions?: Readonly<Record<string, string>>;
 }
 
 interface Ctx {
@@ -408,15 +416,24 @@ export async function recordPayment(
   const money = Money.fromMinorUnits(amount, ctx.currency);
 
   // Collecting an invoice: Dr bank / Cr AR. Paying a bill: Dr AP / Cr bank.
+  const cashDimensions = req.dimensions && Object.keys(req.dimensions).length > 0
+    ? { dimensions: req.dimensions }
+    : {};
   const lines: JournalLineInput[] =
     kind === "invoice"
       ? [
-          { accountId: bank, side: "DEBIT", amount: money, memo: `Payment on ${docId}` },
+          {
+            accountId: bank, side: "DEBIT", amount: money,
+            memo: `Payment on ${docId}`, ...cashDimensions,
+          },
           { accountId: control, side: "CREDIT", amount: money, memo: `Payment on ${docId}` },
         ]
       : [
           { accountId: control, side: "DEBIT", amount: money, memo: `Payment of ${docId}` },
-          { accountId: bank, side: "CREDIT", amount: money, memo: `Payment of ${docId}` },
+          {
+            accountId: bank, side: "CREDIT", amount: money,
+            memo: `Payment of ${docId}`, ...cashDimensions,
+          },
         ];
 
   const paymentId = req.id?.trim() || `${docId}-p${(await ctx.docs.listPayments(ctx.tenant, kind, docId)).length + 1}`;

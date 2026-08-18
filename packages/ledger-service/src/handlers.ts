@@ -109,6 +109,7 @@ import {
   type PayrollContext,
 } from "./payroll.js";
 import {
+  JOB_DIMENSION,
   JobError,
   costCodeJson,
   jobCostReport,
@@ -171,6 +172,7 @@ import {
   wipSchedule,
   type WipContext,
 } from "./wip.js";
+import { CUSTOMER_DEPOSITS_CODE } from "./billing.js";
 import {
   BillingError,
   applyDraft,
@@ -1138,8 +1140,11 @@ export class LedgerService {
             {
               date: application.date,
               amount_minor: application.amountMinor,
-              bank_code: "2400",
+              bank_code: CUSTOMER_DEPOSITS_CODE,
               memo: "Deposit applied",
+              // The deposit is held per job, so relieving it has to be too —
+              // otherwise the job goes on claiming money it has already spent.
+              dimensions: { [JOB_DIMENSION]: rest[1]! },
             },
             await this.arapCtx(tenant),
           );
