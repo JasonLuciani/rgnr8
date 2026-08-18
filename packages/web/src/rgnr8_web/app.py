@@ -76,6 +76,7 @@ from rgnr8_reports import (
 from rgnr8_qbo import QboConnectService, QboStatus
 from .qbo_sync import QboSyncSummary, build_inputs_from_qbo
 from .qbo_ledger import LedgerSyncSummary, sync_qbo_to_ledger
+from .ledger_forecast import LedgerFacts, forecast_from_ledger, provenance_split
 
 from .store import InMemoryTenantStore, TenantDef, TenantState, TenantStore
 from .financial_package import (
@@ -230,6 +231,32 @@ def _minor_decimal(v: object) -> str:
     return f"{sign}{whole}.{frac:02d}"
 
 
+def _provenance_note(facts: "LedgerFacts", split: "dict[str, int]") -> str:
+    """Say which half of the forecast is known and which is assumed.
+
+    A forecast that mixes "what the bank holds" with "what we hope to win" and
+    presents both in the same typeface invites the reader to trust the wrong
+    half. This is one line, above the chart, saying where the numbers came from.
+    """
+    from html import escape
+
+    if facts.problems:
+        detail = escape("; ".join(facts.problems[:2]))
+        return (
+            '<div class="banner warn">Working from your saved assumptions — the books '
+            f"couldn't be read just now ({detail}). Cash and open items may be out of "
+            "date.</div>"
+        )
+    known = split.get("from_the_books", 0)
+    assumed = split.get("assumed", 0)
+    return (
+        '<div class="banner good">'
+        f"Cash on hand and {known} open item(s) come straight from your books"
+        f"{f'; {assumed} forward item(s) are your assumptions' if assumed else ''}. "
+        "</div>"
+    )
+
+
 def _percent_to_ppm(raw: str) -> int:
     """"8.25" -> 82500. Exact: a tax rate never passes through a float."""
     text = raw.strip().rstrip("%").strip()
@@ -312,6 +339,9 @@ class WebApp:
         # last successful QBO sync summary, per tenant (for the connect page).
         self._qbo_last_sync: dict[str, QboSyncSummary] = {}
         self._qbo_last_ledger_sync: dict[str, LedgerSyncSummary] = {}
+        # What the books last told the forecast, so a screen can say where a
+        # number came from rather than presenting facts and guesses alike.
+        self._ledger_facts: dict[str, LedgerFacts] = {}
         self._tenants: dict[str, _Tenant] = {}
         self._tokens: dict[str, str] = {}  # bearer token -> tenant_id (default auth)
         # persistence for mutable owner state; in-memory unless a durable one is given
@@ -531,15 +561,39 @@ class WebApp:
         return dataclasses.replace(t.config, minimum_cash=t.min_cash_override)
 
     def _effective_inputs(self, t: _Tenant) -> ForecastInputs:
+        """The inputs the forecast actually runs on.
+
+        With a ledger configured this is a HYBRID: cash, receivables, payables
+        and payroll liabilities are read from the books (facts), while pipeline,
+        recurring plans and planned one-offs stay the owner's assumptions. Every
+        item carries a provenance saying which half it came from, so a surprising
+        forecast can be traced to a number we know or a number we guessed.
+
+        Without a ledger, the owner's inputs stand alone, exactly as before."""
+        inputs = t.inputs
+        if self._ledger is not None:
+            as_of = t.inputs.opening.as_of
+            merged, facts = forecast_from_ledger(
+                self._ledger, t.tenant_id, inputs, as_of, currency=t.config.currency,
+            )
+            self._ledger_facts[t.tenant_id] = facts
+            inputs = merged
         if not t.payment_overrides:
-            return t.inputs
-        histories = {h.customer_id: h for h in t.inputs.customer_histories}
+            return inputs
+        histories = {h.customer_id: h for h in inputs.customer_histories}
         for customer_id, days in t.payment_overrides.items():
             histories[customer_id] = CustomerHistory(customer_id=customer_id, override_days_late=days)
-        return dataclasses.replace(t.inputs, customer_histories=tuple(histories.values()))
+        return dataclasses.replace(inputs, customer_histories=tuple(histories.values()))
 
     # --- forecast (cached per tenant; invalidated on override) --------------
     def _forecast(self, t: _Tenant) -> ForecastResult:
+        # With a ledger behind it the forecast depends on the books, which change
+        # whenever anyone posts. Caching it would show a stale cash position
+        # moments after a transaction was accepted, so it is recomputed.
+        if self._ledger is not None:
+            t._cache = run_forecast(self._effective_inputs(t), self._effective_config(t))
+            t._dirty = False
+            return t._cache
         if t._cache is None or t._dirty:
             t._cache = run_forecast(self._effective_inputs(t), self._effective_config(t))
             t._dirty = False
@@ -2259,7 +2313,12 @@ class WebApp:
                                        permissions=perms, active=active, body_html=body, subject=subject))
 
     def _cash_page(self, subject: str, t: _Tenant) -> Response:
-        return self._shell(subject, t, "cash", render_cash_body(self._forecast(t), t.name))
+        forecast = self._forecast(t)
+        body = render_cash_body(forecast, t.name)
+        facts = self._ledger_facts.get(t.tenant_id)
+        if facts is not None:
+            body = _provenance_note(facts, provenance_split(self._effective_inputs(t))) + body
+        return self._shell(subject, t, "cash", body)
 
     def _briefing_page(self, subject: str, t: _Tenant) -> Response:
         return self._shell(subject, t, "briefing", render_briefing_body(self._forecast(t), t.name))

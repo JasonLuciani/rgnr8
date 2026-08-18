@@ -771,3 +771,37 @@ def test_classes_end_to_end_against_the_real_service(ledger_service: str) -> Non
     by = {b["value"]: b for b in data["buckets"]}
     assert by["Dine-in"]["total_credit_minor"] == "120000"
     assert by["Catering"]["total_credit_minor"] == "800000"
+
+
+def test_the_forecast_reads_the_real_books_end_to_end(ledger_service: str) -> None:
+    """The hybrid, against the running service: cash and open items come from
+    the books, the owner's pipeline stays theirs, and posting changes the
+    forecast immediately."""
+    base = ledger_service
+    app = _app(base, ["hybridco"])
+    _seed(base, "hybridco", "PROFESSIONAL_SERVICES")
+
+    # money in the bank, an invoice owed to us, a bill we owe
+    _req(app, "hybridco", "/t/hybridco/books/entries", "POST",
+         "date=2026-08-03&memo=Opening&code1=1000&debit1=10,000.00"
+         "&code2=3000&credit2=10000.00")
+    _req(app, "hybridco", "/t/hybridco/customers", "POST", "name=Halcyon+LLC&terms_days=30")
+    _req(app, "hybridco", "/t/hybridco/invoices", "POST",
+         "id=INV-1&party_id=halcyon-llc&date=2026-08-10&due_date=2026-09-09"
+         "&amount1=4,000.00&code1=4100")
+    _req(app, "hybridco", "/t/hybridco/vendors", "POST", "name=Copyshop&terms_days=15")
+    _req(app, "hybridco", "/t/hybridco/bills", "POST",
+         "id=BILL-1&party_id=copyshop&date=2026-08-12&due_date=2026-08-27"
+         "&amount1=350.00&code1=6400")
+
+    cash = _req(app, "hybridco", "/t/hybridco")
+    assert cash.status == 200
+    assert "$10,000.00" in cash.body, "opening cash is what the books say"
+    assert "come straight from your books" in cash.body
+
+    # spend some of it and the forecast follows without a refresh of anything
+    _req(app, "hybridco", "/t/hybridco/books/entries", "POST",
+         "date=2026-08-20&memo=Rent&code1=6300&debit1=1,500.00"
+         "&code2=1000&credit2=1500.00")
+    after = _req(app, "hybridco", "/t/hybridco")
+    assert "$8,500.00" in after.body
