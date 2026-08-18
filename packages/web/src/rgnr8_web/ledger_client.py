@@ -168,13 +168,21 @@ class LedgerClient:
     def create_party(
         self, tenant: str, kind: str, party_id: str, name: str,
         *, email: str = "", terms_days: int | None = None,
+        is_1099: bool = False, tax_id: str = "",
     ) -> LedgerResponse:
         payload: dict[str, object] = {"id": party_id, "name": name}
         if email:
             payload["email"] = email
         if terms_days is not None:
             payload["terms_days"] = terms_days
+        if is_1099:
+            payload["is_1099"] = True
+        if tax_id:
+            payload["tax_id"] = tax_id
         return self._call("POST", f"/t/{tenant}/{kind}", payload)
+
+    def ten99(self, tenant: str, year: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/1099/{urllib.parse.quote(year)}")
 
     def documents(self, tenant: str, kind: str) -> LedgerResponse:
         """kind: "invoices" or "bills"."""

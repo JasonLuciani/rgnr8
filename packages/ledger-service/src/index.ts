@@ -148,5 +148,6 @@ export {
   type RecurringRecord,
   type RecurringContext,
 } from "./recurring.js";
+export { ten99Report, Ten99Error, type Ten99Context, type Ten99Json } from "./ten99.js";
 export { rlsDdl, appRoleDdl, superuserWarning, TENANT_TABLES } from "./security.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";

@@ -79,6 +79,7 @@ from .qbo_ledger import LedgerSyncSummary, sync_qbo_to_ledger
 from .ledger_forecast import LedgerFacts, forecast_from_ledger, provenance_split
 from .multipart import MultipartError, parse_multipart
 from .attachment_screens import render_attachments, render_attachments_unavailable
+from .ten99_screens import render_ten99, render_ten99_unavailable
 from .recurring_screens import (
     render_recurring, render_recurring_unavailable, render_run_result,
 )
@@ -1009,6 +1010,11 @@ class WebApp:
             return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
                                  lambda t: self._books_register_page(subject, t, code))
 
+        # /t/<tenant>/books/1099 -> contractor payments for the year
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "books"
+                and parts[3] == "1099" and req.method == "GET"):
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._ten99_page(subject, t, req.query))
         # /t/<tenant>/books/recurring -> what's due, what's memorized
         if (len(parts) == 4 and parts[0] == "t" and parts[2] == "books"
                 and parts[3] == "recurring"):
@@ -1488,6 +1494,11 @@ class WebApp:
         res = self._ledger.create_party(
             t.tenant_id, kind, party_id, name,
             email=str(data.get("email", "")).strip(), terms_days=terms,
+            # Only vendors can be contractors; a customer flagged 1099 is a
+            # form filled in wrong, not a fact worth storing.
+            is_1099=kind == "vendors"
+            and str(data.get("is_1099", "")).strip() in ("1", "true", "on"),
+            tax_id=str(data.get("tax_id", "")).strip() if kind == "vendors" else "",
         )
         if not res.ok:
             return _redirect(f"/t/{t.tenant_id}/{back}?err={_qs_escape(res.error())}")
@@ -1969,6 +1980,25 @@ class WebApp:
             self._audit.record(subject, "feed.rule_deleted", self._session_clock(),
                                tenant_id=t.tenant_id, target=rule_id)
         return _redirect(f"{back}?done={_qs_escape('Rule removed')}")
+
+    # --- 1099 contractors --------------------------------------------------------
+
+    def _ten99_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "bills", render_ten99_unavailable())
+        # Default to LAST year: 1099s are filed in January for the year that just
+        # ended, so "this year" is almost never the one being asked about.
+        today = self._today(t)
+        year = query.get("year", "").strip() or str(int(today[:4]) - 1)
+        res = self._ledger.ten99(t.tenant_id, year)
+        if not res.ok:
+            return self._shell(subject, t, "bills", render_ten99_unavailable(res.error()))
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_post = self._policy is None or Permission.POST_JOURNAL in perms
+        return self._shell(subject, t, "bills", render_ten99(
+            t.tenant_id, year, res.body, can_post=can_post,
+            message=query.get("done", ""), error=query.get("err", ""),
+        ))
 
     # --- recurring transactions --------------------------------------------------
 

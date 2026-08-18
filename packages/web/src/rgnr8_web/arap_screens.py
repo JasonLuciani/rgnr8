@@ -53,6 +53,26 @@ def _paperclip(
     return attachment_link(tenant, subject, doc_id, _minor(raw) or 0)
 
 
+def _contractor_fields() -> str:
+    """Flagging a contractor early is the whole trick.
+
+    The W-9 is easy to collect while you are hiring someone and hard to collect
+    the following January. Asking here costs a moment; asking later costs a
+    search for somebody who has moved on."""
+    return (
+        '<div class="grid2">'
+        "<div><label>1099 contractor?</label><select name=\"is_1099\">"
+        '<option value="">No</option>'
+        '<option value="1">Yes — track payments for a 1099</option></select></div>'
+        '<div><label>Tax ID (from their W-9, if you have it)</label>'
+        '<input name="tax_id" placeholder="12-3456789"></div>'
+        "</div>"
+        '<p class="note">Flag them now even without the tax id — that is what puts '
+        "them on the missing-W-9 list in March instead of surprising you in "
+        "January.</p>"
+    )
+
+
 def _tax_note(d: Mapping[str, object]) -> str:
     """Sales tax, spelled out. It is the state's money, not the business's."""
     tax = _minor(d.get("tax_minor")) or 0
@@ -184,7 +204,10 @@ def render_documents(
             else ""
         )
         + f' · <a class="btn-link" href="/t/{_esc(tenant)}/{"receivables" if is_ar else "payables"}/aging">'
-        "Aging</a></p>"
+        "Aging</a>"
+        + ("" if is_ar
+           else f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/1099">1099s</a>')
+        + "</p>"
     )
 
     out = head + summary + _card(title, table)
@@ -212,7 +235,8 @@ def _render_new_form(
             f'<div><label>{who.title()} name</label><input name="name" placeholder="Acme Ltd"></div>'
             '<div><label>Payment terms (days)</label><input name="terms_days" placeholder="30"></div>'
             "</div>"
-            f'<button class="btn" type="submit">Add {who}</button></form>',
+            + ("" if is_ar else _contractor_fields())
+            + f'<button class="btn" type="submit">Add {who}</button></form>',
         )
 
     line = (

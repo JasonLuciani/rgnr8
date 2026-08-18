@@ -468,11 +468,17 @@ export function validateParty(body: Record<string, unknown>): PartyRecord {
   if (termsDays !== undefined && (!Number.isInteger(termsDays) || termsDays < 0)) {
     throw new ArApError("terms_days must be a whole number of days");
   }
+  const taxId = String(body["tax_id"] ?? "").trim();
   return {
     id,
     name,
     ...(email ? { email } : {}),
     ...(termsDays !== undefined ? { termsDays } : {}),
+    // A contractor can be flagged before their W-9 arrives — that is the whole
+    // point of flagging early, so the missing one is visible in January rather
+    // than discovered the week the forms are due.
+    ...(body["is_1099"] === true || body["is_1099"] === "true" ? { is1099: true } : {}),
+    ...(taxId ? { taxId } : {}),
   };
 }
 

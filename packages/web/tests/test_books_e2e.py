@@ -942,3 +942,78 @@ def test_recurring_transactions_end_to_end_against_the_real_service(ledger_servi
 
     empty = _req(app, "recurco", "/t/recurco/books/recurring?as_of=2026-08-31")
     assert "Nothing due" in empty.body
+
+
+def test_1099_contractors_end_to_end_against_the_real_service(ledger_service: str) -> None:
+    """Flag two contractors, pay them, and read the January report: who you owe a
+    form to and cannot file for, who is one invoice away from the list, and what
+    money left the bank to a contractor without going through a bill."""
+    base = ledger_service
+    app = _app(base, ["ten99co"])
+    _seed(base, "ten99co", "PROFESSIONAL_SERVICES")
+
+    # flagged before the W-9 arrives — waiting until January is how the tax id
+    # never gets collected at all
+    _req(app, "ten99co", "/t/ten99co/vendors", "POST",
+         "name=Dana+Ruiz+Design&is_1099=1")
+    _req(app, "ten99co", "/t/ten99co/vendors", "POST",
+         "name=Sam+Okonkwo&is_1099=1&tax_id=98-7654321")
+    _req(app, "ten99co", "/t/ten99co/vendors", "POST",
+         "name=Riverside+Properties")           # a landlord, not a contractor
+
+    for doc, party, when, amount in [
+        ("B-1", "dana-ruiz-design", "2026-03-10", "4000.00"),
+        ("B-2", "sam-okonkwo", "2026-05-01", "540.00"),
+        ("B-3", "riverside-properties", "2026-03-01", "3500.00"),
+    ]:
+        made = _req(app, "ten99co", "/t/ten99co/bills", "POST",
+                    f"id={doc}&party_id={party}&date={when}&amount1={amount}&code1=6600")
+        assert "err=" not in str(made.headers.get("Location", "")), made.headers
+        paid = _req(app, "ten99co", f"/t/ten99co/bills/{doc}/payments", "POST",
+                    f"date={when}&amount={amount}")
+        assert "err=" not in str(paid.headers.get("Location", "")), paid.headers
+
+    # and one payment straight out of the bank, categorized but never billed
+    _service_post(base, "/t/ten99co/feed/1000", {"transactions": [
+        {"id": "bk-1", "date": "2026-09-04", "amount_minor": "-120000",
+         "description": "TRANSFER TO DANA", "counterparty": "Dana Ruiz Design"},
+    ]})
+    _req(app, "ten99co", "/t/ten99co/inbox/bk-1/accept", "POST", "category_code=6600")
+
+    page = _req(app, "ten99co", "/t/ten99co/books/1099?year=2026")
+    assert page.status == 200
+
+    # the form you owe and cannot file, with the amount that makes it urgent
+    assert "You owe a 1099 to Dana Ruiz Design and have no tax id on file" in page.body
+    assert "$4,000.00" in page.body
+    assert "W-9 needed" in page.body
+
+    # the landlord is not a contractor and never appears
+    assert "Riverside Properties" not in page.body
+
+    # $60 from needing a form
+    assert "Tracked, but under the threshold" in page.body
+    assert "Sam Okonkwo" in page.body and "$540.00" in page.body and "$60.00" in page.body
+
+    # the bank payment is a prompt, not a number folded into the total
+    assert "Paid from the bank, never billed" in page.body
+    assert "TRANSFER TO DANA" in page.body and "-$1,200.00" in page.body
+
+    report = _service_get(base, "/t/ten99co/1099/2026")
+    assert [r["vendor_name"] for r in report["rows"]] == ["Dana Ruiz Design"]
+    assert report["total_minor"] == "400000", "the unbilled 1,200 is NOT in the total"
+    assert report["missing_tax_id"] == ["dana-ruiz-design"]
+
+    # collect the W-9 and the warning turns into a filable form
+    _req(app, "ten99co", "/t/ten99co/vendors", "POST",
+         "id=dana-ruiz-design&name=Dana+Ruiz+Design&is_1099=1&tax_id=12-3456789")
+    after = _req(app, "ten99co", "/t/ten99co/books/1099?year=2026")
+    assert "no tax id on file" not in after.body
+    assert "1 form(s) to file for 2026, all with a tax id" in after.body
+
+    # another company's contractors are none of this company's business
+    app2 = _app(base, ["othercorp"])
+    _seed(base, "othercorp", "PROFESSIONAL_SERVICES")
+    other = _req(app2, "othercorp", "/t/othercorp/books/1099?year=2026")
+    assert "Dana" not in other.body
+    assert "Nobody was paid enough to need a form this year" in other.body

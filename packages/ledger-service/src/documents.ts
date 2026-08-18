@@ -22,6 +22,11 @@ export interface PartyRecord {
   readonly name: string;
   readonly email?: string;
   readonly termsDays?: number;
+  /** 1099 tracking: this vendor is a contractor whose payments are reportable. */
+  readonly is1099?: boolean;
+  /** Their TIN/EIN, collected on a W-9. Never required to flag them — the
+   *  point of flagging early is to know whose W-9 is still missing. */
+  readonly taxId?: string;
 }
 
 export interface DocLineRecord {
@@ -170,6 +175,8 @@ CREATE TABLE IF NOT EXISTS party (
   name       text NOT NULL,
   email      text,
   terms_days integer,
+  is_1099    boolean NOT NULL DEFAULT false,
+  tax_id     text NOT NULL DEFAULT '',
   CONSTRAINT party_pk PRIMARY KEY (tenant_id, kind, id)
 );
 
@@ -207,6 +214,8 @@ CREATE TABLE IF NOT EXISTS doc_line (
 -- Schema evolution: CREATE TABLE IF NOT EXISTS silently skips an existing table,
 -- so a column added after the first deploy has to be added explicitly or it will
 -- only ever exist on fresh databases.
+ALTER TABLE party    ADD COLUMN IF NOT EXISTS is_1099 boolean NOT NULL DEFAULT false;
+ALTER TABLE party    ADD COLUMN IF NOT EXISTS tax_id  text    NOT NULL DEFAULT '';
 ALTER TABLE doc      ADD COLUMN IF NOT EXISTS net_minor    numeric(38,0) NOT NULL DEFAULT 0;
 ALTER TABLE doc      ADD COLUMN IF NOT EXISTS tax_minor    numeric(38,0) NOT NULL DEFAULT 0;
 ALTER TABLE doc      ADD COLUMN IF NOT EXISTS tax_rate_ppm integer       NOT NULL DEFAULT 0;
@@ -260,11 +269,13 @@ export class PgDocumentStore implements DocumentStore {
   async upsertParty(tenant: string, kind: PartyKind, p: PartyRecord): Promise<void> {
     await this.tx(tenant, (db) =>
       db.query(
-        `INSERT INTO party (tenant_id, kind, id, name, email, terms_days)
-         VALUES ($1,$2,$3,$4,$5,$6)
+        `INSERT INTO party (tenant_id, kind, id, name, email, terms_days, is_1099, tax_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
          ON CONFLICT (tenant_id, kind, id) DO UPDATE SET
-           name = EXCLUDED.name, email = EXCLUDED.email, terms_days = EXCLUDED.terms_days`,
-        [tenant, kind, p.id, p.name, p.email ?? null, p.termsDays ?? null],
+           name = EXCLUDED.name, email = EXCLUDED.email, terms_days = EXCLUDED.terms_days,
+           is_1099 = EXCLUDED.is_1099, tax_id = EXCLUDED.tax_id`,
+        [tenant, kind, p.id, p.name, p.email ?? null, p.termsDays ?? null,
+         p.is1099 === true, p.taxId ?? ""],
       ),
     );
   }
@@ -272,7 +283,8 @@ export class PgDocumentStore implements DocumentStore {
   async getParty(tenant: string, kind: PartyKind, id: string): Promise<PartyRecord | undefined> {
     return this.tx(tenant, async (db) => {
       const res = await db.query(
-        "SELECT id, name, email, terms_days FROM party WHERE tenant_id=$1 AND kind=$2 AND id=$3",
+        `SELECT id, name, email, terms_days, is_1099, tax_id
+         FROM party WHERE tenant_id=$1 AND kind=$2 AND id=$3`,
         [tenant, kind, id],
       );
       const row = res.rows[0];
@@ -283,7 +295,8 @@ export class PgDocumentStore implements DocumentStore {
   async listParties(tenant: string, kind: PartyKind): Promise<PartyRecord[]> {
     return this.tx(tenant, async (db) => {
       const res = await db.query(
-        "SELECT id, name, email, terms_days FROM party WHERE tenant_id=$1 AND kind=$2",
+        `SELECT id, name, email, terms_days, is_1099, tax_id
+         FROM party WHERE tenant_id=$1 AND kind=$2`,
         [tenant, kind],
       );
       return res.rows.map(rowToParty).sort((a, b) => a.name.localeCompare(b.name));
@@ -431,6 +444,8 @@ function rowToParty(r: Record<string, unknown>): PartyRecord {
     name: str(r["name"]),
     ...(email ? { email: str(email) } : {}),
     ...(terms !== null && terms !== undefined ? { termsDays: Number(terms) } : {}),
+    ...(r["is_1099"] === true || r["is_1099"] === "t" ? { is1099: true } : {}),
+    ...(str(r["tax_id"]) ? { taxId: str(r["tax_id"]) } : {}),
   };
 }
 

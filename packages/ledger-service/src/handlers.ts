@@ -64,6 +64,7 @@ import {
   type InboxContext,
 } from "./inbox.js";
 import type { FeedStatus } from "./feed.js";
+import { Ten99Error, ten99Report, type Ten99Context } from "./ten99.js";
 import {
   RecurringError,
   dueOccurrences,
@@ -360,6 +361,13 @@ export class LedgerService {
         return await this.aging(tenant, rest[1] === "ar" ? "invoice" : "bill", req.query);
       }
 
+      // --- 1099 contractors -----------------------------------------------
+      if (rest[0] === "1099" && rest.length === 2 && req.method === "GET") {
+        return ok(await ten99Report(
+          { backend: this.backend, tenant, currency: this.currency }, rest[1],
+        ));
+      }
+
       // --- recurring transactions -----------------------------------------
       if (rest[0] === "recurring") {
         const ctx = this.recurringCtx(tenant);
@@ -584,6 +592,7 @@ export class LedgerService {
       if (err instanceof DimensionServiceError) return bad(err.message);
       if (err instanceof AttachmentError) return bad(err.message);
       if (err instanceof RecurringError) return bad(err.message);
+      if (err instanceof Ten99Error) return bad(err.message);
       return bad(err instanceof Error ? err.message : String(err));
     }
     return notFound("not found");
