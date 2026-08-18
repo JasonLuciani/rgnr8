@@ -234,6 +234,50 @@ class LedgerClient:
             payload["memo"] = memo
         return self._call("POST", f"/t/{tenant}/{kind}/{doc_id}/payments", payload)
 
+    # --- attachments ---------------------------------------------------------
+
+    def attachments(
+        self, tenant: str, *, subject_kind: str = "", subject_id: str = ""
+    ) -> LedgerResponse:
+        parts = []
+        if subject_kind:
+            parts.append(f"subject_kind={urllib.parse.quote(subject_kind)}")
+        if subject_id:
+            parts.append(f"subject_id={urllib.parse.quote(subject_id)}")
+        qs = f"?{'&'.join(parts)}" if parts else ""
+        return self._call("GET", f"/t/{tenant}/attachments{qs}")
+
+    def attachment_counts(self, tenant: str, subject_kind: str) -> LedgerResponse:
+        return self._call(
+            "GET", f"/t/{tenant}/attachments/counts"
+                   f"?subject_kind={urllib.parse.quote(subject_kind)}"
+        )
+
+    def save_attachment(
+        self, tenant: str, subject_kind: str, subject_id: str,
+        filename: str, content_type: str, content: bytes, *, note: str = "",
+    ) -> LedgerResponse:
+        import base64
+
+        return self._call("POST", f"/t/{tenant}/attachments", {
+            "subject_kind": subject_kind,
+            "subject_id": subject_id,
+            "filename": filename,
+            "content_type": content_type,
+            "content_base64": base64.b64encode(content).decode("ascii"),
+            "note": note,
+        })
+
+    def attachment_content(self, tenant: str, attachment_id: str) -> LedgerResponse:
+        return self._call(
+            "GET", f"/t/{tenant}/attachments/{urllib.parse.quote(attachment_id)}/content"
+        )
+
+    def delete_attachment(self, tenant: str, attachment_id: str) -> LedgerResponse:
+        return self._call(
+            "DELETE", f"/t/{tenant}/attachments/{urllib.parse.quote(attachment_id)}"
+        )
+
     # --- reporting dimensions (classes, locations) ---------------------------
 
     def dimensions(self, tenant: str) -> LedgerResponse:

@@ -805,3 +805,51 @@ def test_the_forecast_reads_the_real_books_end_to_end(ledger_service: str) -> No
          "&code2=1000&credit2=1500.00")
     after = _req(app, "hybridco", "/t/hybridco")
     assert "$8,500.00" in after.body
+
+
+def test_attaching_a_receipt_end_to_end_against_the_real_service(ledger_service: str) -> None:
+    """A receipt uploaded as multipart, stored beside the books, and served back
+    byte-for-byte — including bytes that are not valid UTF-8."""
+    base = ledger_service
+    app = _app(base, ["fileco"])
+    _seed(base, "fileco", "PROFESSIONAL_SERVICES")
+    _service_post(base, "/t/fileco/feed/1000", {"transactions": [
+        {"id": "bk-1", "date": "2026-08-21", "amount_minor": "-24900",
+         "description": "ADOBE SUBSCRIPTION"},
+    ]})
+
+    binary = bytes([0x89, 0x50, 0x4E, 0x47]) + bytes(range(256))
+    boundary = "E2EBOUNDARY"
+    body = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="note"\r\n\r\nAdobe renewal\r\n'
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="file"; filename="receipt.png"\r\n'
+        "Content-Type: image/png\r\n\r\n"
+    ).encode() + binary + f"\r\n--{boundary}--\r\n".encode()
+
+    tok = sign_jwt({"sub": "u-fileco", "tenant": "fileco", "exp": NOW + 3600}, SECRET)
+    up = app.handle(Request(
+        "POST", "/t/fileco/files/feed/bk-1",
+        {"authorization": f"Bearer {tok}",
+         "content-type": f"multipart/form-data; boundary={boundary}"},
+        body.decode("utf-8", "surrogateescape"),
+    ))
+    assert up.status == 302
+    assert "err=" not in str(up.headers.get("Location", ""))
+
+    listing = _req(app, "fileco", "/t/fileco/files/feed/bk-1")
+    assert "receipt.png" in listing.body and "Adobe renewal" in listing.body
+
+    stored = _service_get(base, "/t/fileco/attachments?subject_kind=feed&subject_id=bk-1")
+    att_id = stored["attachments"][0]["id"]
+    assert stored["attachments"][0]["bytes"] == len(binary)
+
+    down = _req(app, "fileco", f"/t/fileco/files/{att_id}/download")
+    assert down.status == 200
+    assert down.body == binary, "every byte survived the round trip"
+    assert down.headers["Content-Disposition"].startswith("attachment;")
+
+    # the queue shows the line now has evidence
+    queue = _req(app, "fileco", "/t/fileco/inbox")
+    assert "/t/fileco/files/feed/bk-1" in queue.body

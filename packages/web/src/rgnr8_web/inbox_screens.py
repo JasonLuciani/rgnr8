@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from .attachment_screens import attachment_link
 from .books_screens import _card, _esc, _minor, _seq, money
 
 
@@ -145,7 +146,7 @@ def _row(tenant: str, item: Mapping[str, object], accounts: Mapping[str, object]
         f"<tr><td class='muted'>{_esc(item.get('date'))}</td><td>{desc}</td>"
         f"<td class='{cls}'>{money(item.get('amount_minor'))}</td>"
         f"<td>{accept}{why}{_match_form(tenant, item)}</td>"
-        f"<td>{exclude}</td></tr>"
+        f"<td>{attachment_link(tenant, 'feed', txn_id)}{exclude}</td></tr>"
     )
 
 
@@ -246,7 +247,7 @@ def render_actioned(tenant: str, status: str, view: Mapping[str, object],
             f"<td class='{cls}'>{money(i.get('amount_minor'))}</td>"
             f"<td>{became}</td>"
             f"<td class='muted' style='font-size:12px'>{_esc(i.get('entry_id'))}</td>"
-            f"<td>{undo}</td></tr>"
+            f"<td>{attachment_link(tenant, 'feed', str(i.get('id')))}{undo}</td></tr>"
         )
     empty = (
         '<tr><td colspan="6" class="muted" style="text-align:center;padding:24px">'

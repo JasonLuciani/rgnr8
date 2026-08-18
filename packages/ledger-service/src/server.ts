@@ -8,7 +8,9 @@ import type { LedgerService, ServiceRequest } from "./handlers.js";
  * is fully testable without opening a socket.
  */
 
-const MAX_BODY_BYTES = 1_000_000; // a journal batch is small; cap to refuse abuse
+// A journal batch is tiny; an attached receipt is not. Base64 inflates a file
+// by a third, so this is the 8 MB attachment limit plus encoding plus headroom.
+const MAX_BODY_BYTES = 12_000_000;
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -37,7 +39,22 @@ export function toServiceRequest(
   const parsed = new URL(url, "http://ledger.local");
   const query: Record<string, string> = {};
   for (const [k, v] of parsed.searchParams) query[k] = v;
-  return { method: method.toUpperCase(), path: parsed.pathname, query, body, headers };
+  // Path segments are percent-DECODED. Ids in this system legitimately contain
+  // characters a client must escape — a journal entry is "acme:1" — and a
+  // handler comparing an escaped path to an unescaped id fails to find a record
+  // that is right there.
+  const path = "/" + parsed.pathname
+    .split("/")
+    .filter((segment, i) => i > 0 || segment !== "")
+    .map((segment) => {
+      try {
+        return decodeURIComponent(segment);
+      } catch {
+        return segment;   // a malformed escape is not a reason to 500
+      }
+    })
+    .join("/");
+  return { method: method.toUpperCase(), path, query, body, headers };
 }
 
 export function createLedgerServer(service: LedgerService): Server {

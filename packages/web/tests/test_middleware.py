@@ -288,7 +288,8 @@ def test_wsgi_body_cap_still_enforced_when_hardened() -> None:
     metrics = MetricsRegistry(clock=lambda: 0.0, sink=InMemoryMetricsSink())
     application = wsgi_app(app, logger=logger, metrics=metrics)
     env = _environ("POST", "/api/acme/ask")
-    env["CONTENT_LENGTH"] = str(2_000_000)  # over the 1 MiB cap
+    # over the cap, which is sized for an attached receipt rather than a form post
+    env["CONTENT_LENGTH"] = str(20 * 1_048_576)
     status, headers, body = _call(application, env)
     assert status.startswith("413")
     assert json.loads(body)["error"] == "request body too large"

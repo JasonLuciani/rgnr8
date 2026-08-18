@@ -123,5 +123,17 @@ export {
   type DimensionRecord,
   type DimensionContext,
 } from "./dimensions.js";
+export {
+  InMemoryAttachmentStore,
+  PgAttachmentStore,
+  ATTACHMENT_DDL,
+  MAX_ATTACHMENT_BYTES,
+  AttachmentError,
+  saveAttachment,
+  listAttachments,
+  type AttachmentStore,
+  type AttachmentRecord,
+  type SubjectKind,
+} from "./attachments.js";
 export { rlsDdl, appRoleDdl, superuserWarning, TENANT_TABLES } from "./security.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";

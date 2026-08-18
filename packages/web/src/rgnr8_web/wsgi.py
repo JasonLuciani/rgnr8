@@ -32,7 +32,9 @@ _STATUS_TEXT = {
 
 # Cap request bodies before reading them into memory, so a single oversized POST
 # can't exhaust a worker (there is no framework doing this for us).
-MAX_BODY_BYTES = 1_048_576  # 1 MiB
+# A form post is tiny; an attached receipt is not. This is the ledger service's
+# 8 MB attachment limit plus multipart framing and headroom.
+MAX_BODY_BYTES = 12 * 1_048_576
 
 
 class _BodyTooLarge(Exception):
@@ -65,7 +67,9 @@ def _read_body(environ: WsgiEnviron) -> str:
         return ""
     raw = stream.read(min(length, MAX_BODY_BYTES))
     if isinstance(raw, bytes):
-        return raw.decode("utf-8", "replace")
+        # surrogateescape, not replace: "replace" silently corrupts an uploaded
+        # file, and a corrupted receipt looks fine in a list.
+        return raw.decode("utf-8", "surrogateescape")
     return str(raw)
 
 

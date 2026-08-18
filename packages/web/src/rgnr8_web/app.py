@@ -77,6 +77,8 @@ from rgnr8_qbo import QboConnectService, QboStatus
 from .qbo_sync import QboSyncSummary, build_inputs_from_qbo
 from .qbo_ledger import LedgerSyncSummary, sync_qbo_to_ledger
 from .ledger_forecast import LedgerFacts, forecast_from_ledger, provenance_split
+from .multipart import MultipartError, parse_multipart
+from .attachment_screens import render_attachments, render_attachments_unavailable
 
 from .store import InMemoryTenantStore, TenantDef, TenantState, TenantStore
 from .financial_package import (
@@ -888,6 +890,31 @@ class WebApp:
             return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
                                  lambda t: self._arap_aging(subject, t, side, req.query))
 
+        # --- attachments (the receipt behind the number) ---
+        # /t/<tenant>/files/<id>/download -> the file itself
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "files"
+                and parts[4] == "download" and req.method == "GET"):
+            attachment_id = parts[3]
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._attachment_download(t, attachment_id))
+        # /t/<tenant>/files/<kind>/<id> -> what evidences this, and an upload form
+        if len(parts) == 5 and parts[0] == "t" and parts[2] == "files":
+            kind, subject_id = parts[3], parts[4]
+            if req.method == "POST":
+                return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                     lambda t: self._attachment_upload(
+                                         subject, t, kind, subject_id, req))
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._attachments_page(
+                                     subject, t, kind, subject_id, req.query))
+        # /t/<tenant>/files/<kind>/<id>/<attachment>/delete
+        if (len(parts) == 7 and parts[0] == "t" and parts[2] == "files"
+                and parts[6] == "delete" and req.method == "POST"):
+            kind, subject_id, att = parts[3], parts[4], parts[5]
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._attachment_delete(
+                                     subject, t, kind, subject_id, att))
+
         # --- payroll ---
         # /t/<tenant>/payroll -> runs, liabilities, and the run form
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "payroll":
@@ -1285,9 +1312,17 @@ class WebApp:
         parties = self._ledger.parties(t.tenant_id, party_kind)
         perms, _role = self._perms_role(subject, t.tenant_id)
         can_post = self._policy is None or Permission.POST_JOURNAL in perms
+        counts = self._ledger.attachment_counts(
+            t.tenant_id, "invoice" if kind == "invoices" else "bill",
+        )
+        counts = self._ledger.attachment_counts(
+            t.tenant_id, "invoice" if kind == "invoices" else "bill",
+        )
+        raw_counts = counts.body.get("counts") if counts.ok else None
         body = render_documents(
             t.tenant_id, kind, docs.body, parties.body if parties.ok else {},
             today=self._today(t), can_post=can_post,
+            attachment_counts=raw_counts if isinstance(raw_counts, dict) else None,
             message=query.get("ok", ""), error=query.get("err", ""),
         )
         return self._shell(subject, t, kind, body)
@@ -1494,6 +1529,97 @@ class WebApp:
         if not res.ok:
             return self._shell(subject, t, "books", render_books_unavailable(res.error()))
         return self._shell(subject, t, "books", render_register(t.tenant_id, res.body))
+
+    # --- attachments -----------------------------------------------------------
+
+    def _attachments_page(
+        self, subject: str, t: _Tenant, kind: str, subject_id: str,
+        query: "dict[str, str]",
+    ) -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "books", render_attachments_unavailable())
+        res = self._ledger.attachments(
+            t.tenant_id, subject_kind=kind, subject_id=subject_id,
+        )
+        if not res.ok:
+            return self._shell(subject, t, "books",
+                               render_attachments_unavailable(res.error()))
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_post = self._policy is None or Permission.POST_JOURNAL in perms
+        return self._shell(subject, t, "books", render_attachments(
+            t.tenant_id, kind, subject_id, res.body, can_post=can_post,
+            message=query.get("done", ""), error=query.get("err", ""),
+        ))
+
+    def _attachment_upload(
+        self, subject: str, t: _Tenant, kind: str, subject_id: str, req: Request
+    ) -> Response:
+        back = f"/t/{t.tenant_id}/files/{kind}/{subject_id}"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        try:
+            fields, files = parse_multipart(req.body, req.headers.get("content-type", ""))
+        except MultipartError as exc:
+            return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+        if not files:
+            return _redirect(f"{back}?err={_qs_escape('Choose a file to attach')}")
+
+        note = fields.get("note", "").strip()
+        saved = 0
+        for f in files:
+            res = self._ledger.save_attachment(
+                t.tenant_id, kind, subject_id, f.filename, f.content_type, f.content,
+                note=note,
+            )
+            if not res.ok:
+                return _redirect(f"{back}?err={_qs_escape(res.error())}")
+            saved += 1
+        if self._audit is not None:
+            self._audit.record(subject, "attachment.added", self._session_clock(),
+                               tenant_id=t.tenant_id, target=f"{kind}:{subject_id}")
+        noun = "file" if saved == 1 else "files"
+        return _redirect(f"{back}?done={_qs_escape(f'Attached {saved} {noun}')}")
+
+    def _attachment_download(self, t: _Tenant, attachment_id: str) -> Response:
+        """Serve the file back with its own name and type.
+
+        Content-Disposition is *attachment*, never inline: a receipt is an
+        arbitrary uploaded file, and rendering one in the page's own origin is
+        how an upload becomes a script that runs as the owner."""
+        if self._ledger is None:
+            return _json(503, {"error": "no ledger service configured"})
+        res = self._ledger.attachment_content(t.tenant_id, attachment_id)
+        if not res.ok:
+            return _json(404, {"error": res.error()})
+        import base64
+
+        try:
+            content = base64.b64decode(str(res.body.get("content_base64", "")))
+        except (ValueError, TypeError):
+            return _json(500, {"error": "the stored file could not be decoded"})
+        filename = str(res.body.get("filename", "attachment")).replace('"', "")
+        return Response(
+            200, content,
+            content_type=str(res.body.get("content_type", "application/octet-stream")),
+            extra_headers=(
+                ("Content-Disposition", f'attachment; filename="{filename}"'),
+                ("X-Content-Type-Options", "nosniff"),
+            ),
+        )
+
+    def _attachment_delete(
+        self, subject: str, t: _Tenant, kind: str, subject_id: str, attachment_id: str
+    ) -> Response:
+        back = f"/t/{t.tenant_id}/files/{kind}/{subject_id}"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        res = self._ledger.delete_attachment(t.tenant_id, attachment_id)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "attachment.removed", self._session_clock(),
+                               tenant_id=t.tenant_id, target=attachment_id)
+        return _redirect(f"{back}?done={_qs_escape('Removed')}")
 
     # --- payroll ---------------------------------------------------------------
 

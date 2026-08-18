@@ -26,7 +26,13 @@ def make_handler(app: WebApp) -> Type[BaseHTTPRequestHandler]:
             if length > MAX_BODY_BYTES:
                 resp = Response(413, '{"error":"request body too large"}')
             else:
-                body = self.rfile.read(length).decode("utf-8") if length else ""
+                # surrogateescape (PEP 383) so an uploaded file survives the trip
+                # as a str: re-encoding with the same handler gives back exactly
+                # the bytes that arrived. Plain UTF-8 text is unaffected.
+                body = (
+                    self.rfile.read(length).decode("utf-8", "surrogateescape")
+                    if length else ""
+                )
                 headers = {k.lower(): v for k, v in self.headers.items()}
                 resp = app.handle(Request(method=method, path=self.path, headers=headers, body=body))
             # Merge the standard hardening headers for parity with the WSGI path.

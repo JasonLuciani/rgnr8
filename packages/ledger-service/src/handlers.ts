@@ -65,6 +65,14 @@ import {
 } from "./inbox.js";
 import type { FeedStatus } from "./feed.js";
 import {
+  AttachmentError,
+  attachmentJson,
+  listAttachments,
+  saveAttachment,
+  type AttachmentContext,
+  type SubjectKind,
+} from "./attachments.js";
+import {
   DimensionServiceError,
   dimensionJson,
   dimensionsOf,
@@ -335,6 +343,42 @@ export class LedgerService {
         return await this.aging(tenant, rest[1] === "ar" ? "invoice" : "bill", req.query);
       }
 
+      // --- attachments (the receipt behind the number) --------------------
+      if (rest[0] === "attachments") {
+        const ctx = this.attachmentCtx(tenant);
+        if (rest.length === 1 && req.method === "GET") {
+          const list = await listAttachments(ctx, req.query);
+          return ok({ tenant, attachments: list.map(attachmentJson) });
+        }
+        if (rest.length === 1 && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          return created({
+            tenant,
+            attachment: attachmentJson(
+              await saveAttachment(ctx, data as Parameters<typeof saveAttachment>[1]),
+            ),
+          });
+        }
+        if (rest.length === 2 && req.method === "DELETE") {
+          await this.backend.attachments().remove(String(tenant), rest[1]!);
+          return ok({ tenant, removed: rest[1] });
+        }
+        if (rest.length === 3 && rest[2] === "content" && req.method === "GET") {
+          const found = await this.backend.attachments().get(String(tenant), rest[1]!);
+          if (!found) return notFound(`unknown attachment ${rest[1]}`);
+          return ok({
+            ...attachmentJson(found.record),
+            content_base64: found.content.toString("base64"),
+          });
+        }
+        if (rest.length === 2 && rest[1] === "counts" && req.method === "GET") {
+          const kind = String(req.query["subject_kind"] ?? "") as SubjectKind;
+          const counts = await this.backend.attachments().counts(String(tenant), kind);
+          return ok({ tenant, counts: Object.fromEntries(counts) });
+        }
+      }
+
       // --- reporting dimensions (classes, locations) ----------------------
       if (rest[0] === "dimensions") {
         const ctx = this.dimensionCtx(tenant);
@@ -485,6 +529,7 @@ export class LedgerService {
       if (err instanceof PayrollServiceError) return bad(err.message);
       if (err instanceof ReportingError) return bad(err.message);
       if (err instanceof DimensionServiceError) return bad(err.message);
+      if (err instanceof AttachmentError) return bad(err.message);
       return bad(err instanceof Error ? err.message : String(err));
     }
     return notFound("not found");
@@ -749,6 +794,12 @@ export class LedgerService {
         balance_minor: r.balance.minorUnits.toString(),
       })),
     });
+  }
+
+  // --- attachments -----------------------------------------------------------
+
+  private attachmentCtx(tenant: TenantId): AttachmentContext {
+    return { backend: this.backend, tenant, now: this.opts.now };
   }
 
   // --- reporting dimensions --------------------------------------------------

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from .attachment_screens import attachment_link
 from .books_screens import _card, _esc, _minor, _num, _seq, money
 
 
@@ -39,6 +40,17 @@ def _party_names(parties: Mapping[str, object]) -> dict[str, str]:
         if isinstance(p, Mapping):
             out[str(p.get("id"))] = str(p.get("name"))
     return out
+
+
+def _paperclip(
+    tenant: str, kind: str, d: Mapping[str, object],
+    counts: Mapping[str, object] | None,
+) -> str:
+    """A link to whatever evidences this document, filled when there is any."""
+    doc_id = str(d.get("id"))
+    subject = "invoice" if kind == "invoices" else "bill"
+    raw = (counts or {}).get(doc_id, 0)
+    return attachment_link(tenant, subject, doc_id, _minor(raw) or 0)
 
 
 def _tax_note(d: Mapping[str, object]) -> str:
@@ -104,6 +116,7 @@ def render_documents(
     *,
     today: str,
     can_post: bool,
+    attachment_counts: Mapping[str, object] | None = None,
     message: str = "",
     error: str = "",
 ) -> str:
@@ -139,18 +152,19 @@ def render_documents(
             f"<td>{_esc(d.get('due_date'))}</td>"
             f"{_num(d.get('total_minor'))}{_num(d.get('open_minor'))}"
             f"<td>{_status_chip(d.get('status'), overdue)}</td>"
+            f"<td>{_paperclip(tenant, kind, d, attachment_counts)}</td>"
             f"<td>{pay_cell}{_adjust_controls(tenant, kind, d, can_post)}</td></tr>"
         )
 
     empty = (
-        f'<tr><td colspan="8" class="muted" style="text-align:center;padding:24px">'
+        f'<tr><td colspan="9" class="muted" style="text-align:center;padding:24px">'
         f"No {title.lower()} yet.</td></tr>"
     )
     table = (
         '<div class="table-scroll"><table><thead><tr>'
         f"<th>{'Invoice' if is_ar else 'Bill'}</th><th>{who}</th><th>Date</th><th>Due</th>"
-        '<th class="num">Total</th><th class="num">Open</th><th>Status</th><th></th>'
-        "</tr></thead><tbody>" + ("".join(rows) or empty) + "</tbody></table></div>"
+        '<th class="num">Total</th><th class="num">Open</th><th>Status</th>'
+        "<th></th><th></th></tr></thead><tbody>" + ("".join(rows) or empty) + "</tbody></table></div>"
     )
 
     head = ""

@@ -49,6 +49,8 @@ export const TENANT_TABLES: readonly string[] = Object.freeze([
   // budgets and reporting dimensions
   "budget_line",
   "dimension_def",
+  // evidence
+  "attachment",
 ]);
 
 /**
