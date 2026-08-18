@@ -285,6 +285,25 @@ export {
   type ScheduleLineRecord,
   type MilestoneRecord,
 } from "./billing.js";
+export {
+  InMemoryInventoryStore,
+  PgInventoryStore,
+  INVENTORY_DDL,
+  InventoryError,
+  saveItem,
+  receiveStock,
+  issueStock,
+  recordCount,
+  applyReceipt,
+  applyIssue,
+  valuation,
+  itemJson,
+  movementJson,
+  type InventoryStore,
+  type ItemRecord,
+  type MovementRecord,
+  type InventoryContext,
+} from "./inventory.js";
 export { ten99Report, Ten99Error, type Ten99Context, type Ten99Json } from "./ten99.js";
 export { rlsDdl, appRoleDdl, superuserWarning, TENANT_TABLES } from "./security.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";

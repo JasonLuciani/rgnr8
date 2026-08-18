@@ -45,6 +45,9 @@ import {
 import {
   InMemoryBillingStore, PgBillingStore, type BillingStore,
 } from "./billing.js";
+import {
+  InMemoryInventoryStore, PgInventoryStore, type InventoryStore,
+} from "./inventory.js";
 import { rlsDdl } from "./security.js";
 
 /**
@@ -96,6 +99,8 @@ export interface LedgerBackend {
   purchasing(): PurchasingStore;
   /** Schedules of values and billing milestones. */
   billing(): BillingStore;
+  /** Stock items, quantities, moving-average cost and movements. */
+  inventory(): InventoryStore;
   /** Create/verify schema. Safe to run repeatedly. */
   migrate(): Promise<void>;
 }
@@ -116,6 +121,7 @@ export class InMemoryBackend implements LedgerBackend {
   private readonly workOrderStore = new InMemoryWorkOrderStore();
   private readonly purchasingStore = new InMemoryPurchasingStore();
   private readonly billingStore = new InMemoryBillingStore();
+  private readonly inventoryStore = new InMemoryInventoryStore();
   private readonly accounts = new Map<string, Map<string, Account>>();
   private readonly stores = new Map<string, InMemoryLedgerStore>();
   private readonly periodStores = new Map<string, InMemoryPeriodStore>();
@@ -218,6 +224,10 @@ export class InMemoryBackend implements LedgerBackend {
     return this.billingStore;
   }
 
+  inventory(): InventoryStore {
+    return this.inventoryStore;
+  }
+
   async migrate(): Promise<void> {
     await this.docs.migrate();
     await this.reconStore.migrate();
@@ -233,6 +243,7 @@ export class InMemoryBackend implements LedgerBackend {
     await this.workOrderStore.migrate();
     await this.purchasingStore.migrate();
     await this.billingStore.migrate();
+    await this.inventoryStore.migrate();
   }
 }
 
@@ -259,6 +270,7 @@ export class PostgresBackend implements LedgerBackend {
   private readonly workOrderStore: PgWorkOrderStore;
   private readonly purchasingStore: PgPurchasingStore;
   private readonly billingStore: PgBillingStore;
+  private readonly inventoryStore: PgInventoryStore;
 
   /**
    * @param pool     a connection pool.
@@ -290,6 +302,7 @@ export class PostgresBackend implements LedgerBackend {
     this.workOrderStore = new PgWorkOrderStore(pool);
     this.purchasingStore = new PgPurchasingStore(pool);
     this.billingStore = new PgBillingStore(pool);
+    this.inventoryStore = new PgInventoryStore(pool);
   }
 
   async migrate(): Promise<void> {
@@ -309,6 +322,7 @@ export class PostgresBackend implements LedgerBackend {
     await this.workOrderStore.migrate();
     await this.purchasingStore.migrate();
     await this.billingStore.migrate();
+    await this.inventoryStore.migrate();
     // Last, once every table exists: make the database itself enforce tenant
     // isolation, so a query that forgets its tenant filter returns nothing
     // rather than everything.
@@ -371,6 +385,10 @@ export class PostgresBackend implements LedgerBackend {
 
   billing(): BillingStore {
     return this.billingStore;
+  }
+
+  inventory(): InventoryStore {
+    return this.inventoryStore;
   }
 
   chart(tenant: TenantId): Promise<ChartOfAccounts> {

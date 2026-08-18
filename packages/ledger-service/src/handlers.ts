@@ -188,6 +188,17 @@ import {
   type BillingDraft,
 } from "./billing.js";
 import {
+  InventoryError,
+  issueStock,
+  itemJson,
+  movementJson,
+  receiveStock,
+  recordCount,
+  saveItem,
+  valuation,
+  type InventoryContext,
+} from "./inventory.js";
+import {
   ReconcileError,
   finishReconciliation,
   importStatement,
@@ -449,6 +460,66 @@ export class LedgerService {
         return ok(await ten99Report(
           { backend: this.backend, tenant, currency: this.currency }, rest[1],
         ));
+      }
+
+      // --- inventory --------------------------------------------------------
+      if (rest[0] === "inventory") {
+        const ctx = this.inventoryCtx(tenant);
+        const store = this.backend.inventory();
+        if (rest.length === 1 && req.method === "GET") return ok(await valuation(ctx));
+        if (rest.length === 2 && rest[1] === "items") {
+          if (req.method === "GET") {
+            const items = await store.listItems(String(tenant));
+            return ok({ tenant, items: items.map(itemJson) });
+          }
+          if (req.method === "POST") {
+            const data = parseJson(req.body);
+            if (!data) return bad("invalid JSON body");
+            return created({ tenant, item: itemJson(await saveItem(ctx, data)) });
+          }
+        }
+        if (rest.length === 3 && rest[1] === "items" && req.method === "GET") {
+          const item = await store.getItem(String(tenant), rest[2]!.toUpperCase());
+          if (!item) return notFound(`unknown item ${rest[2]}`);
+          return ok({
+            tenant,
+            item: itemJson(item),
+            movements: (await store.listMovements(String(tenant), item.sku)).map(movementJson),
+          });
+        }
+        if (rest.length === 2 && rest[1] === "movements" && req.method === "GET") {
+          const sku = req.query["sku"];
+          const movements = await store.listMovements(
+            String(tenant), sku ? sku.toUpperCase() : undefined,
+          );
+          return ok({ tenant, movements: movements.map(movementJson) });
+        }
+        if (rest.length === 2 && rest[1] === "receipts" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const result = await receiveStock(ctx, data);
+          return created({
+            tenant, item: itemJson(result.item), entry_id: result.entryId,
+          });
+        }
+        if (rest.length === 2 && rest[1] === "issues" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const result = await issueStock(ctx, data);
+          return created({
+            tenant, item: itemJson(result.item),
+            entry_id: result.entryId, value_minor: result.valueMinor,
+          });
+        }
+        if (rest.length === 2 && rest[1] === "counts" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const result = await recordCount(ctx, data);
+          return created({
+            tenant, item: itemJson(result.item),
+            entry_id: result.entryId, difference_milli: result.differenceMilli,
+          });
+        }
       }
 
       // --- work in progress -------------------------------------------------
@@ -1143,6 +1214,7 @@ export class LedgerService {
       if (err instanceof PurchasingError) return bad(err.message);
       if (err instanceof WipError) return bad(err.message);
       if (err instanceof BillingError) return bad(err.message);
+      if (err instanceof InventoryError) return bad(err.message);
       return bad(err instanceof Error ? err.message : String(err));
     }
     return notFound("not found");
@@ -1448,6 +1520,12 @@ export class LedgerService {
   }
 
   // --- jobs ------------------------------------------------------------------
+
+  private inventoryCtx(tenant: TenantId): InventoryContext {
+    return {
+      backend: this.backend, tenant, currency: this.currency, now: this.opts.now,
+    };
+  }
 
   private billingCtx(tenant: TenantId): BillingContext {
     return {
