@@ -86,4 +86,75 @@ describe("real PostgreSQL", { skip: URL_ ? false : "set RGNR8_TEST_DATABASE_URL 
 
     await poolB.end();
   });
+
+  test("AR/AP documents are durable and tie to the control accounts", async () => {
+    const tenant = `arap_${`${Date.now()}`.slice(-8)}`;
+
+    const poolA = new pg.Pool({ connectionString: URL_ });
+    const backendA = new PostgresBackend(poolA as never);
+    await backendA.migrate();
+    const svcA = new LedgerService(backendA, { now: () => NOW });
+    const callA = (method: string, path: string, body: unknown = ""): Promise<{ status: number; body: unknown }> =>
+      svcA.handle({
+        method, path, query: {},
+        body: typeof body === "string" ? body : JSON.stringify(body),
+        headers: {},
+      });
+
+    await callA("POST", `/t/${tenant}/accounts/seed`, { category: "PROFESSIONAL_SERVICES" });
+    await callA("POST", `/t/${tenant}/customers`, { id: "c1", name: "Northwind", terms_days: 30 });
+    await callA("POST", `/t/${tenant}/vendors`, { id: "v1", name: "Copyshop", terms_days: 15 });
+
+    assert.equal((await callA("POST", `/t/${tenant}/invoices`, {
+      id: "INV-1", party_id: "c1", date: "2026-08-01", memo: "Consulting",
+      lines: [{ description: "Work", quantity: 4, unit_amount_minor: "50000", account_code: "4100" }],
+    })).status, 201);
+    assert.equal((await callA("POST", `/t/${tenant}/bills`, {
+      id: "B-1", party_id: "v1", date: "2026-08-02",
+      lines: [{ unit_amount_minor: "36000", account_code: "6400" }],
+    })).status, 201);
+    // collect half the invoice
+    assert.equal((await callA("POST", `/t/${tenant}/invoices/INV-1/payments`, {
+      date: "2026-08-15", amount_minor: "100000",
+    })).status, 201);
+    await poolA.end();
+
+    // --- a fresh service instance over the same database ---
+    const poolB = new pg.Pool({ connectionString: URL_ });
+    const svcB = new LedgerService(new PostgresBackend(poolB as never), { now: () => NOW });
+    const get = async (path: string, query: Record<string, string> = {}): Promise<Record<string, unknown>> =>
+      (await svcB.handle({ method: "GET", path, query, body: "", headers: {} }))
+        .body as Record<string, unknown>;
+
+    const invoices = (await get(`/t/${tenant}/invoices`))["documents"] as Array<Record<string, unknown>>;
+    assert.equal(invoices.length, 1, "the invoice survived the restart");
+    assert.equal(invoices[0]!["total_minor"], "200000");
+    assert.equal(invoices[0]!["open_minor"], "100000");
+    assert.equal(invoices[0]!["status"], "PARTIAL");
+    assert.equal(invoices[0]!["due_date"], "2026-08-31");
+    assert.equal((invoices[0]!["lines"] as unknown[]).length, 1);
+
+    const bills = (await get(`/t/${tenant}/bills`))["documents"] as Array<Record<string, unknown>>;
+    assert.equal(bills[0]!["open_minor"], "36000");
+
+    // payments persisted against the document
+    const detail = await get(`/t/${tenant}/invoices/INV-1`);
+    assert.equal((detail["payments"] as unknown[]).length, 1);
+
+    // and the CONTROL ACCOUNTS still tie to the open documents
+    const tb = await get(`/t/${tenant}/trial-balance`);
+    const signed = (code: string): bigint => {
+      const r = (tb["rows"] as Array<Record<string, unknown>>).find((x) => x["code"] === code);
+      return r ? BigInt(String(r["debit_minor"])) - BigInt(String(r["credit_minor"])) : 0n;
+    };
+    assert.equal(tb["in_balance"], true);
+    assert.equal(signed("1200"), 100000n, "AR control == open receivables");
+    assert.equal(-signed("2000"), 36000n, "AP control == open payables");
+
+    // aging reads from the durable open items
+    const aging = await get(`/t/${tenant}/aging/ar`, { as_of: "2026-08-31" });
+    assert.equal(aging["grand_total_minor"], "100000");
+
+    await poolB.end();
+  });
 });
