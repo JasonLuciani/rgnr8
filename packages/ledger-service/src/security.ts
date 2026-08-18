@@ -72,6 +72,9 @@ export const TENANT_TABLES: readonly string[] = Object.freeze([
   "billing_milestone",
   "inventory_item",
   "inventory_movement",
+  "crm_lead",
+  "crm_opportunity",
+  "crm_event",
 ]);
 
 /**

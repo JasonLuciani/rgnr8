@@ -304,6 +304,28 @@ export {
   type MovementRecord,
   type InventoryContext,
 } from "./inventory.js";
+export {
+  InMemoryCrmStore,
+  PgCrmStore,
+  CRM_DDL,
+  STAGES,
+  CrmError,
+  saveLead,
+  convertLead,
+  saveOpportunity,
+  attachEstimate,
+  winOpportunity,
+  loseOpportunity,
+  recordEvent,
+  pipeline,
+  events,
+  leadJson,
+  opportunityJson,
+  type CrmStore,
+  type LeadRecord,
+  type OpportunityRecord,
+  type CrmContext,
+} from "./crm.js";
 export { ten99Report, Ten99Error, type Ten99Context, type Ten99Json } from "./ten99.js";
 export { rlsDdl, appRoleDdl, superuserWarning, TENANT_TABLES } from "./security.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";

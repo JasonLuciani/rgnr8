@@ -199,6 +199,21 @@ import {
   type InventoryContext,
 } from "./inventory.js";
 import {
+  CrmError,
+  attachEstimate,
+  convertLead,
+  events as crmEvents,
+  leadJson,
+  loseOpportunity,
+  opportunityJson,
+  pipeline,
+  recordEvent,
+  saveLead,
+  saveOpportunity,
+  winOpportunity,
+  type CrmContext,
+} from "./crm.js";
+import {
   ReconcileError,
   finishReconciliation,
   importStatement,
@@ -459,6 +474,102 @@ export class LedgerService {
       if (rest[0] === "1099" && rest.length === 2 && req.method === "GET") {
         return ok(await ten99Report(
           { backend: this.backend, tenant, currency: this.currency }, rest[1],
+        ));
+      }
+
+      // --- the pipeline -----------------------------------------------------
+      if (rest[0] === "leads") {
+        const ctx = this.crmCtx(tenant);
+        if (rest.length === 1 && req.method === "GET") {
+          const leads = await this.backend.crm().listLeads(String(tenant));
+          return ok({ tenant, leads: leads.map(leadJson) });
+        }
+        if (rest.length === 1 && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          return created({ tenant, lead: leadJson(await saveLead(ctx, data)) });
+        }
+        if (rest.length === 2 && req.method === "GET") {
+          const lead = await this.backend.crm().getLead(String(tenant), rest[1]!);
+          if (!lead) return notFound(`unknown lead ${rest[1]}`);
+          return ok({ tenant, lead: leadJson(lead) });
+        }
+        if (rest.length === 3 && rest[2] === "convert" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const result = await convertLead(ctx, rest[1]!, data);
+          return created({
+            tenant,
+            lead: leadJson(result.lead),
+            customer_id: result.customerId,
+            ...(result.opportunity
+              ? { opportunity: opportunityJson(result.opportunity) }
+              : {}),
+          });
+        }
+      }
+
+      if (rest[0] === "opportunities") {
+        const ctx = this.crmCtx(tenant);
+        if (rest.length === 1 && req.method === "GET") {
+          const list = await this.backend.crm().listOpportunities(String(tenant));
+          return ok({ tenant, opportunities: list.map(opportunityJson) });
+        }
+        if (rest.length === 1 && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          return created({
+            tenant, opportunity: opportunityJson(await saveOpportunity(ctx, data)),
+          });
+        }
+        if (rest.length === 2 && req.method === "GET") {
+          const o = await this.backend.crm().getOpportunity(String(tenant), rest[1]!);
+          if (!o) return notFound(`unknown opportunity ${rest[1]}`);
+          return ok({ tenant, opportunity: opportunityJson(o) });
+        }
+        if (rest.length === 3 && rest[2] === "estimate" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const o = await this.backend.crm().getOpportunity(String(tenant), rest[1]!);
+          if (!o) return notFound(`unknown opportunity ${rest[1]}`);
+          // Raise the estimate for the opportunity's customer, then link it.
+          const estimate = await saveEstimate(this.estimateCtx(tenant), {
+            ...(data as Parameters<typeof saveEstimate>[1]),
+            customer_id: str(data["customer_id"]).trim() || o.customerId,
+            memo: str(data["memo"]).trim() || o.name,
+          });
+          const linked = await attachEstimate(ctx, o.id, estimate.id);
+          return created({
+            tenant,
+            opportunity: opportunityJson(linked),
+            estimate: estimateJson(estimate),
+          });
+        }
+        if (rest.length === 3 && rest[2] === "win" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          return ok({
+            tenant, opportunity: opportunityJson(await winOpportunity(ctx, rest[1]!, data)),
+          });
+        }
+        if (rest.length === 3 && rest[2] === "lose" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          return ok({
+            tenant, opportunity: opportunityJson(await loseOpportunity(ctx, rest[1]!, data)),
+          });
+        }
+      }
+
+      if (rest[0] === "pipeline" && rest.length === 1 && req.method === "GET") {
+        return ok(await pipeline(this.crmCtx(tenant), {
+          ...(req.query["owner"] ? { owner: req.query["owner"] } : {}),
+        }));
+      }
+
+      if (rest[0] === "events" && rest.length === 1 && req.method === "GET") {
+        return ok(await crmEvents(
+          this.crmCtx(tenant), req.query["since"], req.query["limit"],
         ));
       }
 
@@ -787,6 +898,12 @@ export class LedgerService {
           const data = parseJson(req.body);
           if (!data) return bad("invalid JSON body");
           const result = await acceptEstimate(ctx, rest[1]!, data);
+          // The feed an external CRM reads should know the deal closed.
+          await recordEvent(this.crmCtx(tenant), "estimate.accepted", result.estimate.id, {
+            customer_id: result.estimate.customerId,
+            job_id: result.jobId,
+            job_created: result.created,
+          });
           return ok({
             tenant,
             estimate: estimateJson(result.estimate),
@@ -1215,6 +1332,7 @@ export class LedgerService {
       if (err instanceof WipError) return bad(err.message);
       if (err instanceof BillingError) return bad(err.message);
       if (err instanceof InventoryError) return bad(err.message);
+      if (err instanceof CrmError) return bad(err.message);
       return bad(err instanceof Error ? err.message : String(err));
     }
     return notFound("not found");
@@ -1520,6 +1638,12 @@ export class LedgerService {
   }
 
   // --- jobs ------------------------------------------------------------------
+
+  private crmCtx(tenant: TenantId): CrmContext {
+    return {
+      backend: this.backend, tenant, currency: this.currency, now: this.opts.now,
+    };
+  }
 
   private inventoryCtx(tenant: TenantId): InventoryContext {
     return {
