@@ -480,3 +480,78 @@ def test_go_live_rejects_unmappable_qbo_account_type() -> None:
         "qbo_trial_balance": [{"code": "9", "name": "Mystery", "account_type": "Wizardry", "debit_minor": 1, "credit_minor": 0}],
     })
     assert app.handle(Request("POST", "/operator/tenant/seed/go-live", op, body)).status == 400
+
+
+class _FakeLedger:
+    """Stands in for the ledger service in go-live tests."""
+
+    def __init__(self, ok: bool = True) -> None:
+        self.ok = ok
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def request(self, method: str, path: str, body: str, headers: object):  # type: ignore[no-untyped-def]
+        from rgnr8_web import LedgerResponse
+        self.calls.append((path, json.loads(body) if body else {}))
+        if self.ok:
+            return LedgerResponse(200, {"opening_entry_id": "acme:1", "accounts": 31,
+                                        "locked_period": "2026-08", "opening_total_minor": "2500000"})
+        return LedgerResponse(400, {"error": "opening balances do not net"})
+
+
+def _app_with_ledger(ok: bool = True):  # type: ignore[no-untyped-def]
+    from rgnr8_web import LedgerClient
+    billing = BillingService(InMemoryAccountStore(), FakeBillingProvider(), clock=lambda: NOW_EPOCH)
+    fleet = Fleet(jwt_secret=SECRET, clock=lambda: NOW_EPOCH)
+    directory = InMemoryUserDirectory()
+    audit = InMemoryAuditLog()
+    admin = PlatformAdmin(billing, fleet, directory, audit, clock=lambda: NOW_EPOCH)
+    transport = _FakeLedger(ok)
+    app = OperatorApp(fleet, billing, directory, audit, SECRET, clock=lambda: NOW,
+                      ledger=LedgerClient(transport))  # type: ignore[arg-type]
+    return app, fleet, admin, audit, transport
+
+
+GO_LIVE_BODY = json.dumps({
+    "source_system": "quickbooks", "cutover_date": "2026-08-31", "coa_category": "SERVICE_GENERAL",
+    "qbo_trial_balance": [
+        {"code": "1000", "name": "Checking", "account_type": "Bank",
+         "debit_minor": 2500000, "credit_minor": 0},
+        {"code": "3900", "name": "Retained Earnings", "account_type": "Equity",
+         "debit_minor": 0, "credit_minor": 2500000},
+    ],
+})
+
+
+def test_go_live_actually_executes_against_the_ledger_service() -> None:
+    app, fleet, admin, audit, transport = _app_with_ledger()
+    _bootstrap_tenant(admin)
+    op = {"authorization": f"Bearer {_staff_token(admin, fleet, 'dev@rgnr8.co', Role.OPERATOR)}"}
+    r = app.handle(Request("POST", "/operator/tenant/seed/go-live", op, GO_LIVE_BODY))
+    assert r.status == 200, r.body
+    out = json.loads(r.body)
+    assert out["executed"] is True
+    assert out["ledger"]["opening_entry_id"] == "acme:1"
+    # the ledger service really received the go-live/1 request
+    path, payload = transport.calls[0]
+    assert path == "/t/seed/go-live"
+    assert payload["contract"] == "go-live/1"
+    assert payload["source_accounts"][0]["subtype"] == "BANK"
+    assert any(e.action == "tenant.go_live" for e in audit.events(tenant_id="seed"))
+
+
+def test_a_ledger_refusal_fails_the_go_live_rather_than_claiming_success() -> None:
+    app, fleet, admin, _audit, _t = _app_with_ledger(ok=False)
+    _bootstrap_tenant(admin)
+    op = {"authorization": f"Bearer {_staff_token(admin, fleet, 'dev@rgnr8.co', Role.OPERATOR)}"}
+    r = app.handle(Request("POST", "/operator/tenant/seed/go-live", op, GO_LIVE_BODY))
+    assert r.status == 502
+    assert "refused" in json.loads(r.body)["error"]
+
+
+def test_without_a_ledger_service_go_live_is_honestly_recorded_only() -> None:
+    app, fleet, admin, _billing, _dir, _audit = _app()
+    _bootstrap_tenant(admin)
+    op = {"authorization": f"Bearer {_staff_token(admin, fleet, 'dev@rgnr8.co', Role.OPERATOR)}"}
+    r = app.handle(Request("POST", "/operator/tenant/seed/go-live", op, GO_LIVE_BODY))
+    assert r.status == 200
+    assert json.loads(r.body)["executed"] is False

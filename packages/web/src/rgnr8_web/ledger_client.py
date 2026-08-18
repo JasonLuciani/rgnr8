@@ -139,6 +139,25 @@ class LedgerClient:
             payload["idempotency_key"] = idempotency_key
         return self._call("POST", f"/t/{tenant}/entries", payload)
 
+    def ingest(
+        self,
+        tenant: str,
+        transactions: list[dict[str, object]],
+        *,
+        source: str = "feed",
+        accounts: Mapping[str, str] | None = None,
+        rules: list[dict[str, object]] | None = None,
+    ) -> LedgerResponse:
+        """Push a batch of bank/card/QBO feed transactions into the books. The
+        ledger de-duplicates by transaction id, so re-syncing an overlapping
+        window is safe."""
+        payload: dict[str, object] = {"source": source, "transactions": transactions}
+        if accounts:
+            payload["accounts"] = dict(accounts)
+        if rules:
+            payload["rules"] = rules
+        return self._call("POST", f"/t/{tenant}/ingest", payload)
+
     def create_account(
         self, tenant: str, code: str, name: str, *, subtype: str = "", type_: str = ""
     ) -> LedgerResponse:

@@ -35,6 +35,7 @@ import {
   subtypeCashFlowClassifier,
 } from "@rgnr8/financial-statements";
 import type { LedgerBackend } from "./backend.js";
+import { ingestTransactions, type IngestRequest } from "./ingest.js";
 
 /**
  * The service's request handlers — pure `(request) => response`, with no HTTP
@@ -207,6 +208,9 @@ export class LedgerService {
       if (rest[0] === "periods" && rest.length === 3 && rest[2] === "lock" && req.method === "POST") {
         await this.backend.periods(tenant).lock(tenant, asPeriodKey(rest[1]!));
         return ok({ tenant, period: rest[1], locked: true });
+      }
+      if (rest[0] === "ingest" && req.method === "POST") {
+        return await this.ingest(tenant, req.body);
       }
       if (rest[0] === "go-live" && req.method === "POST") {
         return await this.goLive(tenant, req.body);
@@ -470,6 +474,37 @@ export class LedgerService {
         credit_minor: r.credit.minorUnits.toString(),
         balance_minor: r.balance.minorUnits.toString(),
       })),
+    });
+  }
+
+  // --- feed → ledger --------------------------------------------------------
+
+  /**
+   * Post a batch of bank/card/QBO feed transactions. This is what keeps the
+   * books current between manual entries; it is idempotent, so a sync that
+   * overlaps a previous window re-reports rather than double-posts.
+   */
+  private async ingest(tenant: TenantId, body: string): Promise<ServiceResponse> {
+    const data = parseJson(body);
+    if (!data) return bad("invalid JSON body");
+    const chart = await this.backend.chart(tenant);
+    const report = await ingestTransactions(
+      data as unknown as IngestRequest,
+      chart,
+      this.backend.store(tenant),
+      this.backend.periods(tenant),
+      tenant,
+      this.currency,
+      this.opts.now(),
+    );
+    return ok({
+      tenant,
+      posted: report.posted,
+      already_posted: report.alreadyPosted,
+      skipped_transfers: report.skippedTransfers,
+      skipped_zero: report.skippedZero,
+      blocked_by_closed_period: report.blockedByClosedPeriod,
+      failed: report.failed.map((f) => ({ key: f.key, error: f.error })),
     });
   }
 

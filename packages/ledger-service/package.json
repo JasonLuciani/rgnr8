@@ -1,12 +1,19 @@
 {
   "name": "@rgnr8/ledger-service",
   "version": "0.1.0",
-  "description": "The RGNR8 accounting core as a running HTTP service — chart of accounts, journal posting, register, trial balance, statements, go-live.",
+  "description": "The RGNR8 accounting core as a running HTTP service \u2014 chart of accounts, journal posting, register, trial balance, statements, go-live.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "bin": { "rgnr8-ledger-service": "dist/bin.js" },
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "bin": {
+    "rgnr8-ledger-service": "dist/bin.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -19,7 +26,8 @@
     "@rgnr8/ledger-kernel": "^0.1.0",
     "@rgnr8/ledger-postgres": "^0.1.0",
     "@rgnr8/financial-statements": "^0.1.0",
-    "pg": "^8.13.1"
+    "pg": "^8.13.1",
+    "@rgnr8/ingestion": "^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

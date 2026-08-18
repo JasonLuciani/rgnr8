@@ -29,6 +29,7 @@ from rgnr8_billing import BillingError, BillingService, EntitlementError, Tier
 from rgnr8_web import (
     AuditSink,
     AuthService,
+    LedgerClient,
     JwtError,
     Request,
     Response,
@@ -94,6 +95,7 @@ class OperatorApp:
         *,
         clock: Callable[[], datetime],
         auth_service: AuthService | None = None,
+        ledger: LedgerClient | None = None,
     ) -> None:
         self._fleet = fleet
         self._billing = billing
@@ -104,6 +106,9 @@ class OperatorApp:
         # When set, staff can sign into the console in a browser (email+password
         # → session cookie). Without it, the console is bearer-JWT only (as before).
         self._auth_service = auth_service
+        # When wired, go-live doesn't just *record* the decision — it executes it
+        # against the ledger service, so the client's books actually open.
+        self._ledger = ledger
         # One shared admin path with the platform API: provision + entitlement-
         # checked onboarding + owner seating + audit, all in PlatformAdmin.
         self._admin = PlatformAdmin(
@@ -474,11 +479,29 @@ class OperatorApp:
         accounts = request["source_accounts"]
         n_accounts = len(accounts) if isinstance(accounts, list) else 0
         self._onboarding.set_go_live_request(tenant_id, request)
+
+        # Execute it. Without a ledger service we can only record the intent —
+        # and we say so, rather than reporting a go-live that never happened.
+        executed: dict[str, object] | None = None
+        if self._ledger is not None:
+            res = self._ledger.go_live(tenant_id, request)
+            if not res.ok:
+                return _json(502, {"error": f"ledger service refused the go-live: {res.error()}",
+                                   "go_live_request": request})
+            executed = res.body
+
         self._onboarding.mark_cutover(tenant_id, source_system, cutover_date,
                                       marked_by=operator, marked_at=self._epoch())
         self._audit.record(operator, "tenant.go_live", self._epoch(), tenant_id=tenant_id,
-                           detail=f"{source_system}@{cutover_date} accounts={n_accounts}")
-        return _json(200, {"tenant_id": tenant_id, "live": True, "go_live_request": request})
+                           detail=f"{source_system}@{cutover_date} accounts={n_accounts}"
+                                  f"{'' if executed else ' (recorded only — no ledger service)'}")
+        return _json(200, {
+            "tenant_id": tenant_id,
+            "live": True,
+            "executed": executed is not None,
+            "ledger": executed,
+            "go_live_request": request,
+        })
 
     def _tenant_users(self, tenant_id: str) -> Response:
         if tenant_id not in self._fleet.tenants:
