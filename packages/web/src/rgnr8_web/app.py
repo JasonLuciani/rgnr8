@@ -84,6 +84,11 @@ from .recurring_screens import (
     render_recurring, render_recurring_unavailable, render_run_result,
 )
 from .job_screens import render_job, render_jobs, render_jobs_unavailable
+from .inventory_screens import render_inventory, render_inventory_unavailable
+from .wip_screens import render_wip, render_wip_unavailable
+from .consolidation_screens import (
+    render_consolidation, render_consolidation_unavailable, render_groups,
+)
 from .workorder_screens import (
     render_work_order, render_work_orders, render_work_orders_unavailable,
 )
@@ -890,6 +895,45 @@ class WebApp:
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "audit":
             return self._require(subject, token_tenant, parts[1], P.MANAGE_USERS,
                                  lambda t: self._audit_page(subject, t))
+
+        # --- inventory ---------------------------------------------------------
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "inventory":
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._inventory_page(subject, t, req.query))
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "inventory"
+                and parts[3] in ("items", "receipts", "issues", "counts")
+                and req.method == "POST"):
+            action = parts[3]
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._inventory_action(subject, t, action, req.body))
+
+        # --- work in progress ---------------------------------------------------
+        if len(parts) == 4 and parts[0] == "t" and parts[2] == "books" and parts[3] == "wip":
+            if req.method == "POST":
+                return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                     lambda t: self._wip_post(subject, t, req.body))
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._wip_page(subject, t, req.query))
+
+        # --- consolidation ------------------------------------------------------
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "consolidation":
+            if req.method == "POST":
+                return self._require(subject, token_tenant, parts[1], P.MANAGE_CLOSE,
+                                     lambda t: self._group_save(subject, t, req.body))
+            return self._require(subject, token_tenant, parts[1], P.VIEW_PACKAGE,
+                                 lambda t: self._groups_page(subject, t, req.query))
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "consolidation"
+                and req.method == "GET"):
+            group_id = parts[3]
+            return self._require(subject, token_tenant, parts[1], P.VIEW_PACKAGE,
+                                 lambda t: self._consolidation_page(subject, t, group_id,
+                                                                    req.query))
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "consolidation"
+                and parts[4] == "eliminations" and req.method == "POST"):
+            group_id = parts[3]
+            return self._require(subject, token_tenant, parts[1], P.MANAGE_CLOSE,
+                                 lambda t: self._elimination_save(subject, t, group_id,
+                                                                  req.body))
 
         # --- work orders -------------------------------------------------------
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "work-orders":
@@ -2169,6 +2213,219 @@ class WebApp:
     # --- estimates and the pipeline -------------------------------------------
 
     # --- work orders and the two kinds of order -------------------------------
+
+    # --- inventory, work in progress and consolidation ------------------------
+
+    def _inventory_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "books", render_inventory_unavailable())
+        valuation = self._ledger.inventory(t.tenant_id)
+        if not valuation.ok:
+            return self._shell(subject, t, "books",
+                               render_inventory_unavailable(valuation.error()))
+        jobs = self._ledger.jobs(t.tenant_id)
+        cost_codes = self._ledger.cost_codes(t.tenant_id)
+        accounts = self._ledger.accounts(t.tenant_id)
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_edit = self._policy is None or Permission.POST_JOURNAL in perms
+        return self._shell(subject, t, "books", render_inventory(
+            t.tenant_id, valuation.body,
+            jobs.body if jobs.ok else {},
+            cost_codes.body if cost_codes.ok else {},
+            accounts.body if accounts.ok else {},
+            can_edit=can_edit,
+            message=query.get("done", ""), error=query.get("err", ""),
+        ))
+
+    def _inventory_action(
+        self, subject: str, t: _Tenant, action: str, body: str,
+    ) -> Response:
+        back = f"/t/{t.tenant_id}/inventory"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        try:
+            if action == "items":
+                payload: dict[str, object] = {
+                    "sku": str(data.get("sku", "")).strip(),
+                    "name": str(data.get("name", "")).strip(),
+                    "unit": str(data.get("unit", "")).strip(),
+                    "reorder_point_milli": str(
+                        _quantity_to_milli(str(data.get("reorder_point", "0")))
+                        if str(data.get("reorder_point", "")).strip() else 0
+                    ),
+                }
+                for key in ("inventory_account_code", "cost_account_code",
+                            "income_account_code"):
+                    if str(data.get(key, "")).strip():
+                        payload[key] = str(data.get(key, "")).strip()
+                res = self._ledger.save_item(t.tenant_id, payload)
+                note = "Item saved"
+            elif action == "receipts":
+                res = self._ledger.receive_stock(t.tenant_id, {
+                    "sku": str(data.get("sku", "")).strip(),
+                    "date": str(data.get("date", "")).strip() or self._today(t),
+                    "quantity_milli": str(_quantity_to_milli(str(data.get("quantity", "")))),
+                    "unit_cost_minor": str(
+                        self._amount_to_minor(str(data.get("unit_cost", ""))) or 0
+                    ),
+                    "paid_from_code": str(data.get("paid_from_code", "")).strip(),
+                })
+                note = "Stock received"
+            elif action == "issues":
+                res = self._ledger.issue_stock(t.tenant_id, {
+                    "sku": str(data.get("sku", "")).strip(),
+                    "date": str(data.get("date", "")).strip() or self._today(t),
+                    "quantity_milli": str(_quantity_to_milli(str(data.get("quantity", "")))),
+                    "job_id": str(data.get("job_id", "")).strip(),
+                    "cost_code": str(data.get("cost_code", "")).strip(),
+                })
+                note = "Issued to the job at the moving average"
+            else:
+                res = self._ledger.count_stock(t.tenant_id, {
+                    "sku": str(data.get("sku", "")).strip(),
+                    "date": str(data.get("date", "")).strip() or self._today(t),
+                    "counted_milli": str(_quantity_to_milli(str(data.get("counted", "")))),
+                })
+                note = "Counted"
+                if res.ok and str(res.body.get("difference_milli", "0")) == "0":
+                    note = "Counted — the shelf and the books already agreed"
+        except ValueError as exc:
+            return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, f"inventory.{action}", self._session_clock(),
+                               tenant_id=t.tenant_id, target=str(data.get("sku", "")))
+        return _redirect(f"{back}?done={_qs_escape(note)}")
+
+    def _wip_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "books", render_wip_unavailable())
+        through = query.get("through", "").strip() or self._today(t)
+        schedule = self._ledger.wip(t.tenant_id, through=through)
+        if not schedule.ok:
+            return self._shell(subject, t, "books", render_wip_unavailable(schedule.error()))
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_post = self._policy is None or Permission.POST_JOURNAL in perms
+        return self._shell(subject, t, "books", render_wip(
+            t.tenant_id, schedule.body, through, can_post=can_post,
+            message=query.get("done", ""), error=query.get("err", ""),
+        ))
+
+    def _wip_post(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/books/wip"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        res = self._ledger.post_wip(t.tenant_id, {
+            "date": str(data.get("date", "")).strip() or self._today(t),
+            "through": str(data.get("through", "")).strip(),
+            "include_loss_provision": bool(
+                str(data.get("include_loss_provision", "")).strip()
+            ),
+        })
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "wip.posted", self._session_clock(),
+                               tenant_id=t.tenant_id, target=str(data.get("date", "")))
+        note = str(res.body.get("reason", "")) or "The books now agree with the schedule"
+        return _redirect(f"{back}?done={_qs_escape(note)}")
+
+    def _groups_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "reports", render_consolidation_unavailable())
+        groups = self._ledger.entity_groups(t.tenant_id)
+        if not groups.ok:
+            return self._shell(subject, t, "reports",
+                               render_consolidation_unavailable(groups.error()))
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_edit = self._policy is None or Permission.MANAGE_CLOSE in perms
+        return self._shell(subject, t, "reports", render_groups(
+            t.tenant_id, groups.body, can_edit=can_edit,
+            message=query.get("done", ""), error=query.get("err", ""),
+        ))
+
+    def _consolidation_page(
+        self, subject: str, t: _Tenant, group_id: str, query: "dict[str, str]",
+    ) -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "reports", render_consolidation_unavailable())
+        through = query.get("through", "").strip()
+        res = self._ledger.consolidation_report(
+            t.tenant_id, group_id, through=through,
+            allow_mismatch=query.get("allow_mismatch", "") == "1",
+        )
+        if not res.ok:
+            return self._shell(subject, t, "reports",
+                               render_consolidation_unavailable(res.error()))
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_edit = self._policy is None or Permission.MANAGE_CLOSE in perms
+        return self._shell(subject, t, "reports", render_consolidation(
+            t.tenant_id, res.body, can_edit=can_edit, through=through,
+            message=query.get("done", ""), error=query.get("err", ""),
+        ))
+
+    def _group_save(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/consolidation"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        members = [
+            {"tenant_id": m.strip()}
+            for m in str(data.get("members", "")).split(",") if m.strip()
+        ]
+        res = self._ledger.save_entity_group(t.tenant_id, {
+            "name": str(data.get("name", "")).strip(),
+            "members": members,
+            "intercompany_codes": [
+                c.strip() for c in str(data.get("intercompany_codes", "")).split(",")
+                if c.strip()
+            ],
+        })
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "consolidation.group", self._session_clock(),
+                               tenant_id=t.tenant_id, target=str(data.get("name", "")))
+        return _redirect(f"{back}?done={_qs_escape('Group created')}")
+
+    def _elimination_save(
+        self, subject: str, t: _Tenant, group_id: str, body: str,
+    ) -> Response:
+        back = f"/t/{t.tenant_id}/consolidation/{group_id}"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        lines: list[dict[str, object]] = []
+        try:
+            for i in (1, 2):
+                code = str(data.get(f"code{i}", "")).strip()
+                if not code:
+                    continue
+                debit = self._amount_to_minor(str(data.get(f"debit{i}", "")))
+                credit = self._amount_to_minor(str(data.get(f"credit{i}", "")))
+                if debit and credit:
+                    raise ValueError(f"line {i}: a debit or a credit, not both")
+                if debit:
+                    lines.append({"account_code": code, "side": "DEBIT",
+                                  "amount_minor": str(debit)})
+                elif credit:
+                    lines.append({"account_code": code, "side": "CREDIT",
+                                  "amount_minor": str(credit)})
+        except ValueError as exc:
+            return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+        res = self._ledger.save_elimination(t.tenant_id, group_id, {
+            "description": str(data.get("description", "")).strip(),
+            "lines": lines,
+        })
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "consolidation.elimination", self._session_clock(),
+                               tenant_id=t.tenant_id, target=group_id)
+        return _redirect(f"{back}?done={_qs_escape('Elimination added')}")
 
     def _work_orders_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
         if self._ledger is None:

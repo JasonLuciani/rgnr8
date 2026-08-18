@@ -151,7 +151,9 @@ def render_books_home(
         f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/budget">Budget</a>'
         f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/reconcile">Reconcile</a>'
         f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/dimensions">Classes</a>'
-        f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/recurring">Recurring</a></span>'
+        f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/recurring">Recurring</a>'
+        f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/wip">Work in progress</a>'
+        f' · <a class="btn-link" href="/t/{_esc(tenant)}/inventory">Inventory</a></span>'
     )
     out = ""
     if message:
