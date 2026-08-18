@@ -35,6 +35,14 @@ export interface DocumentLine {
   readonly accountId?: AccountId;
   /** Whether sales tax applies to this line (default true; falls back to the item). */
   readonly taxable?: boolean;
+  /**
+   * Reporting dimensions for this line — class, location, and (for a business
+   * that runs work as jobs) `job` and `cost_code`. Carried through to the
+   * journal line, because a subcontractor's bill IS the job cost: making the
+   * document post to the job directly is what stops job costing from becoming a
+   * second set of books maintained alongside the first.
+   */
+  readonly dimensions?: Readonly<Record<string, string>>;
 }
 
 export interface InvoiceDoc {
@@ -62,6 +70,7 @@ export interface ResolvedLine {
   readonly amount: Money; // unitAmount * quantity
   readonly accountId: AccountId;
   readonly taxable: boolean;
+  readonly dimensions?: Readonly<Record<string, string>>;
 }
 
 export class DocumentError extends Error {}
@@ -101,6 +110,9 @@ function resolveLine(
     amount: unitAmount.timesInteger(quantity),
     accountId,
     taxable,
+    ...(line.dimensions && Object.keys(line.dimensions).length > 0
+      ? { dimensions: line.dimensions }
+      : {}),
   };
 }
 
@@ -171,6 +183,7 @@ export function anchoredCommand(
     side: lineSide,
     amount: l.amount,
     ...(l.description !== "" ? { memo: l.description } : {}),
+    ...(l.dimensions ? { dimensions: l.dimensions } : {}),
   }));
   const journal = anchor.side === "DEBIT" ? [anchorLine, ...itemLines] : [...itemLines, anchorLine];
   return command(idKey, entryDate, journal, ctx, memo);

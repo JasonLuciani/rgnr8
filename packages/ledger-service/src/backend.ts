@@ -30,6 +30,9 @@ import {
   InMemoryRecurringStore, PgRecurringStore, type RecurringStore,
 } from "./recurring.js";
 import { InMemoryJobStore, PgJobStore, type JobStore } from "./jobs.js";
+import {
+  InMemoryEstimateStore, PgEstimateStore, type EstimateStore,
+} from "./estimates.js";
 import { rlsDdl } from "./security.js";
 
 /**
@@ -71,6 +74,8 @@ export interface LedgerBackend {
   recurring(): RecurringStore;
   /** Jobs, cost codes and job budgets — the project layer over the ledger. */
   jobs(): JobStore;
+  /** Estimates: cost, markup, price, revisions. */
+  estimates(): EstimateStore;
   /** Create/verify schema. Safe to run repeatedly. */
   migrate(): Promise<void>;
 }
@@ -86,6 +91,7 @@ export class InMemoryBackend implements LedgerBackend {
   private readonly attachmentStore = new InMemoryAttachmentStore();
   private readonly recurringStore = new InMemoryRecurringStore();
   private readonly jobStore = new InMemoryJobStore();
+  private readonly estimateStore = new InMemoryEstimateStore();
   private readonly accounts = new Map<string, Map<string, Account>>();
   private readonly stores = new Map<string, InMemoryLedgerStore>();
   private readonly periodStores = new Map<string, InMemoryPeriodStore>();
@@ -168,6 +174,10 @@ export class InMemoryBackend implements LedgerBackend {
     return this.jobStore;
   }
 
+  estimates(): EstimateStore {
+    return this.estimateStore;
+  }
+
   async migrate(): Promise<void> {
     await this.docs.migrate();
     await this.reconStore.migrate();
@@ -178,6 +188,7 @@ export class InMemoryBackend implements LedgerBackend {
     await this.attachmentStore.migrate();
     await this.recurringStore.migrate();
     await this.jobStore.migrate();
+    await this.estimateStore.migrate();
   }
 }
 
@@ -199,6 +210,7 @@ export class PostgresBackend implements LedgerBackend {
   private readonly attachmentStore: PgAttachmentStore;
   private readonly recurringStore: PgRecurringStore;
   private readonly jobStore: PgJobStore;
+  private readonly estimateStore: PgEstimateStore;
 
   /**
    * @param pool     a connection pool.
@@ -225,6 +237,7 @@ export class PostgresBackend implements LedgerBackend {
     this.attachmentStore = new PgAttachmentStore(pool);
     this.recurringStore = new PgRecurringStore(pool);
     this.jobStore = new PgJobStore(pool);
+    this.estimateStore = new PgEstimateStore(pool);
   }
 
   async migrate(): Promise<void> {
@@ -239,6 +252,7 @@ export class PostgresBackend implements LedgerBackend {
     await this.attachmentStore.migrate();
     await this.recurringStore.migrate();
     await this.jobStore.migrate();
+    await this.estimateStore.migrate();
     // Last, once every table exists: make the database itself enforce tenant
     // isolation, so a query that forgets its tenant filter returns nothing
     // rather than everything.
@@ -281,6 +295,10 @@ export class PostgresBackend implements LedgerBackend {
 
   jobs(): JobStore {
     return this.jobStore;
+  }
+
+  estimates(): EstimateStore {
+    return this.estimateStore;
   }
 
   chart(tenant: TenantId): Promise<ChartOfAccounts> {

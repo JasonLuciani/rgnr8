@@ -121,6 +121,17 @@ import {
   type JobContext,
 } from "./jobs.js";
 import {
+  EstimateError,
+  acceptEstimate,
+  estimateJson,
+  estimateToInvoiceRequest,
+  reviseEstimate,
+  saveEstimate,
+  setEstimateStatus,
+  type EstimateContext,
+  type EstimateStatus,
+} from "./estimates.js";
+import {
   ReconcileError,
   finishReconciliation,
   importStatement,
@@ -382,6 +393,87 @@ export class LedgerService {
         return ok(await ten99Report(
           { backend: this.backend, tenant, currency: this.currency }, rest[1],
         ));
+      }
+
+      // --- estimates -------------------------------------------------------
+      if (rest[0] === "estimates") {
+        const ctx = this.estimateCtx(tenant);
+        if (rest.length === 1 && req.method === "GET") {
+          const all = await this.backend.estimates().list(String(tenant));
+          const latestOnly = req.query["all"] !== "1";
+          const rows = latestOnly
+            ? all.filter((e) => e.status !== "SUPERSEDED")
+            : all;
+          return ok({ tenant, estimates: rows.map(estimateJson) });
+        }
+        if (rest.length === 1 && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          return created({ tenant, estimate: estimateJson(await saveEstimate(ctx, data)) });
+        }
+        if (rest.length === 2 && req.method === "GET") {
+          const estimate = await this.backend.estimates().get(String(tenant), rest[1]!);
+          if (!estimate) return notFound(`unknown estimate ${rest[1]}`);
+          return ok({ tenant, estimate: estimateJson(estimate) });
+        }
+        if (rest.length === 2 && req.method === "DELETE") {
+          await this.backend.estimates().remove(String(tenant), rest[1]!);
+          return ok({ tenant, removed: rest[1] });
+        }
+        if (rest.length === 3 && rest[2] === "revise" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          return created({
+            tenant, estimate: estimateJson(await reviseEstimate(ctx, rest[1]!, data)),
+          });
+        }
+        if (rest.length === 3 && rest[2] === "status" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const status = str(data["status"]).trim().toUpperCase();
+          if (!["DRAFT", "SENT", "DECLINED", "EXPIRED"].includes(status)) {
+            return bad("status must be DRAFT, SENT, DECLINED or EXPIRED — accept has its own route");
+          }
+          return ok({
+            tenant,
+            estimate: estimateJson(
+              await setEstimateStatus(ctx, rest[1]!, status as EstimateStatus),
+            ),
+          });
+        }
+        if (rest.length === 3 && rest[2] === "accept" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const result = await acceptEstimate(ctx, rest[1]!, data);
+          return ok({
+            tenant,
+            estimate: estimateJson(result.estimate),
+            job_id: result.jobId,
+            job_created: result.created,
+            budget_lines_seeded: result.budgetSeeded,
+          });
+        }
+        if (rest.length === 3 && rest[2] === "invoice" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const estimate = await this.backend.estimates().get(String(tenant), rest[1]!);
+          if (!estimate) return notFound(`unknown estimate ${rest[1]}`);
+          const invoiceId = str(data["id"]).trim();
+          if (!invoiceId) return bad("the invoice needs an id");
+          const request = estimateToInvoiceRequest(estimate, {
+            id: invoiceId,
+            date: str(data["date"]).trim() || estimate.date,
+            ...(str(data["due_date"]).trim() ? { due_date: str(data["due_date"]).trim() } : {}),
+          });
+          const result = await createDocument(
+            "invoice", request as unknown as CreateDocumentRequest,
+            await this.arapCtx(tenant),
+          );
+          return created({
+            tenant, estimate_id: estimate.id,
+            invoice: this.docJson(result.doc), entry_id: result.entryId,
+          });
+        }
       }
 
       // --- jobs: cost codes, projects, budgets ----------------------------
@@ -675,6 +767,7 @@ export class LedgerService {
       if (err instanceof RecurringError) return bad(err.message);
       if (err instanceof Ten99Error) return bad(err.message);
       if (err instanceof JobError) return bad(err.message);
+      if (err instanceof EstimateError) return bad(err.message);
       return bad(err instanceof Error ? err.message : String(err));
     }
     return notFound("not found");
@@ -981,6 +1074,10 @@ export class LedgerService {
 
   // --- jobs ------------------------------------------------------------------
 
+  private estimateCtx(tenant: TenantId): EstimateContext {
+    return { backend: this.backend, tenant, currency: this.currency };
+  }
+
   private jobCtx(tenant: TenantId): JobContext {
     return { backend: this.backend, tenant, currency: this.currency };
   }
@@ -1128,6 +1225,9 @@ export class LedgerService {
       docs: this.backend.documents(),
       currency: this.currency,
       postedAt: this.opts.now(),
+      validate: (command) => validateDimensions(
+        { backend: this.backend, tenant, currency: this.currency }, command,
+      ),
     };
   }
 

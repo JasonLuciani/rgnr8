@@ -84,6 +84,11 @@ export interface DocumentLineInput {
    * (professional services in some states, resale, shipping in others).
    */
   readonly taxable?: boolean;
+  /**
+   * Class, location, `job`, `cost_code` — carried onto the journal line this
+   * document posts. A subcontractor's bill coded to a job IS the job cost.
+   */
+  readonly dimensions?: Readonly<Record<string, string>>;
 }
 
 export interface CreateDocumentRequest {
@@ -121,6 +126,12 @@ interface Ctx {
   readonly docs: DocumentStore;
   readonly currency: Currency;
   readonly postedAt: string;
+  /**
+   * Checked before anything posts. AR/AP doesn't own dimension validation —
+   * it borrows it — so a job or class typo on an invoice line is refused by
+   * exactly the same rule that refuses it on a manual entry.
+   */
+  readonly validate?: (command: PostCommand) => Promise<void>;
 }
 
 function idFor(chart: ChartOfAccounts, code: string, role: string): AccountId {
@@ -197,6 +208,9 @@ function buildLines(
       unitAmount: Money.fromMinorUnits(unit, currency),
       taxable,
       ...(l.description ? { description: l.description } : {}),
+      ...(l.dimensions && Object.keys(l.dimensions).length > 0
+        ? { dimensions: l.dimensions }
+        : {}),
     });
     records.push({
       description: l.description ?? "",
@@ -205,6 +219,9 @@ function buildLines(
       accountCode: code,
       amountMinor: amount.toString(),
       taxable,
+      ...(l.dimensions && Object.keys(l.dimensions).length > 0
+        ? { dimensions: l.dimensions }
+        : {}),
     });
   }
   return { docLines, records, totalMinor };
@@ -230,6 +247,7 @@ function statusFor(openMinor: bigint, totalMinor: bigint): DocStatus {
 }
 
 async function post(ctx: Ctx, command: PostCommand): Promise<PostedEntry> {
+  if (ctx.validate) await ctx.validate(command);
   const engine = new PostingEngine(ctx.chart, ctx.store, ctx.periods);
   return engine.post(command, { postedAt: ctx.postedAt });
 }

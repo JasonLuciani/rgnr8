@@ -174,6 +174,27 @@ export {
   type CostMethod,
   type JobStatus,
 } from "./jobs.js";
+export {
+  InMemoryEstimateStore,
+  PgEstimateStore,
+  ESTIMATE_DDL,
+  EstimateError,
+  saveEstimate,
+  reviseEstimate,
+  acceptEstimate,
+  setEstimateStatus,
+  estimateTotals,
+  estimateJson,
+  estimateToInvoiceRequest,
+  marginPpm,
+  markupFromPrice,
+  priceFromMarkup,
+  mulDiv,
+  type EstimateStore,
+  type EstimateRecord,
+  type EstimateStatus,
+  type EstimateContext,
+} from "./estimates.js";
 export { ten99Report, Ten99Error, type Ten99Context, type Ten99Json } from "./ten99.js";
 export { rlsDdl, appRoleDdl, superuserWarning, TENANT_TABLES } from "./security.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";

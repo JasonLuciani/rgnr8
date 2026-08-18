@@ -100,6 +100,7 @@ export function taxedInvoiceToPostCommand(
       side: "CREDIT",
       amount: l.amount,
       ...(l.description !== "" ? { memo: l.description } : {}),
+      ...(l.dimensions ? { dimensions: l.dimensions } : {}),
     })),
   ];
   if (!tax.isZero()) {

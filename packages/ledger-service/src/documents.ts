@@ -37,6 +37,8 @@ export interface DocLineRecord {
   readonly amountMinor: string;
   /** Whether sales tax applies to this line. Defaults to true on an invoice. */
   readonly taxable: boolean;
+  /** Class, location, job, cost code — as posted on the journal line. */
+  readonly dimensions?: Readonly<Record<string, string>>;
 }
 
 export interface DocRecord {
@@ -220,6 +222,7 @@ ALTER TABLE doc      ADD COLUMN IF NOT EXISTS net_minor    numeric(38,0) NOT NUL
 ALTER TABLE doc      ADD COLUMN IF NOT EXISTS tax_minor    numeric(38,0) NOT NULL DEFAULT 0;
 ALTER TABLE doc      ADD COLUMN IF NOT EXISTS tax_rate_ppm integer       NOT NULL DEFAULT 0;
 ALTER TABLE doc_line ADD COLUMN IF NOT EXISTS taxable      boolean       NOT NULL DEFAULT true;
+ALTER TABLE doc_line ADD COLUMN IF NOT EXISTS dimensions   text          NOT NULL DEFAULT '{}';
 -- Documents written before tax existed had no tax, so their net IS their total.
 UPDATE doc SET net_minor = total_minor WHERE net_minor = 0 AND total_minor <> 0;
 
@@ -326,16 +329,18 @@ export class PgDocumentStore implements DocumentStore {
         const l = doc.lines[i]!;
         await db.query(
           `INSERT INTO doc_line (tenant_id, kind, doc_id, line_index, description,
-                                 quantity, unit_amount_minor, account_code, amount_minor, taxable)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                                 quantity, unit_amount_minor, account_code, amount_minor,
+                                 taxable, dimensions)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
            ON CONFLICT (tenant_id, kind, doc_id, line_index) DO UPDATE SET
              description=EXCLUDED.description, quantity=EXCLUDED.quantity,
              unit_amount_minor=EXCLUDED.unit_amount_minor,
              account_code=EXCLUDED.account_code, amount_minor=EXCLUDED.amount_minor,
-             taxable=EXCLUDED.taxable`,
+             taxable=EXCLUDED.taxable, dimensions=EXCLUDED.dimensions`,
           [
             tenant, doc.kind, doc.id, i, l.description, l.quantity,
             l.unitAmountMinor, l.accountCode, l.amountMinor, l.taxable,
+            JSON.stringify(l.dimensions ?? {}),
           ],
         );
       }
@@ -354,7 +359,7 @@ export class PgDocumentStore implements DocumentStore {
       if (!row) return undefined;
       const lines = await db.query(
         `SELECT line_index, description, quantity, unit_amount_minor, account_code,
-                amount_minor, taxable
+                amount_minor, taxable, dimensions
          FROM doc_line WHERE tenant_id=$1 AND kind=$2 AND doc_id=$3`,
         [tenant, kind, id],
       );
@@ -372,7 +377,7 @@ export class PgDocumentStore implements DocumentStore {
       );
       const lines = await db.query(
         `SELECT doc_id, line_index, description, quantity, unit_amount_minor,
-                account_code, amount_minor, taxable
+                account_code, amount_minor, taxable, dimensions
          FROM doc_line WHERE tenant_id=$1 AND kind=$2`,
         [tenant, kind],
       );
@@ -449,6 +454,19 @@ function rowToParty(r: Record<string, unknown>): PartyRecord {
   };
 }
 
+/** A line's dimensions as stored. Unreadable JSON means "none", never a throw. */
+function parseDimensions(raw: unknown): Record<string, string> | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  try {
+    const parsed: unknown = JSON.parse(String(raw));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    const out = parsed as Record<string, string>;
+    return Object.keys(out).length > 0 ? out : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function rowToDoc(
   r: Record<string, unknown>,
   kind: DocKind,
@@ -478,6 +496,7 @@ function rowToDoc(
         accountCode: str(l["account_code"]),
         amountMinor: str(l["amount_minor"]),
         taxable: l["taxable"] !== false && l["taxable"] !== "f",
+        ...(parseDimensions(l["dimensions"]) ? { dimensions: parseDimensions(l["dimensions"])! } : {}),
       })),
   };
 }
