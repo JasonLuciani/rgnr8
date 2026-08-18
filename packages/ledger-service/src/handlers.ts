@@ -166,6 +166,12 @@ import {
   type PurchasingContext,
 } from "./purchasing.js";
 import {
+  WipError,
+  postWipAdjustment,
+  wipSchedule,
+  type WipContext,
+} from "./wip.js";
+import {
   ReconcileError,
   finishReconciliation,
   importStatement,
@@ -427,6 +433,19 @@ export class LedgerService {
         return ok(await ten99Report(
           { backend: this.backend, tenant, currency: this.currency }, rest[1],
         ));
+      }
+
+      // --- work in progress -------------------------------------------------
+      if (rest[0] === "wip") {
+        const ctx = this.wipCtx(tenant);
+        if (rest.length === 1 && req.method === "GET") {
+          return ok(await wipSchedule(ctx, req.query["through"]));
+        }
+        if (rest.length === 2 && rest[1] === "post" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          return ok(await postWipAdjustment(ctx, data));
+        }
       }
 
       // --- purchase orders, receiving and the three-way match ---------------
@@ -1014,6 +1033,7 @@ export class LedgerService {
       if (err instanceof SalesOrderError) return bad(err.message);
       if (err instanceof WorkOrderError) return bad(err.message);
       if (err instanceof PurchasingError) return bad(err.message);
+      if (err instanceof WipError) return bad(err.message);
       return bad(err instanceof Error ? err.message : String(err));
     }
     return notFound("not found");
@@ -1319,6 +1339,12 @@ export class LedgerService {
   }
 
   // --- jobs ------------------------------------------------------------------
+
+  private wipCtx(tenant: TenantId): WipContext {
+    return {
+      backend: this.backend, tenant, currency: this.currency, now: this.opts.now,
+    };
+  }
 
   private purchasingCtx(tenant: TenantId): PurchasingContext {
     return {

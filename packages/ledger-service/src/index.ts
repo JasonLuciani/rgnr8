@@ -248,6 +248,17 @@ export {
   type ReceiptRecord,
   type PurchasingContext,
 } from "./purchasing.js";
+export {
+  WipError,
+  wipSchedule,
+  postWipAdjustment,
+  COSTS_IN_EXCESS_CODE,
+  BILLINGS_IN_EXCESS_CODE,
+  WORK_IN_PROGRESS_CODE,
+  type WipContext,
+  type WipSchedule,
+  type WipRow,
+} from "./wip.js";
 export { ten99Report, Ten99Error, type Ten99Context, type Ten99Json } from "./ten99.js";
 export { rlsDdl, appRoleDdl, superuserWarning, TENANT_TABLES } from "./security.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";
