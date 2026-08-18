@@ -4,9 +4,13 @@ import {
   bankRegister,
   finishManualReconciliation,
   manualReconciliation,
+  reconcileBankAccount,
   type ClearStatus,
   type ManualReconciliation,
+  type Statement,
+  type StatementLine,
 } from "@rgnr8/reconciliation";
+import { parseStatement, type StatementTxn } from "@rgnr8/ingestion";
 import type { Pool, Queryable } from "@rgnr8/ledger-postgres";
 import type { LedgerBackend } from "./backend.js";
 
@@ -397,5 +401,138 @@ export async function finishReconciliation(
     statement_date: statementDate,
     reconciled_entries: recon.clearedEntryIds.length,
     reconciled_through: statementDate,
+  };
+}
+
+
+// --- importing a statement ---------------------------------------------------
+
+export interface ImportResult {
+  readonly account_code: string;
+  readonly statement_date: string;
+  readonly parsed: number;
+  readonly matched: number;
+  readonly newly_cleared: number;
+  readonly difference_minor: string;
+  readonly can_finish: boolean;
+  /** Statement lines with no entry in the books — money the books don't know about. */
+  readonly missing_from_books: ReadonlyArray<{
+    readonly date: string;
+    readonly amount_minor: string;
+    readonly description: string;
+  }>;
+  /** Book lines the statement doesn't show — outstanding cheques, deposits in transit. */
+  readonly not_on_statement: ReadonlyArray<{
+    readonly entry_id: string;
+    readonly date: string;
+    readonly amount_minor: string;
+    readonly memo: string;
+  }>;
+  readonly view: ReconcileView;
+}
+
+function toStatementLine(txn: StatementTxn, currency: Currency): StatementLine {
+  // Statement amounts arrive as signed decimal strings from the bank; they
+  // become exact minor units here and never pass through a float.
+  return {
+    id: txn.fitid,
+    date: txn.date,
+    amount: Money.fromDecimal(txn.amount, currency),
+    description: txn.description,
+  };
+}
+
+/**
+ * Import an OFX or CSV statement and tick off everything it matches.
+ *
+ * This is the same reconciliation, done by machine for the obvious part. What
+ * it deliberately does NOT do is finish: matching within a few days on an equal
+ * amount is a good heuristic and a bad authority. The owner still sees the
+ * difference and presses the button, because the value of a reconciliation is
+ * that a person looked.
+ *
+ * Two lists come back and both matter. Statement lines with no book entry are
+ * transactions the business doesn't know happened — the fraud case, and the
+ * forgotten-subscription case. Book lines the statement doesn't show are
+ * outstanding items, which are normal, or duplicates, which are not.
+ */
+export async function importStatement(
+  ctx: ReconcileContext,
+  code: string,
+  text: string,
+  statementDateRaw: unknown,
+  statementBalanceRaw: unknown,
+): Promise<ImportResult> {
+  const { id } = await resolveAccount(ctx, code);
+  const statementDate = requireDate(statementDateRaw);
+  const closing = parseBalance(statementBalanceRaw, ctx.currency);
+
+  if (!text.trim()) throw new ReconcileError("the statement file is empty");
+  let parsed: StatementTxn[];
+  try {
+    parsed = parseStatement(text);
+  } catch (err) {
+    throw new ReconcileError(
+      `this file could not be read as OFX or CSV: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (parsed.length === 0) {
+    throw new ReconcileError(
+      "no transactions were found in this file — check it is the transaction export "
+      + "rather than a summary, and that it covers the right dates",
+    );
+  }
+
+  const lines = parsed.map((t) => toStatementLine(t, ctx.currency));
+  const register = await loadRegister(ctx, id, code);
+  const entries = await ctx.backend.store(ctx.tenant).list(ctx.tenant);
+
+  // The opening balance the statement implies: closing less everything on it.
+  const movement = lines.reduce((acc, l) => acc + l.amount.minorUnits, 0n);
+  const dates = lines.map((l) => l.date).sort();
+  const statement: Statement = {
+    accountId: id,
+    periodStart: dates[0] ?? statementDate,
+    periodEnd: statementDate,
+    openingBalance: Money.fromMinorUnits(closing.minorUnits - movement, ctx.currency),
+    closingBalance: closing,
+    lines,
+  };
+
+  const before = await ctx.recon.statuses(String(ctx.tenant), code);
+  const recon = reconcileBankAccount(entries, id as never, statement, register);
+
+  // Persist the ticks. They are CLEARED, not RECONCILED: a machine match is a
+  // suggestion the owner confirms by finishing, not a decision it makes alone.
+  await ctx.recon.setMany(String(ctx.tenant), code, recon.newlyClearedEntryIds, "CLEARED");
+
+  // Re-importing the same statement is normal — banks re-issue them, and people
+  // click twice. Matching the same lines again is harmless, but reporting them
+  // as newly cleared would overstate what this import actually did.
+  const newlyCleared = recon.newlyClearedEntryIds.filter(
+    (entryId) => before.get(entryId) !== "CLEARED",
+  );
+
+  const view = await reconcileView(ctx, code, statementDate, closing.minorUnits.toString());
+  return {
+    account_code: code,
+    statement_date: statementDate,
+    parsed: parsed.length,
+    matched: recon.matched.length,
+    newly_cleared: newlyCleared.length,
+    difference_minor: view.difference_minor,
+    can_finish: view.can_finish,
+    missing_from_books: recon.unmatchedStatement.map((l) => ({
+      date: l.date,
+      amount_minor: l.amount.minorUnits.toString(),
+      description: l.description,
+    })),
+    not_on_statement: recon.unclearedLines.map((l) => ({
+      entry_id: l.entryId,
+      date: l.date,
+      amount_minor: l.amount.minorUnits.toString(),
+      memo: l.memo,
+    })),
+    view,
   };
 }

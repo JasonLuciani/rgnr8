@@ -102,6 +102,7 @@ import {
 import {
   ReconcileError,
   finishReconciliation,
+  importStatement,
   reconcileView,
   toggleCleared,
   type ReconcileContext,
@@ -282,6 +283,14 @@ export class LedgerService {
         }
         if (rest.length === 4 && rest[3] === "finish" && req.method === "POST") {
           return await this.reconFinish(tenant, code, req.body);
+        }
+        if (rest.length === 4 && rest[3] === "import" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("body must be a JSON object");
+          return ok(await importStatement(
+            this.reconCtx(tenant), code, str(data["statement_text"]),
+            data["statement_date"], data["statement_balance_minor"],
+          ));
         }
       }
       if (rest[0] === "entries" && rest.length === 1) {

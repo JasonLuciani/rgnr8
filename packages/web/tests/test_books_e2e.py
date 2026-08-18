@@ -853,3 +853,55 @@ def test_attaching_a_receipt_end_to_end_against_the_real_service(ledger_service:
     # the queue shows the line now has evidence
     queue = _req(app, "fileco", "/t/fileco/inbox")
     assert "/t/fileco/files/feed/bk-1" in queue.body
+
+
+def test_importing_a_statement_end_to_end_against_the_real_service(ledger_service: str) -> None:
+    """Upload the bank's CSV, watch it tick off what matches, and see what it
+    couldn't — the transaction the books don't know about."""
+    base = ledger_service
+    app = _app(base, ["stmtco"])
+    _seed(base, "stmtco", "PROFESSIONAL_SERVICES")
+
+    for date_, memo, dr, cr, amount in [
+        ("2026-08-03", "Client+deposit", "1000", "4100", "5,000.00"),
+        ("2026-08-05", "Software", "6400", "1000", "200.00"),
+        ("2026-08-30", "Cheque+not+cashed", "6400", "1000", "50.00"),
+    ]:
+        _req(app, "stmtco", "/t/stmtco/books/entries", "POST",
+             f"date={date_}&memo={memo}&code1={dr}&debit1={amount}"
+             f"&code2={cr}&credit2={amount}")
+
+    # the bank's export: the two that cleared, plus one nobody recorded
+    csv = (
+        "Date,Description,Amount\r\n"
+        "2026-08-03,ACH CREDIT CLIENT,5000.00\r\n"
+        "2026-08-06,ADOBE SUBSCRIPTION,-200.00\r\n"
+        "2026-08-20,MYSTERY DEBIT,-125.00\r\n"
+    )
+    body = (
+        "--B\r\n"
+        'Content-Disposition: form-data; name="statement_date"\r\n\r\n2026-08-31\r\n'
+        "--B\r\n"
+        'Content-Disposition: form-data; name="statement_balance_minor"\r\n\r\n467500\r\n'
+        "--B\r\n"
+        'Content-Disposition: form-data; name="file"; filename="statement.csv"\r\n'
+        "Content-Type: text/csv\r\n\r\n" + csv + "\r\n--B--\r\n"
+    )
+    tok = sign_jwt({"sub": "u-stmtco", "tenant": "stmtco", "exp": NOW + 3600}, SECRET)
+    r = app.handle(Request(
+        "POST", "/t/stmtco/books/reconcile/1000/import",
+        {"authorization": f"Bearer {tok}",
+         "content-type": "multipart/form-data; boundary=B"}, body,
+    ))
+    assert r.status == 200
+    assert "Read 3 transactions and ticked off 2" in r.body
+    assert "MYSTERY DEBIT" in r.body, "the books don't know about this one"
+    assert "Cheque not cashed" in r.body, "and this one hasn't cleared yet"
+
+    # the ticks are durable and the worksheet agrees
+    view = _service_get(base, "/t/stmtco/accounts/1000/reconcile"
+                              "?statement_date=2026-08-31&statement_balance_minor=467500")
+    assert len([l for l in view["lines"] if l["status"] == "CLEARED"]) == 2
+    # it does NOT tie out, because the books really are missing 125.00
+    assert view["difference_minor"] == "-12500"
+    assert view["can_finish"] is False

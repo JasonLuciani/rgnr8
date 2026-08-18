@@ -39,6 +39,7 @@ export {
   reconcileView,
   toggleCleared,
   finishReconciliation,
+  importStatement,
   InMemoryReconStore,
   PgReconStore,
   RECON_DDL,

@@ -94,7 +94,9 @@ from .openapi import build_openapi
 from .owner_reports import render_owner_report
 from .ledger_client import LedgerClient
 from .arap_screens import render_aging as render_arap_aging, render_documents
-from .reconcile_screens import render_pick_account, render_reconcile
+from .reconcile_screens import (
+    render_import_result, render_pick_account, render_reconcile,
+)
 from .reporting_screens import render_budget, render_general_ledger
 from .dimension_screens import (
     render_dimension_report,
@@ -1049,6 +1051,13 @@ class WebApp:
             code = parts[4]
             return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
                                  lambda t: self._reconcile_page(subject, t, code, req.query))
+        # /t/<tenant>/books/reconcile/<code>/import -> upload the bank's export
+        if (len(parts) == 6 and parts[0] == "t" and parts[2] == "books"
+                and parts[3] == "reconcile" and parts[5] == "import"
+                and req.method == "POST"):
+            code = parts[4]
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._reconcile_import(subject, t, code, req))
         # /t/<tenant>/books/reconcile/<code>/toggle|finish -> tick a line, or lock it in
         if (len(parts) == 6 and parts[0] == "t" and parts[2] == "books"
                 and parts[3] == "reconcile" and req.method == "POST"
@@ -2122,6 +2131,41 @@ class WebApp:
             message=query.get("done", ""), error=query.get("err", ""),
         )
         return self._shell(subject, t, "books", body)
+
+    def _reconcile_import(
+        self, subject: str, t: _Tenant, code: str, req: Request
+    ) -> Response:
+        """Import the bank's own export and tick off what it matches.
+
+        The file is decoded as text with replacement: a statement is UTF-8 or
+        Latin-1 in practice, and a stray byte in a payee name should not stop a
+        reconciliation. The amounts are parsed exactly by the service."""
+        back = f"/t/{t.tenant_id}/books/reconcile/{code}"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        try:
+            fields, files = parse_multipart(req.body, req.headers.get("content-type", ""))
+        except MultipartError as exc:
+            return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+        if not files:
+            return _redirect(f"{back}?err={_qs_escape('Choose a statement file')}")
+
+        date = fields.get("statement_date", "").strip()
+        minor = fields.get("statement_balance_minor", "").strip() or "0"
+        text = files[0].content.decode("utf-8", "replace")
+
+        res = self._ledger.reconcile_import(t.tenant_id, code, text, date, minor)
+        if not res.ok:
+            return _redirect(
+                f"{back}?statement_date={_qs_escape(date)}"
+                f"&statement_balance_minor={_qs_escape(minor)}"
+                f"&err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "bank.statement_imported", self._session_clock(),
+                               tenant_id=t.tenant_id, target=code,
+                               detail=f"{res.body.get('newly_cleared', 0)} matched")
+        return self._shell(subject, t, "books",
+                           render_import_result(t.tenant_id, code, res.body, date))
 
     def _reconcile_action(
         self, subject: str, t: _Tenant, code: str, action: str, body: str

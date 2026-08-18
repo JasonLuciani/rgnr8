@@ -433,6 +433,19 @@ class LedgerClient:
             },
         )
 
+    def reconcile_import(
+        self, tenant: str, code: str, statement_text: str,
+        statement_date: str, statement_balance_minor: str,
+    ) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/accounts/{code}/reconcile/import",
+            {
+                "statement_text": statement_text,
+                "statement_date": statement_date,
+                "statement_balance_minor": statement_balance_minor,
+            },
+        )
+
     def reconcile_finish(
         self, tenant: str, code: str, statement_date: str, statement_balance_minor: str
     ) -> LedgerResponse:

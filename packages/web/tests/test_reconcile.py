@@ -5,6 +5,7 @@ side. The reconciliation *rules* (what ties out, what may be finished) live in
 the ledger service and are tested there.
 """
 
+import json
 from datetime import date
 from typing import Any
 
@@ -253,3 +254,119 @@ def test_reconciled_lines_render_locked_and_offer_no_tick() -> None:
     assert "Reconciled" in r.body
     assert "2026-07-31" in r.body
     assert "reconcile/1000/toggle" not in r.body
+
+
+# --- importing the bank's own export -----------------------------------------
+
+CSV_STATEMENT = (
+    "Date,Description,Amount\n"
+    "2026-08-05,ACH CREDIT CLIENT,5000.00\n"
+    "2026-08-10,RIVERSIDE RENT,-2000.00\n"
+)
+
+IMPORT_RESULT = {
+    "account_code": "1000", "statement_date": "2026-08-31",
+    "parsed": 2, "matched": 2, "newly_cleared": 2,
+    "difference_minor": "0", "can_finish": True,
+    "missing_from_books": [
+        {"date": "2026-08-20", "amount_minor": "-125000", "description": "MYSTERY DEBIT"},
+    ],
+    "not_on_statement": [
+        {"entry_id": "acme:3", "date": "2026-08-30", "amount_minor": "-5000",
+         "memo": "Cheque not cashed"},
+    ],
+    "view": BALANCED_VIEW,
+}
+
+
+def _statement_upload(app: Any, sub: str = "u-owner", content: bytes = b"") -> Any:
+    body = (
+        "--B\r\n"
+        'Content-Disposition: form-data; name="statement_date"\r\n\r\n2026-08-31\r\n'
+        "--B\r\n"
+        'Content-Disposition: form-data; name="statement_balance_minor"\r\n\r\n300000\r\n'
+        "--B\r\n"
+        'Content-Disposition: form-data; name="file"; filename="statement.csv"\r\n'
+        "Content-Type: text/csv\r\n\r\n"
+    ).encode() + (content or CSV_STATEMENT.encode()) + b"\r\n--B--\r\n"
+    tok = sign_jwt({"sub": sub, "tenant": "acme", "exp": NOW + 3600}, SECRET)
+    return app.handle(Request(
+        "POST", "/t/acme/books/reconcile/1000/import",
+        {"authorization": f"Bearer {tok}",
+         "content-type": "multipart/form-data; boundary=B"},
+        body.decode("utf-8", "surrogateescape"),
+    ))
+
+
+def test_the_worksheet_offers_a_statement_import() -> None:
+    app, _t, _a = _app()
+    r = _req(app, "/t/acme/books/reconcile/1000?statement_date=2026-08-31"
+                  "&statement_balance=3000.00")
+    assert "Import the statement instead" in r.body
+    assert "not the PDF summary" in r.body
+    assert "the point of a reconciliation is that a person did" in r.body
+
+
+def test_importing_sends_the_file_and_reports_both_lists() -> None:
+    routes = dict(DEFAULT_ROUTES)
+    routes["POST /t/acme/accounts/1000/reconcile/import"] = (200, IMPORT_RESULT)
+    app, transport, audit = _app(routes)
+    r = _statement_upload(app)
+    assert r.status == 200
+
+    sent = json.loads([c for c in transport.calls if "/import" in c[1]][0][2])
+    assert sent["statement_text"].startswith("Date,Description,Amount")
+    assert sent["statement_date"] == "2026-08-31"
+    assert sent["statement_balance_minor"] == "300000"
+
+    assert "Read 2 transactions and ticked off 2" in r.body
+    # the two lists, each explained in terms of what it means
+    assert "On the statement, not in your books" in r.body
+    assert "MYSTERY DEBIT" in r.body and "-$1,250.00" in r.body
+    assert "In your books, not on the statement" in r.body
+    assert "Cheque not cashed" in r.body
+    assert any(e.action == "bank.statement_imported" for e in audit.events(tenant_id="acme"))
+
+
+def test_a_clean_import_says_everything_matched() -> None:
+    routes = dict(DEFAULT_ROUTES)
+    routes["POST /t/acme/accounts/1000/reconcile/import"] = (
+        200, dict(IMPORT_RESULT, missing_from_books=[], not_on_statement=[])
+    )
+    app, _t, _a = _app(routes)
+    r = _statement_upload(app)
+    assert "Everything on the statement is in your books" in r.body
+    assert "On the statement, not in your books" not in r.body
+
+
+def test_uploading_no_file_never_reaches_the_service() -> None:
+    app, transport, _a = _app()
+    tok = sign_jwt({"sub": "u-owner", "tenant": "acme", "exp": NOW + 3600}, SECRET)
+    body = "--B\r\nContent-Disposition: form-data; name=\"statement_date\"\r\n\r\n2026-08-31\r\n--B--\r\n"
+    r = app.handle(Request(
+        "POST", "/t/acme/books/reconcile/1000/import",
+        {"authorization": f"Bearer {tok}",
+         "content-type": "multipart/form-data; boundary=B"}, body,
+    ))
+    assert "Choose%20a%20statement%20file" in str(r.headers.get("Location", ""))
+    assert not [c for c in transport.calls if "/import" in c[1]]
+
+
+def test_an_unreadable_file_returns_the_services_explanation() -> None:
+    routes = dict(DEFAULT_ROUTES)
+    routes["POST /t/acme/accounts/1000/reconcile/import"] = (400, {
+        "error": "no transactions were found in this file — check it is the "
+                 "transaction export rather than a summary",
+    })
+    app, _t, _a = _app(routes)
+    r = _statement_upload(app, content=b"not a statement")
+    assert r.status == 302
+    assert "transaction%20export" in str(r.headers.get("Location", ""))
+    # the date and balance survive the round trip so nothing is retyped
+    assert "statement_date=2026-08-31" in str(r.headers.get("Location", ""))
+
+
+def test_a_viewer_cannot_import() -> None:
+    app, transport, _a = _app()
+    assert _statement_upload(app, sub="u-view").status == 403
+    assert not [c for c in transport.calls if "/import" in c[1]]
