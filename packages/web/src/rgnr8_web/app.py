@@ -84,6 +84,10 @@ from .recurring_screens import (
     render_recurring, render_recurring_unavailable, render_run_result,
 )
 from .job_screens import render_job, render_jobs, render_jobs_unavailable
+from .estimate_screens import (
+    render_estimate, render_estimates, render_estimates_unavailable,
+    render_pipeline, render_pipeline_unavailable,
+)
 
 from .store import InMemoryTenantStore, TenantDef, TenantState, TenantStore
 from .financial_package import (
@@ -280,6 +284,22 @@ def _percent_to_ppm(raw: str) -> int:
     if len(frac) > 4:
         raise ValueError("a tax rate finer than four decimal places is a typo")
     return int(whole or "0") * 10_000 + int((frac or "0").ljust(4, "0"))
+
+
+def _quantity_to_milli(raw: str) -> int:
+    """"2.5" -> 2500. Quantities carry three decimals and never touch a float:
+    half a day of labour has to cost exactly half a day."""
+    text = raw.strip().replace(",", "")
+    if not text:
+        return 1000
+    if text.startswith("-"):
+        raise ValueError("a quantity cannot be negative")
+    if not all(c.isdigit() or c == "." for c in text) or text.count(".") > 1:
+        raise ValueError(f"not a valid quantity: {raw!r}")
+    whole, _, frac = text.partition(".")
+    if len(frac) > 3:
+        raise ValueError("a quantity finer than three decimal places is a typo")
+    return int(whole or "0") * 1000 + int((frac or "0").ljust(3, "0"))
 
 
 def _suggested_code(suggestion: object) -> str:
@@ -863,6 +883,49 @@ class WebApp:
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "audit":
             return self._require(subject, token_tenant, parts[1], P.MANAGE_USERS,
                                  lambda t: self._audit_page(subject, t))
+
+        # --- estimates ---------------------------------------------------------
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "estimates":
+            if req.method == "POST":
+                return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                     lambda t: self._estimate_save(subject, t, req.body))
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._estimates_page(subject, t, req.query))
+        if len(parts) == 4 and parts[0] == "t" and parts[2] == "estimates" and req.method == "GET":
+            estimate_id = parts[3]
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._estimate_page(subject, t, estimate_id,
+                                                               req.query))
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "estimates"
+                and req.method == "POST"):
+            estimate_id, action = parts[3], parts[4]
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._estimate_action(
+                                     subject, t, estimate_id, action, req.body))
+
+        # --- the pipeline ------------------------------------------------------
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "pipeline":
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._pipeline_page(subject, t, req.query))
+        if (len(parts) == 3 and parts[0] == "t" and parts[2] == "leads"
+                and req.method == "POST"):
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._lead_save(subject, t, req.body))
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "leads"
+                and parts[4] == "convert" and req.method == "POST"):
+            lead_id = parts[3]
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._lead_convert(subject, t, lead_id, req.body))
+        if (len(parts) == 3 and parts[0] == "t" and parts[2] == "opportunities"
+                and req.method == "POST"):
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._opportunity_save(subject, t, req.body))
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "opportunities"
+                and parts[4] in ("win", "lose") and req.method == "POST"):
+            opportunity_id, outcome = parts[3], parts[4]
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._opportunity_close(
+                                     subject, t, opportunity_id, outcome, req.body))
 
         # --- jobs: the project layer -----------------------------------------
         # /t/<tenant>/jobs -> every job, and the form to start one
@@ -2036,6 +2099,265 @@ class WebApp:
     # --- recurring transactions --------------------------------------------------
 
     # --- jobs -----------------------------------------------------------------
+
+    # --- estimates and the pipeline -------------------------------------------
+
+    def _estimates_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "estimates", render_estimates_unavailable())
+        estimates = self._ledger.estimates(t.tenant_id)
+        if not estimates.ok:
+            return self._shell(subject, t, "estimates",
+                               render_estimates_unavailable(estimates.error()))
+        customers = self._ledger.parties(t.tenant_id, "customers")
+        cost_codes = self._ledger.cost_codes(t.tenant_id)
+        accounts = self._ledger.accounts(t.tenant_id)
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_edit = self._policy is None or Permission.POST_JOURNAL in perms
+        return self._shell(subject, t, "estimates", render_estimates(
+            t.tenant_id, estimates.body,
+            customers.body if customers.ok else {},
+            cost_codes.body if cost_codes.ok else {},
+            accounts.body if accounts.ok else {},
+            can_edit=can_edit,
+            message=query.get("done", ""), error=query.get("err", ""),
+        ))
+
+    def _estimate_page(
+        self, subject: str, t: _Tenant, estimate_id: str, query: "dict[str, str]",
+    ) -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "estimates", render_estimates_unavailable())
+        res = self._ledger.estimate(t.tenant_id, estimate_id)
+        if not res.ok:
+            return self._shell(subject, t, "estimates",
+                               render_estimates_unavailable(res.error()))
+        estimate = res.body.get("estimate")
+        if not isinstance(estimate, dict):
+            return self._shell(subject, t, "estimates",
+                               render_estimates_unavailable("that estimate came back empty"))
+        jobs = self._ledger.jobs(t.tenant_id)
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_edit = self._policy is None or Permission.POST_JOURNAL in perms
+        return self._shell(subject, t, "estimates", render_estimate(
+            t.tenant_id, estimate, jobs.body if jobs.ok else {},
+            can_edit=can_edit,
+            message=query.get("done", ""), error=query.get("err", ""),
+        ))
+
+    def _estimate_lines(self, data: "dict[str, object]") -> list[dict[str, object]]:
+        """Read the builder's rows. A blank row is a blank row, not a zero line."""
+        lines: list[dict[str, object]] = []
+        for i in range(1, 6):
+            cost = self._amount_to_minor(str(data.get(f"cost{i}", "")))
+            price = self._amount_to_minor(str(data.get(f"price{i}", "")))
+            description = str(data.get(f"desc{i}", "")).strip()
+            if cost is None and price is None:
+                continue
+            quantity = _quantity_to_milli(str(data.get(f"qty{i}", "")))
+            line: dict[str, object] = {
+                "description": description,
+                "quantity_milli": str(quantity),
+                "unit_cost_minor": str(cost or 0),
+            }
+            code = str(data.get(f"code{i}", "")).strip()
+            if code:
+                line["cost_code"] = code
+            account = str(data.get(f"account{i}", "")).strip()
+            if account:
+                line["account_code"] = account
+            if price is not None:
+                line["unit_price_minor"] = str(price)
+            else:
+                line["markup_ppm"] = _percent_to_ppm(str(data.get(f"markup{i}", "")))
+            lines.append(line)
+        return lines
+
+    def _estimate_save(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/estimates"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        try:
+            lines = self._estimate_lines(data)
+            tax = _percent_to_ppm(str(data.get("tax_rate", "")))
+        except ValueError as exc:
+            return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+        if not lines:
+            return _redirect(f"{back}?err={_qs_escape('Add at least one line')}")
+        payload: dict[str, object] = {
+            "customer_id": str(data.get("customer_id", "")).strip(),
+            "date": str(data.get("date", "")).strip(),
+            "expiry_date": str(data.get("expiry_date", "")).strip(),
+            "memo": str(data.get("memo", "")).strip(),
+            "tax_rate_ppm": tax,
+            "lines": lines,
+        }
+        if str(data.get("id", "")).strip():
+            payload["id"] = str(data.get("id", "")).strip()
+        res = self._ledger.save_estimate(t.tenant_id, payload)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        estimate = res.body.get("estimate")
+        estimate_id = str(estimate.get("id")) if isinstance(estimate, dict) else ""
+        if self._audit is not None:
+            self._audit.record(subject, "estimate.saved", self._session_clock(),
+                               tenant_id=t.tenant_id, target=estimate_id)
+        return _redirect(f"{back}/{estimate_id}?done={_qs_escape('Estimate saved')}")
+
+    def _estimate_action(
+        self, subject: str, t: _Tenant, estimate_id: str, action: str, body: str,
+    ) -> Response:
+        back = f"/t/{t.tenant_id}/estimates/{estimate_id}"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        if action == "status":
+            res = self._ledger.set_estimate_status(
+                t.tenant_id, estimate_id, str(data.get("status", "")).strip(),
+            )
+            note = "Updated"
+        elif action == "accept":
+            try:
+                retainage = _percent_to_ppm(str(data.get("retainage", "")))
+            except ValueError as exc:
+                return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+            request: dict[str, object] = {
+                "job_id": str(data.get("job_id", "")).strip(),
+                "job_name": str(data.get("job_name", "")).strip(),
+                "billing_method": str(data.get("billing_method", "PROGRESS")).strip(),
+                "start_date": str(data.get("start_date", "")).strip(),
+                "retainage_ppm": retainage,
+            }
+            res = self._ledger.accept_estimate(t.tenant_id, estimate_id, request)
+            note = "Accepted — the job's budget came from the estimate"
+        elif action == "revise":
+            res = self._ledger.revise_estimate(t.tenant_id, estimate_id, {
+                "memo": str(data.get("memo", "")).strip(),
+            })
+            note = "Revision started; the old one is superseded, not gone"
+        elif action == "invoice":
+            res = self._ledger.invoice_estimate(t.tenant_id, estimate_id, {
+                "id": str(data.get("id", "")).strip(),
+                "date": str(data.get("date", "")).strip() or self._today(t),
+            })
+            note = "Invoiced"
+        else:
+            return _redirect(f"{back}?err={_qs_escape('Unknown action')}")
+
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, f"estimate.{action}", self._session_clock(),
+                               tenant_id=t.tenant_id, target=estimate_id)
+        if action == "revise":
+            revised = res.body.get("estimate")
+            if isinstance(revised, dict):
+                return _redirect(
+                    f"/t/{t.tenant_id}/estimates/{revised.get('id')}?done={_qs_escape(note)}"
+                )
+        return _redirect(f"{back}?done={_qs_escape(note)}")
+
+    def _pipeline_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "pipeline", render_pipeline_unavailable())
+        pipeline = self._ledger.pipeline(t.tenant_id)
+        if not pipeline.ok:
+            return self._shell(subject, t, "pipeline",
+                               render_pipeline_unavailable(pipeline.error()))
+        leads = self._ledger.leads(t.tenant_id)
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_edit = self._policy is None or Permission.POST_JOURNAL in perms
+        return self._shell(subject, t, "pipeline", render_pipeline(
+            t.tenant_id, pipeline.body, leads.body if leads.ok else {},
+            can_edit=can_edit,
+            message=query.get("done", ""), error=query.get("err", ""),
+        ))
+
+    def _lead_save(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/pipeline"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        res = self._ledger.save_lead(t.tenant_id, {
+            "name": str(data.get("name", "")).strip(),
+            "company": str(data.get("company", "")).strip(),
+            "email": str(data.get("email", "")).strip(),
+            "phone": str(data.get("phone", "")).strip(),
+            "source": str(data.get("source", "")).strip(),
+            "owner": str(data.get("owner", "")).strip(),
+            "created_date": self._today(t),
+        })
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "lead.saved", self._session_clock(),
+                               tenant_id=t.tenant_id, target=str(data.get("name", "")))
+        return _redirect(f"{back}?done={_qs_escape('Lead added')}")
+
+    def _lead_convert(self, subject: str, t: _Tenant, lead_id: str, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/pipeline"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        request: dict[str, object] = {}
+        if str(data.get("customer_id", "")).strip():
+            request["customer_id"] = str(data.get("customer_id", "")).strip()
+        res = self._ledger.convert_lead(t.tenant_id, lead_id, request)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "lead.converted", self._session_clock(),
+                               tenant_id=t.tenant_id, target=lead_id)
+        return _redirect(f"{back}?done={_qs_escape('They are a customer now')}")
+
+    def _opportunity_save(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/pipeline"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        try:
+            value = self._amount_to_minor(str(data.get("value", "")))
+        except ValueError as exc:
+            return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+        payload: dict[str, object] = {
+            "name": str(data.get("name", "")).strip(),
+            "stage": str(data.get("stage", "NEW")).strip(),
+            "value_minor": str(value or 0),
+            "expected_close_date": str(data.get("expected_close_date", "")).strip(),
+            "owner": str(data.get("owner", "")).strip(),
+        }
+        for key in ("lead_id", "customer_id"):
+            if str(data.get(key, "")).strip():
+                payload[key] = str(data.get(key, "")).strip()
+        res = self._ledger.save_opportunity(t.tenant_id, payload)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "opportunity.saved", self._session_clock(),
+                               tenant_id=t.tenant_id, target=str(data.get("name", "")))
+        return _redirect(f"{back}?done={_qs_escape('Opportunity opened')}")
+
+    def _opportunity_close(
+        self, subject: str, t: _Tenant, opportunity_id: str, outcome: str, body: str,
+    ) -> Response:
+        back = f"/t/{t.tenant_id}/pipeline"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        request: dict[str, object] = {}
+        if outcome == "lose":
+            request["reason"] = str(data.get("reason", "")).strip()
+        if str(data.get("job_id", "")).strip():
+            request["job_id"] = str(data.get("job_id", "")).strip()
+        res = self._ledger.close_opportunity(t.tenant_id, opportunity_id, outcome, request)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, f"opportunity.{outcome}", self._session_clock(),
+                               tenant_id=t.tenant_id, target=opportunity_id)
+        note = "Won — nothing is booked until the job is billed" if outcome == "win" else "Closed"
+        return _redirect(f"{back}?done={_qs_escape(note)}")
 
     def _jobs_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
         if self._ledger is None:
