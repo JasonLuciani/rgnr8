@@ -234,6 +234,30 @@ class LedgerClient:
             payload["memo"] = memo
         return self._call("POST", f"/t/{tenant}/{kind}/{doc_id}/payments", payload)
 
+    # --- reporting dimensions (classes, locations) ---------------------------
+
+    def dimensions(self, tenant: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/dimensions")
+
+    def save_dimension(self, tenant: str, dimension: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/dimensions", dict(dimension))
+
+    def delete_dimension(self, tenant: str, key: str) -> LedgerResponse:
+        return self._call("DELETE", f"/t/{tenant}/dimensions/{urllib.parse.quote(key)}")
+
+    def dimension_report(
+        self, tenant: str, key: str, *, frm: str = "", to: str = ""
+    ) -> LedgerResponse:
+        parts = []
+        if frm:
+            parts.append(f"from={urllib.parse.quote(frm)}")
+        if to:
+            parts.append(f"to={urllib.parse.quote(to)}")
+        qs = f"?{'&'.join(parts)}" if parts else ""
+        return self._call(
+            "GET", f"/t/{tenant}/dimensions/{urllib.parse.quote(key)}/report{qs}"
+        )
+
     # --- reporting -----------------------------------------------------------
 
     def general_ledger(

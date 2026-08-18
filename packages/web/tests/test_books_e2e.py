@@ -131,6 +131,20 @@ def _service_post(base: str, path: str, payload: dict[str, Any]) -> Any:
         return json.loads(r.read().decode())
 
 
+def _service_post_raw(base: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """POST to the service, returning the status even when it refuses."""
+    req = urllib.request.Request(
+        f"{base}{path}", data=json.dumps(payload).encode(),
+        headers={"authorization": f"Bearer {TOKEN}", "content-type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return {"status": r.status, **json.loads(r.read().decode())}
+    except urllib.error.HTTPError as exc:
+        return {"status": exc.code, **json.loads(exc.read().decode())}
+
+
 def _signed(base: str, tenant: str) -> dict[str, int]:
     """Signed trial-balance amounts by account code (debit-positive)."""
     tb = _service_get(base, f"/t/{tenant}/trial-balance")
@@ -708,3 +722,52 @@ def test_general_ledger_and_budget_against_the_real_service(ledger_service: str)
     revenue = [l for l in data["lines"] if l["code"] == "4100"][0]
     assert revenue["actual_minor"] == "1200000", "July's 4,000 is not in August"
     assert revenue["favorable"] is False
+
+
+def test_classes_end_to_end_against_the_real_service(ledger_service: str) -> None:
+    """A restaurant with two lines of business: what did each one actually earn?"""
+    base = ledger_service
+    app = _app(base, ["classco"])
+    _seed(base, "classco", "RESTAURANT")
+
+    made = _req(app, "classco", "/t/classco/books/dimensions", "POST",
+                "key=class&label=Line+of+business&values=Dine-in%0ACatering&required=1")
+    assert made.status == 302 and "err=" not in str(made.headers.get("Location", ""))
+
+    # a class is now demanded on income and cost lines
+    untagged = _req(app, "classco", "/t/classco/books/entries", "POST",
+                    "date=2026-08-05&memo=Dinner&code1=1000&debit1=1200.00"
+                    "&code2=4100&credit2=1200.00")
+    assert "err=" in str(untagged.headers.get("Location", ""))
+    assert "required" in str(untagged.headers.get("Location", ""))
+
+    for date_, memo, amount, klass in [
+        ("2026-08-05", "Dinner+service", "1200.00", "Dine-in"),
+        ("2026-08-12", "Wedding", "8000.00", "Catering"),
+    ]:
+        r = _req(app, "classco", "/t/classco/books/entries", "POST",
+                 f"date={date_}&memo={memo}&code1=1000&debit1={amount}"
+                 f"&code2=4100&credit2={amount}&dim_class2={klass}")
+        assert r.status == 302 and "err=" not in str(r.headers.get("Location", "")), klass
+
+    # a typo is refused at the door, not silently accepted
+    typo = _service_post_raw(base, "/t/classco/entries", {
+        "date": "2026-08-14", "memo": "Typo",
+        "lines": [
+            {"code": "1000", "side": "DEBIT", "amount_minor": "100"},
+            {"code": "4100", "side": "CREDIT", "amount_minor": "100",
+             "dimensions": {"class": "Dinein"}},
+        ],
+    })
+    assert typo["status"] == 400
+    assert "not allowed" in typo["error"]
+
+    report = _req(app, "classco", "/t/classco/books/dimensions/class")
+    assert report.status == 200
+    assert "$1,200.00" in report.body and "$8,000.00" in report.body
+    assert "Dine-in" in report.body and "Catering" in report.body
+
+    data = _service_get(base, "/t/classco/dimensions/class/report")
+    by = {b["value"]: b for b in data["buckets"]}
+    assert by["Dine-in"]["total_credit_minor"] == "120000"
+    assert by["Catering"]["total_credit_minor"] == "800000"

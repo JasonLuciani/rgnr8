@@ -65,6 +65,15 @@ import {
 } from "./inbox.js";
 import type { FeedStatus } from "./feed.js";
 import {
+  DimensionServiceError,
+  dimensionJson,
+  dimensionsOf,
+  reportByDimension,
+  saveDimension,
+  validateDimensions,
+  type DimensionContext,
+} from "./dimensions.js";
+import {
   ReportingError,
   budgetReport,
   generalLedger,
@@ -206,6 +215,7 @@ function entryJson(e: PostedEntry): Record<string, unknown> {
       side: l.side,
       amount_minor: l.amount.minorUnits.toString(),
       memo: l.memo ?? "",
+      ...(l.dimensions ? { dimensions: l.dimensions } : {}),
     })),
   };
 }
@@ -323,6 +333,32 @@ export class LedgerService {
       if (rest[0] === "aging" && rest.length === 2 && req.method === "GET") {
         if (rest[1] !== "ar" && rest[1] !== "ap") return notFound("aging must be ar or ap");
         return await this.aging(tenant, rest[1] === "ar" ? "invoice" : "bill", req.query);
+      }
+
+      // --- reporting dimensions (classes, locations) ----------------------
+      if (rest[0] === "dimensions") {
+        const ctx = this.dimensionCtx(tenant);
+        if (rest.length === 1 && req.method === "GET") {
+          const defs = await this.backend.dimensions().list(String(tenant));
+          return ok({ tenant, dimensions: defs.map(dimensionJson) });
+        }
+        if (rest.length === 1 && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          return created({
+            tenant,
+            dimension: dimensionJson(
+              await saveDimension(ctx, data as Parameters<typeof saveDimension>[1]),
+            ),
+          });
+        }
+        if (rest.length === 2 && req.method === "DELETE") {
+          await this.backend.dimensions().remove(String(tenant), rest[1]!);
+          return ok({ tenant, removed: rest[1] });
+        }
+        if (rest.length === 3 && rest[2] === "report" && req.method === "GET") {
+          return ok(await reportByDimension(ctx, rest[1]!, req.query));
+        }
       }
 
       // --- reporting ------------------------------------------------------
@@ -448,6 +484,7 @@ export class LedgerService {
       if (err instanceof InboxError) return bad(err.message);
       if (err instanceof PayrollServiceError) return bad(err.message);
       if (err instanceof ReportingError) return bad(err.message);
+      if (err instanceof DimensionServiceError) return bad(err.message);
       return bad(err instanceof Error ? err.message : String(err));
     }
     return notFound("not found");
@@ -553,11 +590,13 @@ export class LedgerService {
       if (minor <= 0n) {
         return bad(`line ${code}: amount must be positive (the side conveys direction)`);
       }
+      const dimensions = dimensionsOf(l["dimensions"], `line ${code}`);
       lines.push({
         accountId: account.id,
         side,
         amount: Money.fromMinorUnits(minor, this.currency),
         ...(str(l["memo"]) ? { memo: str(l["memo"]) } : {}),
+        ...(dimensions ? { dimensions } : {}),
       });
     }
 
@@ -576,6 +615,10 @@ export class LedgerService {
       provenance: provenanceFor(str(data["source"]) || "manual", date, this.opts.now()),
       lines,
     };
+
+    // A typo'd class is refused at the door rather than silently fragmenting a
+    // report months later.
+    await validateDimensions(this.dimensionCtx(tenant), command);
 
     const engine = new PostingEngine(chart, this.backend.store(tenant), this.backend.periods(tenant));
     const entry = await engine.post(command, { postedAt: this.opts.now() });
@@ -708,6 +751,12 @@ export class LedgerService {
     });
   }
 
+  // --- reporting dimensions --------------------------------------------------
+
+  private dimensionCtx(tenant: TenantId): DimensionContext {
+    return { backend: this.backend, tenant, currency: this.currency };
+  }
+
   // --- reporting -------------------------------------------------------------
 
   private reportingCtx(tenant: TenantId): ReportingContext {
@@ -758,7 +807,10 @@ export class LedgerService {
     const ctx = this.inboxCtx(tenant);
     switch (action) {
       case "accept":
-        return ok(await acceptTxn(ctx, id, str(data["category_code"])));
+        return ok(await acceptTxn(
+          ctx, id, str(data["category_code"]),
+          dimensionsOf(data["dimensions"], "this transaction"),
+        ));
       case "match":
         return ok(await matchTxn(ctx, id, str(data["doc_kind"]), str(data["doc_id"])));
       case "exclude":

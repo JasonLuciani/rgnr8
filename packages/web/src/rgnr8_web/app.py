@@ -93,6 +93,11 @@ from .ledger_client import LedgerClient
 from .arap_screens import render_aging as render_arap_aging, render_documents
 from .reconcile_screens import render_pick_account, render_reconcile
 from .reporting_screens import render_budget, render_general_ledger
+from .dimension_screens import (
+    render_dimension_report,
+    render_dimensions,
+    render_dimensions_unavailable,
+)
 from .payroll_screens import (
     render_payroll_home,
     render_payroll_run,
@@ -918,6 +923,27 @@ class WebApp:
             return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
                                  lambda t: self._books_register_page(subject, t, code))
 
+        # /t/<tenant>/books/dimensions -> classes and locations
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "books"
+                and parts[3] == "dimensions"):
+            if req.method == "POST":
+                return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                     lambda t: self._dimension_save(subject, t, req.body))
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._dimensions_page(subject, t, req.query))
+        # /t/<tenant>/books/dimensions/<key>/delete
+        if (len(parts) == 6 and parts[0] == "t" and parts[2] == "books"
+                and parts[3] == "dimensions" and parts[5] == "delete"
+                and req.method == "POST"):
+            key = parts[4]
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._dimension_delete(subject, t, key))
+        # /t/<tenant>/books/dimensions/<key> -> the per-value report
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "books"
+                and parts[3] == "dimensions" and req.method == "GET"):
+            key = parts[4]
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._dimension_report(subject, t, key, req.query))
         # /t/<tenant>/books/gl -> general ledger detail across every account
         if (len(parts) == 4 and parts[0] == "t" and parts[2] == "books"
                 and parts[3] == "gl"):
@@ -1387,10 +1413,12 @@ class WebApp:
         if not tb.ok:
             return self._shell(subject, t, "books", render_books_unavailable(tb.error()))
         accounts = self._ledger.accounts(t.tenant_id)
+        dims = self._ledger.dimensions(t.tenant_id)
         perms, _role = self._perms_role(subject, t.tenant_id)
         can_post = self._policy is None or Permission.POST_JOURNAL in perms
         body = render_books_home(
             t.tenant_id, tb.body, accounts.body if accounts.ok else {},
+            dimensions=dims.body if dims.ok else {},
             can_post=can_post,
             message=query.get("posted", ""),
             error=query.get("err", ""),
@@ -1606,8 +1634,10 @@ class WebApp:
                                render_actioned(t.tenant_id, status, res.body, can_post=can_post))
 
         accounts = self._ledger.accounts(t.tenant_id)
+        dims = self._ledger.dimensions(t.tenant_id)
         body = render_inbox(
             t.tenant_id, res.body, accounts.body if accounts.ok else {},
+            dimensions=dims.body if dims.ok else {},
             can_post=can_post,
             message=query.get("done", ""), error=query.get("err", ""),
         )
@@ -1630,6 +1660,9 @@ class WebApp:
                 return _redirect(
                     f"{back}?err={_qs_escape('Choose an account before accepting')}")
             payload["category_code"] = code
+            dims = self._dimensions_of(data)
+            if dims:
+                payload["dimensions"] = dims
         elif action == "match":
             raw = str(data.get("match", "")).strip()
             kind, _, doc_id = raw.partition(":")
@@ -1723,6 +1756,82 @@ class WebApp:
             self._audit.record(subject, "feed.rule_deleted", self._session_clock(),
                                tenant_id=t.tenant_id, target=rule_id)
         return _redirect(f"{back}?done={_qs_escape('Rule removed')}")
+
+    # --- classes and locations --------------------------------------------------
+
+    def _dimensions_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "books", render_dimensions_unavailable())
+        res = self._ledger.dimensions(t.tenant_id)
+        if not res.ok:
+            return self._shell(subject, t, "books",
+                               render_dimensions_unavailable(res.error()))
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_post = self._policy is None or Permission.POST_JOURNAL in perms
+        return self._shell(subject, t, "books", render_dimensions(
+            t.tenant_id, res.body, can_post=can_post,
+            message=query.get("done", ""), error=query.get("err", ""),
+        ))
+
+    def _dimension_save(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/books/dimensions"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        res = self._ledger.save_dimension(t.tenant_id, {
+            "key": str(data.get("key", "")).strip(),
+            "label": str(data.get("label", "")).strip(),
+            "values": str(data.get("values", "")),
+            "required": str(data.get("required", "")).strip() in ("1", "true", "on"),
+        })
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "dimension.saved", self._session_clock(),
+                               tenant_id=t.tenant_id, target=str(data.get("key", "")))
+        return _redirect(f"{back}?done={_qs_escape('Saved')}")
+
+    def _dimension_delete(self, subject: str, t: _Tenant, key: str) -> Response:
+        back = f"/t/{t.tenant_id}/books/dimensions"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        res = self._ledger.delete_dimension(t.tenant_id, key)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "dimension.removed", self._session_clock(),
+                               tenant_id=t.tenant_id, target=key)
+        return _redirect(f"{back}?done={_qs_escape('Removed')}")
+
+    def _dimension_report(
+        self, subject: str, t: _Tenant, key: str, query: "dict[str, str]"
+    ) -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "books", render_dimensions_unavailable())
+        frm = query.get("from", "").strip()
+        to = query.get("to", "").strip()
+        res = self._ledger.dimension_report(t.tenant_id, key, frm=frm, to=to)
+        if not res.ok:
+            return self._shell(subject, t, "books",
+                               render_dimensions_unavailable(res.error()))
+        return self._shell(subject, t, "books",
+                           render_dimension_report(t.tenant_id, res.body, frm=frm, to=to))
+
+    def _dimensions_of(self, data: "Mapping[str, object]", suffix: str = "") -> "dict[str, str]":
+        """Collect dim_<key> fields off a form into a dimensions object."""
+        out: dict[str, str] = {}
+        for field, raw in data.items():
+            if not field.startswith("dim_"):
+                continue
+            name = field[len("dim_"):]
+            if suffix:
+                if not name.endswith(suffix):
+                    continue
+                name = name[: -len(suffix)]
+            value = str(raw).strip()
+            if value:
+                out[name] = value
+        return out
 
     # --- general ledger and budgets --------------------------------------------
 
@@ -1898,10 +2007,14 @@ class WebApp:
                 credit = self._amount_to_minor(str(data.get(f"credit{i}", "")))
                 if debit and credit:
                     raise ValueError(f"line {i}: enter a debit or a credit, not both")
+                dims = self._dimensions_of(data, suffix=str(i))
+                line: dict[str, object] = {"code": code}
+                if dims:
+                    line["dimensions"] = dims
                 if debit:
-                    lines.append({"code": code, "side": "DEBIT", "amount_minor": str(debit)})
+                    lines.append({**line, "side": "DEBIT", "amount_minor": str(debit)})
                 elif credit:
-                    lines.append({"code": code, "side": "CREDIT", "amount_minor": str(credit)})
+                    lines.append({**line, "side": "CREDIT", "amount_minor": str(credit)})
         except ValueError as exc:
             return _redirect(f"/t/{t.tenant_id}/books?err={_qs_escape(str(exc))}")
         if len(lines) < 2:

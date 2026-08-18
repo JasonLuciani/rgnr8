@@ -98,7 +98,7 @@ def _match_form(tenant: str, item: Mapping[str, object]) -> str:
 
 
 def _row(tenant: str, item: Mapping[str, object], accounts: Mapping[str, object],
-         can_post: bool) -> str:
+         can_post: bool, dimensions: Mapping[str, object] | None = None) -> str:
     amount = _minor(item.get("amount_minor")) or 0
     cls = "num neg" if amount < 0 else "num"
     txn_id = str(item.get("id"))
@@ -123,12 +123,15 @@ def _row(tenant: str, item: Mapping[str, object], accounts: Mapping[str, object]
         f'<div style="margin-top:4px">{_confidence_chip(float(sug.get("confidence") or 0), str(sug.get("source") or ""))}'
         f' <span class="muted" style="font-size:12px">{_esc(sug.get("reason"))}</span></div>'
     )
+    from .dimension_screens import dimension_selects
+
     accept = (
         f'<form method="post" action="/t/{_esc(tenant)}/inbox/{_esc(txn_id)}/accept" '
         'style="display:flex;gap:6px;align-items:center;margin:0;flex-wrap:wrap">'
         f'<select name="category_code">'
         f'{_account_options(accounts, sug_code, exclude=str(item.get("account_code")))}</select>'
-        '<button class="btn" style="padding:4px 12px;margin:0" type="submit">Accept</button>'
+        + dimension_selects(dimensions or {})
+        + '<button class="btn" style="padding:4px 12px;margin:0" type="submit">Accept</button>'
         "</form>"
     )
     exclude = (
@@ -151,13 +154,14 @@ def render_inbox(
     view: Mapping[str, object],
     accounts: Mapping[str, object],
     *,
+    dimensions: Mapping[str, object] | None = None,
     can_post: bool,
     message: str = "",
     error: str = "",
 ) -> str:
     """The review queue: everything the bank sent that isn't in the books yet."""
     items = [i for i in _seq(view.get("items")) if isinstance(i, Mapping)]
-    rows = "".join(_row(tenant, i, accounts, can_post) for i in items)
+    rows = "".join(_row(tenant, i, accounts, can_post, dimensions) for i in items)
     empty = (
         '<tr><td colspan="5" class="muted" style="text-align:center;padding:24px">'
         "Nothing waiting — every bank line has been dealt with.</td></tr>"

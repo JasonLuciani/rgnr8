@@ -5,6 +5,7 @@ import {
   asPeriodKey,
   type Currency,
   type EntryId,
+  type PostCommand,
   type Provenance,
   type TenantId,
 } from "@rgnr8/ledger-kernel";
@@ -13,6 +14,7 @@ import type { DocKind, DocRecord } from "./documents.js";
 import type { FeedRuleRecord, FeedStatus, FeedTxnRecord } from "./feed.js";
 import { LearnedModel, suggestFor, type Suggestion } from "./suggest.js";
 import { recordPayment, type ArApContext } from "./arap.js";
+import { validateDimensions } from "./dimensions.js";
 
 /**
  * The review inbox — where a bank line becomes an accounting fact.
@@ -403,6 +405,7 @@ export async function acceptTxn(
   ctx: InboxContext,
   id: string,
   categoryCode: string,
+  dimensions?: Record<string, string>,
 ): Promise<ActionResult> {
   const txn = await requirePending(ctx, id);
   const code = categoryCode.trim();
@@ -425,8 +428,7 @@ export async function acceptTxn(
   const engine = new PostingEngine(
     chart, ctx.backend.store(ctx.tenant), ctx.backend.periods(ctx.tenant),
   );
-  const entry = await engine.post(
-    {
+  const command: PostCommand = {
       tenantId: ctx.tenant,
       // The revision is what lets a line be re-categorized after an undo: the
       // reversed entry keeps the old key, the new one gets its own.
@@ -436,18 +438,28 @@ export async function acceptTxn(
       entryDate: txn.date,
       memo,
       provenance: provenanceFor(txn.source || "feed", txn.date, ctx.now()),
+      // The bank side of a feed line carries no class: money in the account is
+      // not attributable to a line of business, only what it was for is.
       lines: inflow
         ? [
             { accountId: bank.id, side: "DEBIT", amount: magnitude },
-            { accountId: category.id, side: "CREDIT", amount: magnitude },
+            {
+              accountId: category.id, side: "CREDIT", amount: magnitude,
+              ...(dimensions ? { dimensions } : {}),
+            },
           ]
         : [
-            { accountId: category.id, side: "DEBIT", amount: magnitude },
+            {
+              accountId: category.id, side: "DEBIT", amount: magnitude,
+              ...(dimensions ? { dimensions } : {}),
+            },
             { accountId: bank.id, side: "CREDIT", amount: magnitude },
           ],
-    },
-    { postedAt: ctx.now() },
+  };
+  await validateDimensions(
+    { backend: ctx.backend, tenant: ctx.tenant, currency: ctx.currency }, command,
   );
+  const entry = await engine.post(command, { postedAt: ctx.now() });
 
   const updated: FeedTxnRecord = {
     ...txn, status: "POSTED", categoryCode: code, entryId: String(entry.id),

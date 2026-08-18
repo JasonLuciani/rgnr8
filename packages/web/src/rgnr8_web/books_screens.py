@@ -108,6 +108,7 @@ def render_books_home(
     tb: Mapping[str, object],
     accounts: Mapping[str, object],
     *,
+    dimensions: Mapping[str, object] | None = None,
     can_post: bool,
     message: str = "",
     error: str = "",
@@ -148,7 +149,8 @@ def render_books_home(
         f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/statements">Statements</a>'
         f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/gl">General ledger</a>'
         f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/budget">Budget</a>'
-        f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/reconcile">Reconcile</a></span>'
+        f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/reconcile">Reconcile</a>'
+        f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/dimensions">Classes</a></span>'
     )
     out = ""
     if message:
@@ -157,11 +159,14 @@ def render_books_home(
         out += _banner("warn", error)
     out += _card("Trial Balance", table, actions)
     if can_post:
-        out += _render_entry_form(tenant, accounts)
+        out += _render_entry_form(tenant, accounts, dimensions or {})
     return out
 
 
-def _render_entry_form(tenant: str, accounts: Mapping[str, object]) -> str:
+def _render_entry_form(
+    tenant: str, accounts: Mapping[str, object],
+    dimensions: Mapping[str, object] | None = None,
+) -> str:
     options = []
     for a in _seq(accounts.get("accounts")):
         if not isinstance(a, Mapping):
@@ -174,15 +179,24 @@ def _render_entry_form(tenant: str, accounts: Mapping[str, object]) -> str:
             "Record a transaction",
             '<p class="muted">Set up a chart of accounts first.</p>',
         )
+    from .dimension_screens import dimension_selects
+
     line = (
         '<div class="grid3">'
         '<div><label>Account</label><select name="{sel}">{opts}</select></div>'
         '<div><label>Debit</label><input name="{dr}" placeholder="0.00" inputmode="decimal"></div>'
         '<div><label>Credit</label><input name="{cr}" placeholder="0.00" inputmode="decimal"></div>'
-        "</div>"
+        "</div>{dims}"
     )
     lines = "".join(
-        line.format(sel=f"code{i}", dr=f"debit{i}", cr=f"credit{i}", opts=opts) for i in range(1, 5)
+        line.format(
+            sel=f"code{i}", dr=f"debit{i}", cr=f"credit{i}", opts=opts,
+            dims=(
+                f'<div class="grid3">{dimension_selects(dimensions or {}, suffix=str(i))}</div>'
+                if dimension_selects(dimensions or {}) else ""
+            ),
+        )
+        for i in range(1, 5)
     )
     return _card(
         "Record a transaction",

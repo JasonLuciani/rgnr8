@@ -20,6 +20,9 @@ import { InMemoryReconStore, PgReconStore, type ReconStore } from "./reconcile.j
 import { InMemoryFeedStore, PgFeedStore, type FeedStore } from "./feed.js";
 import { InMemoryPayrollStore, PgPayrollStore, type PayrollStore } from "./payroll.js";
 import { InMemoryBudgetStore, PgBudgetStore, type BudgetStore } from "./reporting.js";
+import {
+  InMemoryDimensionStore, PgDimensionStore, type DimensionStore,
+} from "./dimensions.js";
 import { rlsDdl } from "./security.js";
 
 /**
@@ -53,6 +56,8 @@ export interface LedgerBackend {
   payroll(): PayrollStore;
   /** Per-period, per-account budgets. */
   budgets(): BudgetStore;
+  /** Reporting dimensions (classes, locations) and their allowed values. */
+  dimensions(): DimensionStore;
   /** Create/verify schema. Safe to run repeatedly. */
   migrate(): Promise<void>;
 }
@@ -64,6 +69,7 @@ export class InMemoryBackend implements LedgerBackend {
   private readonly feedStore = new InMemoryFeedStore();
   private readonly payrollStore = new InMemoryPayrollStore();
   private readonly budgetStore = new InMemoryBudgetStore();
+  private readonly dimensionStore = new InMemoryDimensionStore();
   private readonly accounts = new Map<string, Map<string, Account>>();
   private readonly stores = new Map<string, InMemoryLedgerStore>();
   private readonly periodStores = new Map<string, InMemoryPeriodStore>();
@@ -130,12 +136,17 @@ export class InMemoryBackend implements LedgerBackend {
     return this.budgetStore;
   }
 
+  dimensions(): DimensionStore {
+    return this.dimensionStore;
+  }
+
   async migrate(): Promise<void> {
     await this.docs.migrate();
     await this.reconStore.migrate();
     await this.feedStore.migrate();
     await this.payrollStore.migrate();
     await this.budgetStore.migrate();
+    await this.dimensionStore.migrate();
   }
 }
 
@@ -153,6 +164,7 @@ export class PostgresBackend implements LedgerBackend {
   private readonly feedStore: PgFeedStore;
   private readonly payrollStore: PgPayrollStore;
   private readonly budgetStore: PgBudgetStore;
+  private readonly dimensionStore: PgDimensionStore;
 
   /**
    * @param pool     a connection pool.
@@ -175,6 +187,7 @@ export class PostgresBackend implements LedgerBackend {
     this.feedStore = new PgFeedStore(pool);
     this.payrollStore = new PgPayrollStore(pool);
     this.budgetStore = new PgBudgetStore(pool);
+    this.dimensionStore = new PgDimensionStore(pool);
   }
 
   async migrate(): Promise<void> {
@@ -185,6 +198,7 @@ export class PostgresBackend implements LedgerBackend {
     await this.feedStore.migrate();
     await this.payrollStore.migrate();
     await this.budgetStore.migrate();
+    await this.dimensionStore.migrate();
     // Last, once every table exists: make the database itself enforce tenant
     // isolation, so a query that forgets its tenant filter returns nothing
     // rather than everything.
@@ -211,6 +225,10 @@ export class PostgresBackend implements LedgerBackend {
 
   budgets(): BudgetStore {
     return this.budgetStore;
+  }
+
+  dimensions(): DimensionStore {
+    return this.dimensionStore;
   }
 
   chart(tenant: TenantId): Promise<ChartOfAccounts> {

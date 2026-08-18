@@ -110,5 +110,18 @@ export {
   type BudgetStore,
   type ReportingContext,
 } from "./reporting.js";
+export {
+  InMemoryDimensionStore,
+  PgDimensionStore,
+  DIMENSION_DDL,
+  DimensionServiceError,
+  saveDimension,
+  reportByDimension,
+  validateDimensions,
+  registryFor,
+  type DimensionStore,
+  type DimensionRecord,
+  type DimensionContext,
+} from "./dimensions.js";
 export { rlsDdl, appRoleDdl, superuserWarning, TENANT_TABLES } from "./security.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";
