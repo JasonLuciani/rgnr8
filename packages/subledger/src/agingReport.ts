@@ -26,14 +26,24 @@ export interface AgingReport {
   readonly grandTotal: Money;
 }
 
-interface PartyItem {
+/** An open receivable/payable, attributed to the party that owes or is owed. */
+export interface PartyOpenItem {
   readonly partyId: string;
   readonly dueDate: string;
   readonly openAmount: Money;
 }
 
-function buildAgingReport(items: readonly PartyItem[], asOf: string, currency: Currency): AgingReport {
-  const byParty = new Map<string, PartyItem[]>();
+/**
+ * Age a set of open items by party. This is the shared core: `arAgingReport` and
+ * `apAgingReport` are thin wrappers that pull items off a subledger, and a
+ * service holding its open items in SQL can call this directly.
+ */
+export function agingFromOpenItems(
+  items: readonly PartyOpenItem[],
+  asOf: string,
+  currency: Currency,
+): AgingReport {
+  const byParty = new Map<string, PartyOpenItem[]>();
   for (const it of items) {
     if (it.openAmount.isZero()) continue;
     const list = byParty.get(it.partyId) ?? [];
@@ -100,11 +110,11 @@ export function agingReportJson(report: AgingReport, kind: "AR" | "AP"): AgingRe
 /** AR aging by customer, as of a date. */
 export function arAgingReport(ar: ARSubledger, asOf: string, currency: Currency): AgingReport {
   const items = ar.openInvoices().map((i) => ({ partyId: i.customerId, dueDate: i.dueDate, openAmount: i.openAmount }));
-  return buildAgingReport(items, asOf, currency);
+  return agingFromOpenItems(items, asOf, currency);
 }
 
 /** AP aging by vendor, as of a date. */
 export function apAgingReport(ap: APSubledger, asOf: string, currency: Currency): AgingReport {
   const items = ap.openBills().map((b) => ({ partyId: b.vendorId, dueDate: b.dueDate, openAmount: b.openAmount }));
-  return buildAgingReport(items, asOf, currency);
+  return agingFromOpenItems(items, asOf, currency);
 }

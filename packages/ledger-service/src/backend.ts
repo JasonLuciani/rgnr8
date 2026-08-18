@@ -11,6 +11,11 @@ import {
   type TenantId,
 } from "@rgnr8/ledger-kernel";
 import { PgAccountStore, PgLedgerStore, SqlPeriodStore, type Pool } from "@rgnr8/ledger-postgres";
+import {
+  InMemoryDocumentStore,
+  PgDocumentStore,
+  type DocumentStore,
+} from "./documents.js";
 
 /**
  * The storage seam the ledger service runs on.
@@ -33,12 +38,15 @@ export interface LedgerBackend {
   store(tenant: TenantId): LedgerStore;
   /** The period-lock store for a tenant. */
   periods(tenant: TenantId): PeriodStore;
+  /** AR/AP source documents (invoices, bills, parties, payments). */
+  documents(): DocumentStore;
   /** Create/verify schema. Safe to run repeatedly. */
   migrate(): Promise<void>;
 }
 
 /** In-memory backend — local dev and tests. Nothing survives a restart. */
 export class InMemoryBackend implements LedgerBackend {
+  private readonly docs = new InMemoryDocumentStore();
   private readonly accounts = new Map<string, Map<string, Account>>();
   private readonly stores = new Map<string, InMemoryLedgerStore>();
   private readonly periodStores = new Map<string, InMemoryPeriodStore>();
@@ -85,8 +93,12 @@ export class InMemoryBackend implements LedgerBackend {
     return p;
   }
 
+  documents(): DocumentStore {
+    return this.docs;
+  }
+
   migrate(): Promise<void> {
-    return Promise.resolve();
+    return this.docs.migrate();
   }
 }
 
@@ -99,16 +111,23 @@ export class PostgresBackend implements LedgerBackend {
   private readonly ledger: PgLedgerStore;
   private readonly accounts: PgAccountStore;
   private readonly periodStore: SqlPeriodStore;
+  private readonly docs: PgDocumentStore;
 
   constructor(pool: Pool) {
     this.ledger = new PgLedgerStore(pool);
     this.accounts = new PgAccountStore(pool);
     this.periodStore = new SqlPeriodStore(pool);
+    this.docs = new PgDocumentStore(pool);
   }
 
   async migrate(): Promise<void> {
     await this.ledger.migrate();
     await this.accounts.migrate();
+    await this.docs.migrate();
+  }
+
+  documents(): DocumentStore {
+    return this.docs;
   }
 
   chart(tenant: TenantId): Promise<ChartOfAccounts> {

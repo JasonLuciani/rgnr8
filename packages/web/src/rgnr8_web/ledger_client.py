@@ -158,6 +158,57 @@ class LedgerClient:
             payload["rules"] = rules
         return self._call("POST", f"/t/{tenant}/ingest", payload)
 
+    # --- AR / AP -------------------------------------------------------------
+
+    def parties(self, tenant: str, kind: str) -> LedgerResponse:
+        """kind: "customers" or "vendors"."""
+        return self._call("GET", f"/t/{tenant}/{kind}")
+
+    def create_party(
+        self, tenant: str, kind: str, party_id: str, name: str,
+        *, email: str = "", terms_days: int | None = None,
+    ) -> LedgerResponse:
+        payload: dict[str, object] = {"id": party_id, "name": name}
+        if email:
+            payload["email"] = email
+        if terms_days is not None:
+            payload["terms_days"] = terms_days
+        return self._call("POST", f"/t/{tenant}/{kind}", payload)
+
+    def documents(self, tenant: str, kind: str) -> LedgerResponse:
+        """kind: "invoices" or "bills"."""
+        return self._call("GET", f"/t/{tenant}/{kind}")
+
+    def document(self, tenant: str, kind: str, doc_id: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/{kind}/{doc_id}")
+
+    def create_document(
+        self, tenant: str, kind: str, doc_id: str, party_id: str, date: str,
+        lines: list[dict[str, object]], *, memo: str = "", due_date: str = "",
+    ) -> LedgerResponse:
+        payload: dict[str, object] = {
+            "id": doc_id, "party_id": party_id, "date": date, "lines": lines,
+        }
+        if memo:
+            payload["memo"] = memo
+        if due_date:
+            payload["due_date"] = due_date
+        return self._call("POST", f"/t/{tenant}/{kind}", payload)
+
+    def record_payment(
+        self, tenant: str, kind: str, doc_id: str, date: str, amount_minor: str,
+        *, memo: str = "",
+    ) -> LedgerResponse:
+        payload: dict[str, object] = {"date": date, "amount_minor": amount_minor}
+        if memo:
+            payload["memo"] = memo
+        return self._call("POST", f"/t/{tenant}/{kind}/{doc_id}/payments", payload)
+
+    def aging(self, tenant: str, side: str, *, as_of: str = "") -> LedgerResponse:
+        """side: "ar" or "ap"."""
+        qs = f"?as_of={as_of}" if as_of else ""
+        return self._call("GET", f"/t/{tenant}/aging/{side}{qs}")
+
     def create_account(
         self, tenant: str, code: str, name: str, *, subtype: str = "", type_: str = ""
     ) -> LedgerResponse:

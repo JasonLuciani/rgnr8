@@ -16,4 +16,20 @@ export {
   type IngestTransactionInput,
   type IngestRuleInput,
 } from "./ingest.js";
+export {
+  InMemoryDocumentStore,
+  PgDocumentStore,
+  DOCUMENT_DDL,
+  type DocumentStore,
+  type DocRecord,
+  type DocKind,
+  type PartyRecord,
+} from "./documents.js";
+export {
+  createDocument,
+  recordPayment,
+  aging,
+  ArApError,
+  DEFAULT_CONTROLS,
+} from "./arap.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";

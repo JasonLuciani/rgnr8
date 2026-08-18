@@ -36,6 +36,17 @@ import {
 } from "@rgnr8/financial-statements";
 import type { LedgerBackend } from "./backend.js";
 import { ingestTransactions, type IngestRequest } from "./ingest.js";
+import {
+  ArApError,
+  aging,
+  createDocument,
+  recordPayment,
+  validateParty,
+  type ArApContext,
+  type CreateDocumentRequest,
+  type RecordPaymentRequest,
+} from "./arap.js";
+import type { DocKind, DocRecord, PartyKind } from "./documents.js";
 
 /**
  * The service's request handlers — pure `(request) => response`, with no HTTP
@@ -209,6 +220,32 @@ export class LedgerService {
         await this.backend.periods(tenant).lock(tenant, asPeriodKey(rest[1]!));
         return ok({ tenant, period: rest[1], locked: true });
       }
+      // --- AR / AP -------------------------------------------------------
+      if (rest[0] === "customers" || rest[0] === "vendors") {
+        const partyKind: PartyKind = rest[0] === "customers" ? "customer" : "vendor";
+        if (rest.length === 1 && req.method === "GET") return await this.listParties(tenant, partyKind);
+        if (rest.length === 1 && req.method === "POST") {
+          return await this.createParty(tenant, partyKind, req.body);
+        }
+      }
+      if (rest[0] === "invoices" || rest[0] === "bills") {
+        const docKind: DocKind = rest[0] === "invoices" ? "invoice" : "bill";
+        if (rest.length === 1 && req.method === "GET") return await this.listDocs(tenant, docKind);
+        if (rest.length === 1 && req.method === "POST") {
+          return await this.createDoc(tenant, docKind, req.body);
+        }
+        if (rest.length === 2 && req.method === "GET") {
+          return await this.getDoc(tenant, docKind, rest[1]!);
+        }
+        if (rest.length === 3 && rest[2] === "payments" && req.method === "POST") {
+          return await this.payDoc(tenant, docKind, rest[1]!, req.body);
+        }
+      }
+      if (rest[0] === "aging" && rest.length === 2 && req.method === "GET") {
+        if (rest[1] !== "ar" && rest[1] !== "ap") return notFound("aging must be ar or ap");
+        return await this.aging(tenant, rest[1] === "ar" ? "invoice" : "bill", req.query);
+      }
+
       if (rest[0] === "ingest" && req.method === "POST") {
         return await this.ingest(tenant, req.body);
       }
@@ -217,6 +254,7 @@ export class LedgerService {
       }
     } catch (err) {
       if (err instanceof PeriodClosedError) return conflict(err.message);
+      if (err instanceof ArApError) return bad(err.message);
       return bad(err instanceof Error ? err.message : String(err));
     }
     return notFound("not found");
@@ -475,6 +513,122 @@ export class LedgerService {
         balance_minor: r.balance.minorUnits.toString(),
       })),
     });
+  }
+
+  // --- AR / AP --------------------------------------------------------------
+
+  private async arapCtx(tenant: TenantId): Promise<ArApContext> {
+    return {
+      tenant: String(tenant),
+      chart: await this.backend.chart(tenant),
+      store: this.backend.store(tenant),
+      periods: this.backend.periods(tenant),
+      docs: this.backend.documents(),
+      currency: this.currency,
+      postedAt: this.opts.now(),
+    };
+  }
+
+  private async listParties(tenant: TenantId, kind: PartyKind): Promise<ServiceResponse> {
+    const parties = await this.backend.documents().listParties(String(tenant), kind);
+    return ok({ tenant, kind, parties });
+  }
+
+  private async createParty(
+    tenant: TenantId, kind: PartyKind, body: string,
+  ): Promise<ServiceResponse> {
+    const data = parseJson(body);
+    if (!data) return bad("invalid JSON body");
+    const party = validateParty(data);
+    await this.backend.documents().upsertParty(String(tenant), kind, party);
+    return created({ tenant, kind, party });
+  }
+
+  private docJson(d: DocRecord): Record<string, unknown> {
+    return {
+      id: d.id,
+      kind: d.kind,
+      party_id: d.partyId,
+      date: d.date,
+      due_date: d.dueDate,
+      total_minor: d.totalMinor,
+      open_minor: d.openMinor,
+      status: d.status,
+      memo: d.memo,
+      lines: d.lines.map((l) => ({
+        description: l.description,
+        quantity: l.quantity,
+        unit_amount_minor: l.unitAmountMinor,
+        account_code: l.accountCode,
+        amount_minor: l.amountMinor,
+      })),
+    };
+  }
+
+  private async listDocs(tenant: TenantId, kind: DocKind): Promise<ServiceResponse> {
+    const docs = await this.backend.documents().listDocs(String(tenant), kind);
+    let openTotal = 0n;
+    let overdueTotal = 0n;
+    const today = this.opts.now().slice(0, 10);
+    for (const d of docs) {
+      const open = BigInt(d.openMinor);
+      openTotal += open;
+      if (open > 0n && d.dueDate < today) overdueTotal += open;
+    }
+    return ok({
+      tenant,
+      kind,
+      documents: docs.map((d) => this.docJson(d)),
+      open_total_minor: openTotal.toString(),
+      overdue_total_minor: overdueTotal.toString(),
+    });
+  }
+
+  private async getDoc(tenant: TenantId, kind: DocKind, id: string): Promise<ServiceResponse> {
+    const doc = await this.backend.documents().getDoc(String(tenant), kind, id);
+    if (!doc) return notFound(`unknown ${kind} ${id}`);
+    const payments = await this.backend.documents().listPayments(String(tenant), kind, id);
+    return ok({
+      tenant,
+      document: this.docJson(doc),
+      payments: payments.map((p) => ({
+        id: p.id, date: p.date, amount_minor: p.amountMinor, bank_code: p.bankCode,
+      })),
+    });
+  }
+
+  private async createDoc(
+    tenant: TenantId, kind: DocKind, body: string,
+  ): Promise<ServiceResponse> {
+    const data = parseJson(body);
+    if (!data) return bad("invalid JSON body");
+    const result = await createDocument(
+      kind, data as unknown as CreateDocumentRequest, await this.arapCtx(tenant),
+    );
+    return created({ tenant, document: this.docJson(result.doc), entry_id: result.entryId });
+  }
+
+  private async payDoc(
+    tenant: TenantId, kind: DocKind, id: string, body: string,
+  ): Promise<ServiceResponse> {
+    const data = parseJson(body);
+    if (!data) return bad("invalid JSON body");
+    const result = await recordPayment(
+      kind, id, data as unknown as RecordPaymentRequest, await this.arapCtx(tenant),
+    );
+    return created({
+      tenant,
+      document: this.docJson(result.doc),
+      entry_id: result.entryId,
+      applied_minor: result.appliedMinor,
+    });
+  }
+
+  private async aging(
+    tenant: TenantId, kind: DocKind, query: Readonly<Record<string, string>>,
+  ): Promise<ServiceResponse> {
+    const asOf = query["as_of"] ?? this.opts.now().slice(0, 10);
+    return ok(await aging(kind, asOf, await this.arapCtx(tenant)));
   }
 
   // --- feed → ledger --------------------------------------------------------

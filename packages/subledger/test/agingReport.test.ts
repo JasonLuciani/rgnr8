@@ -45,6 +45,6 @@ test("agingReportJson serializes to the aging/1 contract", () => {
   assert.equal(json.contract, "aging/1");
   assert.equal(json.kind, "AR");
   assert.equal(json.grand_total_minor, "100000");
-  assert.equal(json.rows[0].party_id, "acme");
-  assert.equal(json.bucket_labels.length, json.rows[0].buckets_minor.length);
+  assert.equal(json.rows[0]!.party_id, "acme");
+  assert.equal(json.bucket_labels.length, json.rows[0]!.buckets_minor.length);
 });

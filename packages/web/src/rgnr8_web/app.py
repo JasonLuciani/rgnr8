@@ -89,6 +89,7 @@ from .credentials import AuthError, AuthService, CredentialStore
 from .openapi import build_openapi
 from .owner_reports import render_owner_report
 from .ledger_client import LedgerClient
+from .arap_screens import render_aging as render_arap_aging, render_documents
 from .books_screens import (
     render_books_home,
     render_books_statements,
@@ -743,6 +744,32 @@ class WebApp:
             return self._require(subject, token_tenant, parts[1], P.MANAGE_USERS,
                                  lambda t: self._audit_page(subject, t))
 
+        # --- invoicing (AR) and bills (AP) ---
+        if len(parts) >= 3 and parts[0] == "t" and parts[2] in ("invoices", "bills"):
+            kind = parts[2]
+            if len(parts) == 3 and req.method == "GET":
+                return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                     lambda t: self._arap_page(subject, t, kind, req.query))
+            if len(parts) == 3 and req.method == "POST":
+                return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                     lambda t: self._arap_create(t, kind, req.body))
+            if len(parts) == 5 and parts[4] == "payments" and req.method == "POST":
+                doc_id = parts[3]
+                return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                     lambda t: self._arap_pay(subject, t, kind, doc_id, req.body))
+        # /t/<tenant>/customers|vendors  -> add a party (form POST)
+        if (len(parts) == 3 and parts[0] == "t" and parts[2] in ("customers", "vendors")
+                and req.method == "POST"):
+            kind = parts[2]
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._arap_party(t, kind, req.body))
+        # /t/<tenant>/receivables|payables/aging  -> the aging report
+        if (len(parts) == 4 and parts[0] == "t" and parts[3] == "aging"
+                and parts[2] in ("receivables", "payables")):
+            side = "ar" if parts[2] == "receivables" else "ap"
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._arap_aging(subject, t, side, req.query))
+
         # --- the books (general ledger) ---
         # /t/<tenant>/books -> trial balance + record a transaction
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "books":
@@ -1002,6 +1029,131 @@ class WebApp:
         # no RBAC directory → tenant-scoped access = full owner-equivalent view
         return frozenset(Permission), None
 
+
+
+    # --- invoicing (AR) and bills (AP) ---------------------------------------
+
+    def _today(self, t: _Tenant) -> str:
+        """The business's working date. Derived from its forecast as-of date so
+        the whole app agrees on 'today' under test and in dev."""
+        return t.inputs.opening.as_of.isoformat()
+
+    def _arap_page(self, subject: str, t: _Tenant, kind: str, query: "dict[str, str]") -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, kind, render_books_unavailable(
+                "No ledger service is configured for this deployment."))
+        docs = self._ledger.documents(t.tenant_id, kind)
+        if not docs.ok:
+            return self._shell(subject, t, kind, render_books_unavailable(docs.error()))
+        party_kind = "customers" if kind == "invoices" else "vendors"
+        parties = self._ledger.parties(t.tenant_id, party_kind)
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_post = self._policy is None or Permission.POST_JOURNAL in perms
+        body = render_documents(
+            t.tenant_id, kind, docs.body, parties.body if parties.ok else {},
+            today=self._today(t), can_post=can_post,
+            message=query.get("ok", ""), error=query.get("err", ""),
+        )
+        return self._shell(subject, t, kind, body)
+
+    def _arap_create(self, t: _Tenant, kind: str, body: str) -> Response:
+        """Create an invoice or a bill from the owner form."""
+        if self._ledger is None:
+            return _redirect(f"/t/{t.tenant_id}/{kind}?err={_qs_escape('No ledger service configured')}")
+        data = self._form_or_json(body)
+        doc_id = str(data.get("id", "")).strip()
+        party_id = str(data.get("party_id", "")).strip()
+        date = str(data.get("date", "")).strip()
+        if not doc_id or not party_id or not date:
+            return _redirect(f"/t/{t.tenant_id}/{kind}?err="
+                             f"{_qs_escape('Number, party and date are all required')}")
+        default_code = "4100" if kind == "invoices" else "6400"
+        lines: list[dict[str, object]] = []
+        try:
+            for i in range(1, 4):
+                raw = str(data.get(f"amount{i}", "")).strip()
+                if not raw:
+                    continue
+                minor = self._amount_to_minor(raw)
+                if minor is None or minor <= 0:
+                    raise ValueError(f"line {i}: amount must be positive")
+                lines.append({
+                    "description": str(data.get(f"desc{i}", "")).strip(),
+                    "quantity": 1,
+                    "unit_amount_minor": str(minor),
+                    "account_code": str(data.get(f"code{i}", "")).strip() or default_code,
+                })
+        except ValueError as exc:
+            return _redirect(f"/t/{t.tenant_id}/{kind}?err={_qs_escape(str(exc))}")
+        if not lines:
+            return _redirect(f"/t/{t.tenant_id}/{kind}?err={_qs_escape('Add at least one line')}")
+
+        res = self._ledger.create_document(
+            t.tenant_id, kind, doc_id, party_id, date, lines,
+            memo=str(data.get("memo", "")).strip(),
+            due_date=str(data.get("due_date", "")).strip(),
+        )
+        if not res.ok:
+            return _redirect(f"/t/{t.tenant_id}/{kind}?err={_qs_escape(res.error())}")
+        noun = "Invoice" if kind == "invoices" else "Bill"
+        return _redirect(f"/t/{t.tenant_id}/{kind}?ok={_qs_escape(f'{noun} {doc_id} created')}")
+
+    def _arap_pay(self, subject: str, t: _Tenant, kind: str, doc_id: str, body: str) -> Response:
+        """Collect against an invoice, or pay a bill."""
+        if self._ledger is None:
+            return _redirect(f"/t/{t.tenant_id}/{kind}?err={_qs_escape('No ledger service configured')}")
+        data = self._form_or_json(body)
+        try:
+            minor = self._amount_to_minor(str(data.get("amount", "")))
+        except ValueError as exc:
+            return _redirect(f"/t/{t.tenant_id}/{kind}?err={_qs_escape(str(exc))}")
+        if minor is None or minor <= 0:
+            return _redirect(f"/t/{t.tenant_id}/{kind}?err={_qs_escape('Enter an amount to pay')}")
+        date = str(data.get("date", "")).strip() or self._today(t)
+        res = self._ledger.record_payment(t.tenant_id, kind, doc_id, date, str(minor))
+        if not res.ok:
+            return _redirect(f"/t/{t.tenant_id}/{kind}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            action = "invoice.collected" if kind == "invoices" else "bill.paid"
+            self._audit.record(subject, action, self._session_clock(),
+                               tenant_id=t.tenant_id, target=doc_id)
+        verb = "collected on" if kind == "invoices" else "paid on"
+        return _redirect(f"/t/{t.tenant_id}/{kind}?ok={_qs_escape(f'Payment {verb} {doc_id}')}")
+
+    def _arap_party(self, t: _Tenant, kind: str, body: str) -> Response:
+        """Add a customer or vendor from the inline form."""
+        if self._ledger is None:
+            back = "invoices" if kind == "customers" else "bills"
+            return _redirect(f"/t/{t.tenant_id}/{back}?err={_qs_escape('No ledger service configured')}")
+        data = self._form_or_json(body)
+        name = str(data.get("name", "")).strip()
+        back = "invoices" if kind == "customers" else "bills"
+        if not name:
+            return _redirect(f"/t/{t.tenant_id}/{back}?err={_qs_escape('A name is required')}")
+        party_id = str(data.get("id", "")).strip() or name.lower().replace(" ", "-")[:40]
+        terms_raw = str(data.get("terms_days", "")).strip()
+        terms = int(terms_raw) if terms_raw.isdigit() else None
+        res = self._ledger.create_party(
+            t.tenant_id, kind, party_id, name,
+            email=str(data.get("email", "")).strip(), terms_days=terms,
+        )
+        if not res.ok:
+            return _redirect(f"/t/{t.tenant_id}/{back}?err={_qs_escape(res.error())}")
+        return _redirect(f"/t/{t.tenant_id}/{back}?ok={_qs_escape(f'Added {name}')}")
+
+    def _arap_aging(self, subject: str, t: _Tenant, side: str, query: "dict[str, str]") -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "invoices", render_books_unavailable())
+        as_of = query.get("as_of", "") or self._today(t)
+        res = self._ledger.aging(t.tenant_id, side, as_of=as_of)
+        if not res.ok:
+            return self._shell(subject, t, "invoices", render_books_unavailable(res.error()))
+        party_kind = "customers" if side == "ar" else "vendors"
+        parties = self._ledger.parties(t.tenant_id, party_kind)
+        active = "invoices" if side == "ar" else "bills"
+        return self._shell(subject, t, active,
+                           render_arap_aging(t.tenant_id, side, res.body,
+                                             parties.body if parties.ok else {}))
 
     # --- the books (general ledger, served by the ledger service) ------------
 

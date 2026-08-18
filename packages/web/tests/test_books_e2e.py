@@ -188,3 +188,121 @@ def test_two_clients_books_are_isolated_through_the_running_stack(ledger_service
     tok = sign_jwt({"sub": "u-alpha", "tenant": "alpha", "exp": NOW + 3600}, SECRET)
     cross = app.handle(Request("GET", "/t/bravo/books", {"authorization": f"Bearer {tok}"}, ""))
     assert cross.status == 403
+
+
+def test_owner_invoices_a_customer_and_collects_it(ledger_service: str) -> None:
+    """The AR loop an owner lives in: add a customer, invoice them, watch what's
+    owed, collect it — with the ledger staying balanced the whole way."""
+    base = ledger_service
+    app = _app(base, ["invoiceco"])
+    _seed(base, "invoiceco", "PROFESSIONAL_SERVICES")
+
+    # add a customer through the inline form
+    r = _req(app, "invoiceco", "/t/invoiceco/customers", "POST",
+             "name=Northwind+Ltd&terms_days=30")
+    assert r.status == 302 and "ok=" in str(r.headers.get("Location", ""))
+
+    # raise an invoice
+    inv = _req(app, "invoiceco", "/t/invoiceco/invoices", "POST",
+               "id=INV-1001&party_id=northwind-ltd&date=2026-08-01&memo=August+work"
+               "&desc1=Consulting&amount1=3,500.00&code1=4100"
+               "&desc2=Travel&amount2=425.00&code2=4000")
+    assert inv.status == 302, inv.body
+    assert "ok=" in str(inv.headers.get("Location", "")), inv.headers
+
+    # it shows as owed
+    page = _req(app, "invoiceco", "/t/invoiceco/invoices")
+    assert page.status == 200
+    assert "INV-1001" in page.body and "Northwind Ltd" in page.body
+    assert "$3,925.00" in page.body      # total owed
+    assert "Owed to you" in page.body
+
+    # the ledger reflects it: AR debited, income credited, still balanced
+    books = _req(app, "invoiceco", "/t/invoiceco/books")
+    assert "In balance" in books.body
+    assert "$3,925.00" in books.body
+
+    # collect part of it
+    part = _req(app, "invoiceco", "/t/invoiceco/invoices/INV-1001/payments", "POST",
+                "date=2026-08-20&amount=1,000.00")
+    assert part.status == 302 and "ok=" in str(part.headers.get("Location", ""))
+    page2 = _req(app, "invoiceco", "/t/invoiceco/invoices")
+    assert "Part paid" in page2.body
+    assert "$2,925.00" in page2.body     # still open
+
+    # collect the rest → paid
+    _req(app, "invoiceco", "/t/invoiceco/invoices/INV-1001/payments", "POST",
+         "date=2026-08-25&amount=2925.00")
+    page3 = _req(app, "invoiceco", "/t/invoiceco/invoices")
+    assert "Paid" in page3.body
+
+    # books still balance, and cash rose by the full amount
+    final = _req(app, "invoiceco", "/t/invoiceco/books")
+    assert "In balance" in final.body
+    assert "$3,925.00" in final.body     # cash
+
+
+def test_owner_enters_a_bill_and_pays_it(ledger_service: str) -> None:
+    base = ledger_service
+    app = _app(base, ["billco"])
+    _seed(base, "billco", "SERVICE_GENERAL")
+
+    _req(app, "billco", "/t/billco/vendors", "POST", "name=Copyshop&terms_days=15")
+    bill = _req(app, "billco", "/t/billco/bills", "POST",
+                "id=BILL-1&party_id=copyshop&date=2026-08-02&memo=Print+run"
+                "&desc1=Brochures&amount1=360.00&code1=6400")
+    assert bill.status == 302 and "ok=" in str(bill.headers.get("Location", ""))
+
+    page = _req(app, "billco", "/t/billco/bills")
+    assert "BILL-1" in page.body and "Copyshop" in page.body
+    assert "You owe" in page.body and "$360.00" in page.body
+
+    paid = _req(app, "billco", "/t/billco/bills/BILL-1/payments", "POST",
+                "date=2026-08-16&amount=360.00")
+    assert paid.status == 302 and "ok=" in str(paid.headers.get("Location", ""))
+    after = _req(app, "billco", "/t/billco/bills")
+    assert "Paid" in after.body
+
+    books = _req(app, "billco", "/t/billco/books")
+    assert "In balance" in books.body
+
+
+def test_aging_shows_who_is_late(ledger_service: str) -> None:
+    base = ledger_service
+    app = _app(base, ["agingco"])
+    _seed(base, "agingco", "PROFESSIONAL_SERVICES")
+    _req(app, "agingco", "/t/agingco/customers", "POST", "name=Late+Payer&terms_days=30")
+
+    # one long overdue, one not yet due (tenant "today" is 2026-08-31)
+    _req(app, "agingco", "/t/agingco/invoices", "POST",
+         "id=OLD&party_id=late-payer&date=2026-04-01&due_date=2026-04-30&amount1=500.00&code1=4100")
+    _req(app, "agingco", "/t/agingco/invoices", "POST",
+         "id=NEW&party_id=late-payer&date=2026-08-25&due_date=2026-09-24&amount1=250.00&code1=4100")
+
+    page = _req(app, "agingco", "/t/agingco/invoices")
+    assert "Overdue" in page.body           # the old one is flagged
+    assert "$750.00" in page.body           # total owed
+
+    aging = _req(app, "agingco", "/t/agingco/receivables/aging")
+    assert aging.status == 200
+    assert "Receivables Aging" in aging.body
+    assert "Late Payer" in aging.body
+    assert "$500.00" in aging.body and "$250.00" in aging.body
+
+
+def test_a_viewer_cannot_invoice_or_collect(ledger_service: str) -> None:
+    base = ledger_service
+    app = _app(base, ["gated"])
+    _seed(base, "gated", "SERVICE_GENERAL")
+    # demote the member to viewer
+    tok = sign_jwt({"sub": "u-gated", "tenant": "gated", "exp": NOW + 3600}, SECRET)
+    app._users.set_membership("u-gated", "gated", Role.VIEWER)  # type: ignore[attr-defined]
+
+    create = app.handle(Request("POST", "/t/gated/invoices",
+                                {"authorization": f"Bearer {tok}",
+                                 "content-type": "application/x-www-form-urlencoded"},
+                                "id=X&party_id=y&date=2026-08-01&amount1=10&code1=4100"))
+    assert create.status == 403
+    # but they can still look
+    assert app.handle(Request("GET", "/t/gated/invoices",
+                              {"authorization": f"Bearer {tok}"}, "")).status == 200
