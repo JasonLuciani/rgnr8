@@ -142,6 +142,16 @@ import {
   type SalesOrderStatus,
 } from "./salesorders.js";
 import {
+  WorkOrderError,
+  addEntry,
+  completeWorkOrder,
+  entryJson as workEntryJson,
+  saveWorkOrder,
+  workOrderJson,
+  workOrdersForJob,
+  type WorkOrderContext,
+} from "./workorders.js";
+import {
   ReconcileError,
   finishReconciliation,
   importStatement,
@@ -405,6 +415,65 @@ export class LedgerService {
         ));
       }
 
+      // --- work orders ------------------------------------------------------
+      if (rest[0] === "work-orders") {
+        const ctx = this.workOrderCtx(tenant);
+        const store = this.backend.workOrders();
+        if (rest.length === 1 && req.method === "GET") {
+          const jobId = req.query["job_id"] ?? "";
+          const all = await store.list(String(tenant));
+          const entries = await store.listEntries(String(tenant));
+          const rows = (jobId ? all.filter((o) => o.jobId === jobId) : all)
+            .map((o) => workOrderJson(o, entries.filter((e) => e.workOrderId === o.id)));
+          return ok({ tenant, work_orders: rows });
+        }
+        if (rest.length === 1 && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          return created({ tenant, work_order: workOrderJson(await saveWorkOrder(ctx, data)) });
+        }
+        if (rest.length === 2 && req.method === "GET") {
+          const order = await store.get(String(tenant), rest[1]!);
+          if (!order) return notFound(`unknown work order ${rest[1]}`);
+          return ok({
+            tenant,
+            work_order: workOrderJson(order, await store.listEntries(String(tenant), rest[1]!)),
+          });
+        }
+        if (rest.length === 2 && req.method === "DELETE") {
+          await store.remove(String(tenant), rest[1]!);
+          return ok({ tenant, removed: rest[1] });
+        }
+        if (rest.length === 3 && rest[2] === "complete" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          return ok({
+            tenant,
+            work_order: workOrderJson(await completeWorkOrder(ctx, rest[1]!, data["date"])),
+          });
+        }
+        if (rest.length === 3 && rest[2] === "entries" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const result = await addEntry(ctx, rest[1]!, data);
+          return created({
+            tenant,
+            entry: workEntryJson(result.entry),
+            unposted_reason: result.unposted_reason,
+          });
+        }
+        if (rest.length === 4 && rest[2] === "entries" && req.method === "DELETE") {
+          const entry = await store.getEntry(String(tenant), rest[3]!);
+          if (entry?.entryId) {
+            return bad(
+              `entry ${rest[3]} posted an allocation — reverse entry ${entry.entryId} instead`,
+            );
+          }
+          await store.removeEntry(String(tenant), rest[3]!);
+          return ok({ tenant, removed: rest[3] });
+        }
+      }
+
       // --- sales orders -----------------------------------------------------
       if (rest[0] === "sales-orders") {
         const ctx = this.salesOrderCtx(tenant);
@@ -602,6 +671,9 @@ export class LedgerService {
               budget_revenue_minor: b.budgetRevenueMinor,
             })),
           });
+        }
+        if (rest.length === 3 && rest[2] === "work-orders" && req.method === "GET") {
+          return ok(await workOrdersForJob(this.workOrderCtx(tenant), rest[1]!));
         }
         if (rest.length === 3 && rest[2] === "cost" && req.method === "GET") {
           const through = req.query["through"];
@@ -839,6 +911,7 @@ export class LedgerService {
       if (err instanceof JobError) return bad(err.message);
       if (err instanceof EstimateError) return bad(err.message);
       if (err instanceof SalesOrderError) return bad(err.message);
+      if (err instanceof WorkOrderError) return bad(err.message);
       return bad(err instanceof Error ? err.message : String(err));
     }
     return notFound("not found");
@@ -1144,6 +1217,12 @@ export class LedgerService {
   }
 
   // --- jobs ------------------------------------------------------------------
+
+  private workOrderCtx(tenant: TenantId): WorkOrderContext {
+    return {
+      backend: this.backend, tenant, currency: this.currency, now: this.opts.now,
+    };
+  }
 
   private salesOrderCtx(tenant: TenantId): SalesOrderContext {
     return { backend: this.backend, tenant, currency: this.currency };

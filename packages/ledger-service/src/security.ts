@@ -62,6 +62,8 @@ export const TENANT_TABLES: readonly string[] = Object.freeze([
   "estimate_line",
   "sales_order",
   "sales_order_line",
+  "work_order",
+  "work_order_entry",
 ]);
 
 /**

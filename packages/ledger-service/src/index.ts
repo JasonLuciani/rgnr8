@@ -211,6 +211,23 @@ export {
   type SalesOrderStatus,
   type SalesOrderContext,
 } from "./salesorders.js";
+export {
+  InMemoryWorkOrderStore,
+  PgWorkOrderStore,
+  WORK_ORDER_DDL,
+  WorkOrderError,
+  saveWorkOrder,
+  completeWorkOrder,
+  addEntry,
+  workOrderJson,
+  entryJson,
+  workOrdersForJob,
+  unbilledWork,
+  type WorkOrderStore,
+  type WorkOrderRecord,
+  type WorkOrderEntryRecord,
+  type WorkOrderContext,
+} from "./workorders.js";
 export { ten99Report, Ten99Error, type Ten99Context, type Ten99Json } from "./ten99.js";
 export { rlsDdl, appRoleDdl, superuserWarning, TENANT_TABLES } from "./security.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";

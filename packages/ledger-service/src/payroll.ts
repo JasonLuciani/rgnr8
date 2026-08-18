@@ -50,6 +50,15 @@ export interface EmployeeRecord {
   readonly id: string;
   readonly name: string;
   readonly active: boolean;
+  /**
+   * What an hour of this person costs the business, in minor units. Not their
+   * wage — the wage plus payroll taxes, insurance and whatever else the burden
+   * is, because a job costed at the bare wage is costed at roughly 70% of the
+   * truth and every margin computed from it is wrong in the same direction.
+   */
+  readonly costRateMinor?: string;
+  /** What an hour of their time bills at on a time-and-materials job. */
+  readonly billRateMinor?: string;
 }
 
 export interface PayrollLineRecord {
@@ -136,6 +145,10 @@ CREATE TABLE IF NOT EXISTS payroll_employee (
   CONSTRAINT payroll_employee_pk PRIMARY KEY (tenant_id, id)
 );
 
+-- Added after the first deploy: CREATE TABLE IF NOT EXISTS would skip them.
+ALTER TABLE payroll_employee ADD COLUMN IF NOT EXISTS cost_rate_minor text NOT NULL DEFAULT '0';
+ALTER TABLE payroll_employee ADD COLUMN IF NOT EXISTS bill_rate_minor text NOT NULL DEFAULT '0';
+
 CREATE TABLE IF NOT EXISTS payroll_run (
   tenant_id             text NOT NULL,
   id                    text NOT NULL,
@@ -191,12 +204,15 @@ export class PgPayrollStore implements PayrollStore {
   async listEmployees(tenant: string): Promise<EmployeeRecord[]> {
     return this.tx(tenant, async (db) => {
       const res = await db.query(
-        "SELECT id, name, active FROM payroll_employee WHERE tenant_id=$1 ORDER BY name", [tenant],
+        `SELECT id, name, active, cost_rate_minor, bill_rate_minor
+         FROM payroll_employee WHERE tenant_id=$1 ORDER BY name`, [tenant],
       );
       return res.rows.map((r) => ({
         id: String(r["id"]),
         name: String(r["name"]),
         active: r["active"] === true || r["active"] === "t",
+        costRateMinor: String(r["cost_rate_minor"] ?? "0"),
+        billRateMinor: String(r["bill_rate_minor"] ?? "0"),
       }));
     });
   }
@@ -204,9 +220,16 @@ export class PgPayrollStore implements PayrollStore {
   async saveEmployee(tenant: string, employee: EmployeeRecord): Promise<void> {
     await this.tx(tenant, (db) =>
       db.query(
-        `INSERT INTO payroll_employee (tenant_id, id, name, active) VALUES ($1,$2,$3,$4)
-         ON CONFLICT (tenant_id, id) DO UPDATE SET name=EXCLUDED.name, active=EXCLUDED.active`,
-        [tenant, employee.id, employee.name, employee.active],
+        `INSERT INTO payroll_employee (tenant_id, id, name, active,
+           cost_rate_minor, bill_rate_minor)
+         VALUES ($1,$2,$3,$4,$5,$6)
+         ON CONFLICT (tenant_id, id) DO UPDATE SET name=EXCLUDED.name,
+           active=EXCLUDED.active, cost_rate_minor=EXCLUDED.cost_rate_minor,
+           bill_rate_minor=EXCLUDED.bill_rate_minor`,
+        [
+          tenant, employee.id, employee.name, employee.active,
+          employee.costRateMinor ?? "0", employee.billRateMinor ?? "0",
+        ],
       ),
     );
   }
@@ -373,6 +396,8 @@ export interface EmployeeInput {
   readonly id?: string;
   readonly name?: string;
   readonly active?: boolean;
+  readonly cost_rate_minor?: string | number;
+  readonly bill_rate_minor?: string | number;
 }
 
 function slug(text: string): string {
@@ -386,7 +411,21 @@ export async function saveEmployee(
   if (!name) throw new PayrollServiceError("an employee needs a name");
   const id = String(input.id ?? "").trim() || slug(name);
   if (!id) throw new PayrollServiceError("an employee needs an id");
-  const employee: EmployeeRecord = { id, name, active: input.active !== false };
+  const rate = (raw: unknown, label: string): string => {
+    const value = typeof raw === "number" ? String(raw) : String(raw ?? "").trim();
+    if (!value) return "0";
+    if (!/^\d+$/.test(value)) {
+      throw new PayrollServiceError(`${label} must be a whole number of minor units per hour`);
+    }
+    return value;
+  };
+  const employee: EmployeeRecord = {
+    id,
+    name,
+    active: input.active !== false,
+    costRateMinor: rate(input.cost_rate_minor, "cost rate"),
+    billRateMinor: rate(input.bill_rate_minor, "bill rate"),
+  };
   await ctx.backend.payroll().saveEmployee(String(ctx.tenant), employee);
   return employee;
 }
