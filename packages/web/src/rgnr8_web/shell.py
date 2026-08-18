@@ -25,6 +25,7 @@ from .rbac import Membership, Permission, Role, User
 _NAV: list[tuple[str, str, Permission]] = [
     ("", "Cash", Permission.VIEW_CASH),
     ("transactions", "Transactions", Permission.VIEW_TRANSACTIONS),
+    ("books", "Books", Permission.VIEW_TRANSACTIONS),
     ("scenarios", "Scenarios", Permission.VIEW_CASH),
     ("receivables", "Receivables", Permission.VIEW_CASH),
     ("reports", "Reports", Permission.VIEW_CASH),

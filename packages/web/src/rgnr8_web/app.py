@@ -88,6 +88,14 @@ from .audit import AuditSink
 from .credentials import AuthError, AuthService, CredentialStore
 from .openapi import build_openapi
 from .owner_reports import render_owner_report
+from .ledger_client import LedgerClient
+from .books_screens import (
+    render_books_home,
+    render_books_statements,
+    render_chart_of_accounts,
+    render_register,
+    unavailable as render_books_unavailable,
+)
 from .rbac import AccessPolicy, Permission, Role, User, UserDirectory
 from .shell import (
     render_app_home,
@@ -185,6 +193,12 @@ class _Tenant:
 
 
 __version__ = "0.1.0"
+
+
+def _qs_escape(text: str) -> str:
+    """Percent-encode a short message for a redirect query string."""
+    from urllib.parse import quote
+    return quote(text[:200], safe="")
 
 
 def _cookie(headers: "dict[str, str]", name: str) -> str | None:
@@ -303,6 +317,9 @@ class WebApp:
         # Owner-facing ledger reports, keyed (tenant, kind) — the JSON contracts
         # the TS core emits (aging/1, budget-vs-actual/1, retained-earnings/1).
         self._owner_reports: dict[tuple[str, str], Mapping[str, object]] = {}
+        # The ledger service client. When absent, the books screens say so plainly
+        # rather than pretending the client has no transactions.
+        self._ledger: LedgerClient | None = None
         self._budgets: dict[str, Mapping[str, Money]] = {}
         self._usage: dict[str, UsageSummary] = {}
         self._billing_accounts: dict[str, Account] = {}
@@ -409,6 +426,10 @@ class WebApp:
         "budget": "budget",
         "retained-earnings": "retained_earnings",
     }
+
+    def set_ledger(self, client: LedgerClient) -> None:
+        """Wire the ledger service so owners can see and post to their books."""
+        self._ledger = client
 
     def add_owner_report(self, tenant_id: str, kind: str, data: Mapping[str, object]) -> None:
         """Attach an owner-facing ledger report contract (aging/budget/retained
@@ -722,6 +743,31 @@ class WebApp:
             return self._require(subject, token_tenant, parts[1], P.MANAGE_USERS,
                                  lambda t: self._audit_page(subject, t))
 
+        # --- the books (general ledger) ---
+        # /t/<tenant>/books -> trial balance + record a transaction
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "books":
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._books_page(subject, t, req.query))
+        # /t/<tenant>/books/accounts -> chart of accounts
+        if len(parts) == 4 and parts[0] == "t" and parts[2] == "books" and parts[3] == "accounts":
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._books_accounts_page(subject, t))
+        # /t/<tenant>/books/statements -> P&L + balance sheet from posted books
+        if len(parts) == 4 and parts[0] == "t" and parts[2] == "books" and parts[3] == "statements":
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._books_statements_page(subject, t, req.query))
+        # /t/<tenant>/books/entries -> post a journal entry (form POST)
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "books"
+                and parts[3] == "entries" and req.method == "POST"):
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._books_post_entry(subject, t, req.body))
+        # /t/<tenant>/books/accounts/<code> -> one account's register
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "books"
+                and parts[3] == "accounts"):
+            code = parts[4]
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._books_register_page(subject, t, code))
+
         # /t/<tenant>  -> Cash outlook (shell page)
         if len(parts) == 2 and parts[0] == "t":
             return self._require(subject, token_tenant, parts[1], P.VIEW_CASH,
@@ -955,6 +1001,113 @@ class WebApp:
             )
         # no RBAC directory → tenant-scoped access = full owner-equivalent view
         return frozenset(Permission), None
+
+
+    # --- the books (general ledger, served by the ledger service) ------------
+
+    @staticmethod
+    def _amount_to_minor(raw: str) -> int | None:
+        """Parse "1,234.56" into 123456 minor units — exactly, never via float.
+        Returns None for blank input, and raises ValueError on a malformed one."""
+        text = raw.strip().replace(",", "").replace("$", "")
+        if not text:
+            return None
+        neg = text.startswith("-")
+        if neg:
+            text = text[1:]
+        if not text or not all(c.isdigit() or c == "." for c in text) or text.count(".") > 1:
+            raise ValueError(f"not a valid amount: {raw!r}")
+        whole, _, frac = text.partition(".")
+        if len(frac) > 2:
+            raise ValueError(f"more than cents of precision: {raw!r}")
+        minor = int(whole or "0") * 100 + int((frac or "0").ljust(2, "0"))
+        return -minor if neg else minor
+
+    def _books_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "books", render_books_unavailable(
+                "No ledger service is configured for this deployment."))
+        tb = self._ledger.trial_balance(t.tenant_id)
+        if not tb.ok:
+            return self._shell(subject, t, "books", render_books_unavailable(tb.error()))
+        accounts = self._ledger.accounts(t.tenant_id)
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_post = self._policy is None or Permission.POST_JOURNAL in perms
+        body = render_books_home(
+            t.tenant_id, tb.body, accounts.body if accounts.ok else {},
+            can_post=can_post,
+            message=query.get("posted", ""),
+            error=query.get("err", ""),
+        )
+        return self._shell(subject, t, "books", body)
+
+    def _books_accounts_page(self, subject: str, t: _Tenant) -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "books", render_books_unavailable())
+        res = self._ledger.accounts(t.tenant_id)
+        if not res.ok:
+            return self._shell(subject, t, "books", render_books_unavailable(res.error()))
+        return self._shell(subject, t, "books", render_chart_of_accounts(t.tenant_id, res.body))
+
+    def _books_register_page(self, subject: str, t: _Tenant, code: str) -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "books", render_books_unavailable())
+        res = self._ledger.register(t.tenant_id, code)
+        if not res.ok:
+            return self._shell(subject, t, "books", render_books_unavailable(res.error()))
+        return self._shell(subject, t, "books", render_register(t.tenant_id, res.body))
+
+    def _books_statements_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "books", render_books_unavailable())
+        frm = query.get("from", "")
+        to = query.get("to", "")
+        if not frm or not to:
+            # default to the current month of the tenant's forecast as-of date
+            as_of = t.inputs.opening.as_of.isoformat()
+            frm = f"{as_of[:7]}-01"
+            to = as_of
+        res = self._ledger.statements(t.tenant_id, frm, to)
+        if not res.ok:
+            return self._shell(subject, t, "books", render_books_unavailable(res.error()))
+        return self._shell(subject, t, "books",
+                           render_books_statements(f"{frm} to {to}", res.body))
+
+    def _books_post_entry(self, subject: str, t: _Tenant, body: str) -> Response:
+        """Post a journal entry from the owner form. Amounts are parsed exactly;
+        the ledger service is the one that enforces balance and period locks."""
+        if self._ledger is None:
+            return _redirect(f"/t/{t.tenant_id}/books?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        date = str(data.get("date", "")).strip()
+        memo = str(data.get("memo", "")).strip()
+        lines: list[dict[str, object]] = []
+        try:
+            for i in range(1, 5):
+                code = str(data.get(f"code{i}", "")).strip()
+                if not code:
+                    continue
+                debit = self._amount_to_minor(str(data.get(f"debit{i}", "")))
+                credit = self._amount_to_minor(str(data.get(f"credit{i}", "")))
+                if debit and credit:
+                    raise ValueError(f"line {i}: enter a debit or a credit, not both")
+                if debit:
+                    lines.append({"code": code, "side": "DEBIT", "amount_minor": str(debit)})
+                elif credit:
+                    lines.append({"code": code, "side": "CREDIT", "amount_minor": str(credit)})
+        except ValueError as exc:
+            return _redirect(f"/t/{t.tenant_id}/books?err={_qs_escape(str(exc))}")
+        if len(lines) < 2:
+            return _redirect(
+                f"/t/{t.tenant_id}/books?err={_qs_escape('An entry needs at least two lines')}")
+
+        res = self._ledger.post_entry(t.tenant_id, date, lines, memo=memo, source="owner")
+        if not res.ok:
+            return _redirect(f"/t/{t.tenant_id}/books?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "journal.posted", self._session_clock(),
+                               tenant_id=t.tenant_id, detail=f"{date} {memo}".strip())
+        return _redirect(f"/t/{t.tenant_id}/books?posted={_qs_escape('Entry posted')}")
 
     def _latest_period(self, tenant: str) -> str | None:
         if self._packages is None:

@@ -31,6 +31,7 @@ class Permission(str, Enum):
     EDIT_ASSUMPTIONS = "edit_assumptions"
     RECORD_DECISION = "record_decision"
     # accounting operations
+    POST_JOURNAL = "post_journal"       # post an entry to the general ledger
     MANAGE_CLOSE = "manage_close"       # advance close-calendar tasks
     PUBLISH_CLOSE = "publish_close"     # seal the immutable financial package
     MANAGE_CONNECTORS = "manage_connectors"  # connect/reconnect bank/payroll/QBO
@@ -71,6 +72,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
         Permission.EDIT_ASSUMPTIONS,
         Permission.RECORD_DECISION,
         Permission.CATEGORIZE_TXNS,
+        Permission.POST_JOURNAL,
         Permission.MANAGE_CLOSE,
         Permission.PUBLISH_CLOSE,
         Permission.MANAGE_CONNECTORS,
@@ -82,6 +84,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
         Permission.EDIT_ASSUMPTIONS,
         Permission.RECORD_DECISION,
         Permission.CATEGORIZE_TXNS,
+        Permission.POST_JOURNAL,
         Permission.MANAGE_CLOSE,
         Permission.PUBLISH_CLOSE,
         Permission.MANAGE_SUBSCRIPTIONS,
@@ -89,13 +92,13 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
     # the bookkeeper lives in the bank feed: categorize + reconcile, run the
     # close, but can't seal the package or manage users.
     Role.BOOKKEEPER: _VIEW
-    | {Permission.RECORD_DECISION, Permission.CATEGORIZE_TXNS, Permission.MANAGE_CLOSE,
-       Permission.MANAGE_CONNECTORS},
+    | {Permission.RECORD_DECISION, Permission.CATEGORIZE_TXNS, Permission.POST_JOURNAL,
+       Permission.MANAGE_CLOSE, Permission.MANAGE_CONNECTORS},
     # external accountant co-delivering the close: categorize + run + publish the
     # close, but not manage the business's users or connectors.
     Role.ACCOUNTANT: _VIEW
-    | {Permission.RECORD_DECISION, Permission.CATEGORIZE_TXNS, Permission.MANAGE_CLOSE,
-       Permission.PUBLISH_CLOSE},
+    | {Permission.RECORD_DECISION, Permission.CATEGORIZE_TXNS, Permission.POST_JOURNAL,
+       Permission.MANAGE_CLOSE, Permission.PUBLISH_CLOSE},
     Role.VIEWER: _VIEW,
     # platform staff — cross-tenant, no owner-write by default (support can view).
     Role.OPERATOR: _VIEW | {Permission.VIEW_FLEET, Permission.ONBOARD_TENANT, Permission.MANAGE_CONNECTORS},

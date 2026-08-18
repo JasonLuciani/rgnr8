@@ -39,6 +39,10 @@ for _src in sorted(glob.glob(os.path.join(_ROOT, "packages", "*", "src"))):
         sys.path.insert(0, _src)
 
 from rgnr8_forecast import CashPosition, ForecastConfig, ForecastInputs, Money  # noqa: E402
+LEDGER_URL = os.environ.get("RGNR8_LEDGER_URL", "http://localhost:8181")
+LEDGER_TOKEN = os.environ.get("RGNR8_LEDGER_TOKEN", "")
+LEDGER_SEED = os.environ.get("RGNR8_LEDGER_SEED_CATEGORY", "SERVICE_GENERAL")
+
 from rgnr8_qbo import (  # noqa: E402
     InMemoryConnectionStore,
     QboConnectService,
@@ -50,6 +54,8 @@ from rgnr8_web import (  # noqa: E402
     InMemoryUserDirectory,
     Role,
     User,
+    LedgerClient,
+    UrllibTransport,
     WebApp,
 )
 from rgnr8_web.server import serve  # noqa: E402
@@ -105,6 +111,17 @@ def build_app() -> WebApp:
         ForecastConfig(minimum_cash=Money.from_decimal("10000.00")),
         token="local-dev",
     )
+
+    # The books. The accounting core runs as its own service (@rgnr8/ledger-service);
+    # point the web app at it so /t/<tenant>/books is a real general ledger. If the
+    # service isn't running, the Books screen says so plainly instead of pretending.
+    ledger = LedgerClient(UrllibTransport(LEDGER_URL), token=LEDGER_TOKEN)
+    app.set_ledger(ledger)
+    if ledger.health():
+        seeded = ledger.accounts(TENANT_ID)
+        existing = seeded.body.get("accounts") if seeded.ok else None
+        if not existing:
+            ledger.seed_chart(TENANT_ID, LEDGER_SEED)
     return app
 
 
@@ -119,6 +136,8 @@ def main() -> None:
     print(f"  URL:            http://localhost:{PORT}/login")
     print(f"  Sign in as:     {OWNER_EMAIL}   (any email box, no password needed)")
     print(f"  Company:        {TENANT_NAME}  (tenant id: {TENANT_ID})")
+    ledger_up = LedgerClient(UrllibTransport(LEDGER_URL), token=LEDGER_TOKEN).health()
+    print(f"  Books (ledger): {'UP at ' + LEDGER_URL if ledger_up else 'DOWN — start it: npm run start -w @rgnr8/ledger-service'}")
     print(f"  QBO connect:    {'CONFIGURED (' + ENVIRONMENT + ')' if configured else 'NOT configured — set QBO_CLIENT_ID / QBO_CLIENT_SECRET'}")
     if configured:
         print(f"  Redirect URI:   {REDIRECT_URI}")
