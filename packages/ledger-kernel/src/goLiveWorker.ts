@@ -1,4 +1,4 @@
-import { PeriodRegistry } from "./periods.js";
+import type { PeriodStore } from "./periods.js";
 import type { LedgerStore } from "./ledgerStore.js";
 import { executeGoLive, goLiveFromDto, type GoLiveDto } from "./goLive.js";
 
@@ -58,7 +58,7 @@ export class InMemoryGoLiveQueue implements GoLiveQueue {
 }
 
 /** Supplies the (store, periods) a tenant posts its go-live into. */
-export type LedgerFor = (tenantId: string) => { store: LedgerStore; periods: PeriodRegistry };
+export type LedgerFor = (tenantId: string) => { store: LedgerStore; periods: PeriodStore };
 
 export class GoLiveWorker {
   constructor(

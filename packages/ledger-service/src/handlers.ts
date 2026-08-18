@@ -1,0 +1,499 @@
+import {
+  AccountSubtype,
+  AccountType,
+  BusinessCategory,
+  ChartOfAccounts,
+  Money,
+  PeriodClosedError,
+  PostingEngine,
+  USD,
+  accountTypeOfSubtype,
+  asAccountId,
+  asIdempotencyKey,
+  asPeriodKey,
+  asTenantId,
+  computeTrialBalance,
+  getCurrency,
+  goLiveFromDto,
+  executeGoLive,
+  type Account,
+  type Currency,
+  type GoLiveDto,
+  type JournalLineInput,
+  type PostCommand,
+  type PostedEntry,
+  type Provenance,
+  type TenantId,
+} from "@rgnr8/ledger-kernel";
+import {
+  accountLedger,
+  balanceSheet,
+  cashFlow,
+  financialStatementsJson,
+  fromKernelTrialBalance,
+  incomeStatement,
+  subtypeCashFlowClassifier,
+} from "@rgnr8/financial-statements";
+import type { LedgerBackend } from "./backend.js";
+
+/**
+ * The service's request handlers — pure `(request) => response`, with no HTTP
+ * in sight, so the whole API surface is testable directly. `server.ts` is a thin
+ * node:http adapter over these.
+ *
+ * The API speaks **account codes**, not internal ids: a caller says "1000", not
+ * "acct:1000". Codes are what an owner and an accountant actually use, and it
+ * keeps the Python client free of the kernel's branded-id types.
+ *
+ * Money crosses the boundary as integer **minor-unit strings** — never a float.
+ */
+
+export interface ServiceRequest {
+  readonly method: string;
+  readonly path: string;
+  readonly query: Readonly<Record<string, string>>;
+  readonly body: string;
+  readonly headers: Readonly<Record<string, string>>;
+}
+
+export interface ServiceResponse {
+  readonly status: number;
+  readonly body: unknown;
+}
+
+export interface ServiceOptions {
+  /** Shared secret required as `Authorization: Bearer <token>`. */
+  readonly authToken?: string;
+  /** Injected clock (ISO instant) — the service never reads a wall clock itself. */
+  readonly now: () => string;
+  readonly defaultCurrency?: Currency;
+}
+
+const ok = (body: unknown): ServiceResponse => ({ status: 200, body });
+const created = (body: unknown): ServiceResponse => ({ status: 201, body });
+const bad = (error: string): ServiceResponse => ({ status: 400, body: { error } });
+const notFound = (error: string): ServiceResponse => ({ status: 404, body: { error } });
+const conflict = (error: string): ServiceResponse => ({ status: 409, body: { error } });
+
+function parseJson(body: string): Record<string, unknown> | null {
+  if (!body.trim()) return {};
+  try {
+    const v: unknown = JSON.parse(body);
+    return typeof v === "object" && v !== null && !Array.isArray(v)
+      ? (v as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function str(v: unknown): string {
+  return typeof v === "string" ? v : "";
+}
+
+/** Day before an ISO date, computed purely (no Date parsing / DST surprises). */
+function previousDay(iso: string): string {
+  const y = Number(iso.slice(0, 4));
+  const m = Number(iso.slice(5, 7));
+  const d = Number(iso.slice(8, 10));
+  const leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  let yy = y;
+  let mm = m;
+  let dd = d - 1;
+  if (dd < 1) {
+    mm -= 1;
+    if (mm < 1) {
+      mm = 12;
+      yy -= 1;
+    }
+    dd = days[mm - 1]!;
+  }
+  const p2 = (n: number): string => (n < 10 ? `0${n}` : String(n));
+  return `${yy}-${p2(mm)}-${p2(dd)}`;
+}
+
+function provenanceFor(source: string, date: string, at: string): Provenance {
+  return {
+    sourceSystem: source,
+    sourceObject: "journal",
+    sourceVersion: "1",
+    effectiveDate: date,
+    postedDate: date,
+    ingestedAt: at,
+    normalizationVersion: "ledger-service/1",
+    mappingVersion: "ledger-service/1",
+  };
+}
+
+function accountJson(a: Account): Record<string, unknown> {
+  return {
+    code: a.code,
+    name: a.name,
+    type: a.type,
+    subtype: a.subtype ?? null,
+    currency: a.currency.code,
+    active: a.active !== false,
+  };
+}
+
+function entryJson(e: PostedEntry): Record<string, unknown> {
+  return {
+    id: e.id,
+    sequence: e.sequence,
+    date: e.entryDate,
+    period: e.periodKey,
+    memo: e.memo ?? "",
+    status: e.status,
+    currency: e.currency.code,
+    posted_at: e.postedAt,
+    lines: e.lines.map((l) => ({
+      account_id: l.accountId,
+      side: l.side,
+      amount_minor: l.amount.minorUnits.toString(),
+      memo: l.memo ?? "",
+    })),
+  };
+}
+
+export class LedgerService {
+  private readonly currency: Currency;
+
+  constructor(
+    private readonly backend: LedgerBackend,
+    private readonly opts: ServiceOptions,
+  ) {
+    this.currency = opts.defaultCurrency ?? USD;
+  }
+
+  async handle(req: ServiceRequest): Promise<ServiceResponse> {
+    const parts = req.path.split("/").filter(Boolean);
+
+    if (req.path === "/health") return ok({ status: "ok" });
+
+    if (this.opts.authToken) {
+      const auth = req.headers["authorization"] ?? "";
+      const presented = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
+      if (presented !== this.opts.authToken) {
+        return { status: 401, body: { error: "unauthorized" } };
+      }
+    }
+
+    if (parts[0] !== "t" || parts.length < 2) return notFound("not found");
+    const tenant = asTenantId(parts[1]!);
+    const rest = parts.slice(2);
+
+    try {
+      if (rest[0] === "accounts" && rest.length === 1) {
+        if (req.method === "GET") return await this.listAccounts(tenant);
+        if (req.method === "POST") return await this.createAccount(tenant, req.body);
+      }
+      if (rest[0] === "accounts" && rest[1] === "seed" && req.method === "POST") {
+        return await this.seedAccounts(tenant, req.body);
+      }
+      if (rest[0] === "accounts" && rest.length === 3 && rest[2] === "register" && req.method === "GET") {
+        return await this.register(tenant, rest[1]!, req.query);
+      }
+      if (rest[0] === "entries" && rest.length === 1) {
+        if (req.method === "POST") return await this.postEntry(tenant, req.body);
+        if (req.method === "GET") return await this.listEntries(tenant, req.query);
+      }
+      if (rest[0] === "trial-balance" && req.method === "GET") {
+        return await this.trialBalance(tenant, req.query);
+      }
+      if (rest[0] === "statements" && req.method === "GET") {
+        return await this.statements(tenant, req.query);
+      }
+      if (rest[0] === "periods" && rest.length === 3 && rest[2] === "lock" && req.method === "POST") {
+        await this.backend.periods(tenant).lock(tenant, asPeriodKey(rest[1]!));
+        return ok({ tenant, period: rest[1], locked: true });
+      }
+      if (rest[0] === "go-live" && req.method === "POST") {
+        return await this.goLive(tenant, req.body);
+      }
+    } catch (err) {
+      if (err instanceof PeriodClosedError) return conflict(err.message);
+      return bad(err instanceof Error ? err.message : String(err));
+    }
+    return notFound("not found");
+  }
+
+  // --- accounts -------------------------------------------------------------
+
+  private async listAccounts(tenant: TenantId): Promise<ServiceResponse> {
+    const chart = await this.backend.chart(tenant);
+    const accounts = [...chart.list()].sort((a, b) => a.code.localeCompare(b.code));
+    return ok({ tenant, accounts: accounts.map(accountJson) });
+  }
+
+  private async createAccount(tenant: TenantId, body: string): Promise<ServiceResponse> {
+    const data = parseJson(body);
+    if (!data) return bad("invalid JSON body");
+    const code = str(data["code"]).trim();
+    const name = str(data["name"]).trim();
+    if (!code || !name) return bad("code and name are required");
+
+    const subtypeRaw = str(data["subtype"]).trim();
+    const typeRaw = str(data["type"]).trim();
+    let type: AccountType;
+    let subtype: AccountSubtype | undefined;
+    if (subtypeRaw) {
+      if (!(Object.values(AccountSubtype) as string[]).includes(subtypeRaw)) {
+        return bad(`unknown subtype ${subtypeRaw}`);
+      }
+      subtype = subtypeRaw as AccountSubtype;
+      type = accountTypeOfSubtype(subtype);
+    } else if (typeRaw) {
+      if (!(Object.values(AccountType) as string[]).includes(typeRaw)) {
+        return bad(`unknown type ${typeRaw}`);
+      }
+      type = typeRaw as AccountType;
+    } else {
+      return bad("an account needs a subtype or a type");
+    }
+
+    const chart = await this.backend.chart(tenant);
+    if (chart.getByCode(code)) return conflict(`account ${code} already exists`);
+
+    const account: Account = {
+      id: asAccountId(`acct:${code}`),
+      code,
+      name,
+      type,
+      currency: this.currency,
+      ...(subtype ? { subtype } : {}),
+      active: true,
+    };
+    new ChartOfAccounts([...chart.list(), account]); // kernel-validate before persisting
+    await this.backend.saveAccount(tenant, account);
+    return created({ tenant, account: accountJson(account) });
+  }
+
+  private async seedAccounts(tenant: TenantId, body: string): Promise<ServiceResponse> {
+    const data = parseJson(body);
+    if (!data) return bad("invalid JSON body");
+    const category = str(data["category"]).trim();
+    if (!(Object.values(BusinessCategory) as string[]).includes(category)) {
+      return bad(`unknown category ${category}`);
+    }
+    const currency = str(data["currency"]) ? getCurrency(str(data["currency"])) : this.currency;
+    const seeded = await this.backend.seedChart(tenant, category as BusinessCategory, currency);
+    return created({ tenant, category, seeded: seeded.length });
+  }
+
+  // --- journal --------------------------------------------------------------
+
+  private async postEntry(tenant: TenantId, body: string): Promise<ServiceResponse> {
+    const data = parseJson(body);
+    if (!data) return bad("invalid JSON body");
+    const date = str(data["date"]).trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return bad("date must be YYYY-MM-DD");
+    const rawLines = data["lines"];
+    if (!Array.isArray(rawLines) || rawLines.length < 2) {
+      return bad("an entry needs at least two lines");
+    }
+
+    const chart = await this.backend.chart(tenant);
+    const lines: JournalLineInput[] = [];
+    for (const raw of rawLines) {
+      if (typeof raw !== "object" || raw === null) return bad("each line must be an object");
+      const l = raw as Record<string, unknown>;
+      const code = str(l["code"]).trim();
+      const account = chart.getByCode(code);
+      if (!account) return bad(`unknown account code ${code}`);
+      const side = str(l["side"]).toUpperCase();
+      if (side !== "DEBIT" && side !== "CREDIT") {
+        return bad(`line ${code}: side must be DEBIT or CREDIT`);
+      }
+      const amountRaw = l["amount_minor"];
+      if (typeof amountRaw !== "string" && typeof amountRaw !== "number") {
+        return bad(`line ${code}: amount_minor must be an integer minor-unit value`);
+      }
+      let minor: bigint;
+      try {
+        minor = BigInt(amountRaw);
+      } catch {
+        return bad(`line ${code}: amount_minor is not an integer`);
+      }
+      if (minor <= 0n) {
+        return bad(`line ${code}: amount must be positive (the side conveys direction)`);
+      }
+      lines.push({
+        accountId: account.id,
+        side,
+        amount: Money.fromMinorUnits(minor, this.currency),
+        ...(str(l["memo"]) ? { memo: str(l["memo"]) } : {}),
+      });
+    }
+
+    const memo = str(data["memo"]);
+    const fingerprint = lines
+      .map((l) => `${String(l.accountId)}:${l.side}:${l.amount.minorUnits}`)
+      .join("|");
+    const key = str(data["idempotency_key"]).trim() || `je:${date}:${fingerprint}`;
+    const command: PostCommand = {
+      tenantId: tenant,
+      idempotencyKey: asIdempotencyKey(key),
+      periodKey: asPeriodKey(date.slice(0, 7)),
+      currency: this.currency,
+      entryDate: date,
+      ...(memo ? { memo } : {}),
+      provenance: provenanceFor(str(data["source"]) || "manual", date, this.opts.now()),
+      lines,
+    };
+
+    const engine = new PostingEngine(chart, this.backend.store(tenant), this.backend.periods(tenant));
+    const entry = await engine.post(command, { postedAt: this.opts.now() });
+    return created({ tenant, entry: entryJson(entry) });
+  }
+
+  private async listEntries(
+    tenant: TenantId,
+    query: Readonly<Record<string, string>>,
+  ): Promise<ServiceResponse> {
+    const all = await this.backend.store(tenant).list(tenant);
+    const from = query["from"];
+    const to = query["to"];
+    const rows = all.filter(
+      (e) => (from === undefined || e.entryDate >= from) && (to === undefined || e.entryDate <= to),
+    );
+    return ok({ tenant, entries: rows.map(entryJson) });
+  }
+
+  // --- reporting ------------------------------------------------------------
+
+  private windowFrom(
+    query: Readonly<Record<string, string>>,
+  ): { from?: string; to?: string } | undefined {
+    const from = query["from"];
+    const to = query["to"];
+    if (!from && !to) return undefined;
+    return { ...(from ? { from } : {}), ...(to ? { to } : {}) };
+  }
+
+  private async trialBalance(
+    tenant: TenantId,
+    query: Readonly<Record<string, string>>,
+  ): Promise<ServiceResponse> {
+    const chart = await this.backend.chart(tenant);
+    const window = this.windowFrom(query);
+    const tb = await computeTrialBalance(
+      this.backend.store(tenant),
+      tenant,
+      chart,
+      this.currency,
+      window,
+    );
+    return ok({
+      tenant,
+      currency: tb.currency.code,
+      in_balance: tb.inBalance,
+      total_debit_minor: tb.totalDebit.minorUnits.toString(),
+      total_credit_minor: tb.totalCredit.minorUnits.toString(),
+      rows: tb.rows.map((r) => ({
+        code: r.code,
+        name: r.name,
+        type: r.type,
+        debit_minor: r.debit.minorUnits.toString(),
+        credit_minor: r.credit.minorUnits.toString(),
+      })),
+    });
+  }
+
+  /**
+   * The three statements for a period as `financial-statements/1` — computed
+   * from the tenant's own posted books (period P&L, as-of balance sheet, and an
+   * indirect cash flow between the opening and closing positions).
+   */
+  private async statements(
+    tenant: TenantId,
+    query: Readonly<Record<string, string>>,
+  ): Promise<ServiceResponse> {
+    const from = query["from"];
+    const to = query["to"];
+    if (!from || !to) return bad("statements need ?from=YYYY-MM-DD&to=YYYY-MM-DD");
+    const chart = await this.backend.chart(tenant);
+    const store = this.backend.store(tenant);
+
+    const periodTb = fromKernelTrialBalance(
+      await computeTrialBalance(store, tenant, chart, this.currency, { from, to }),
+    );
+    const endTb = fromKernelTrialBalance(
+      await computeTrialBalance(store, tenant, chart, this.currency, { to }),
+    );
+    const startTb = fromKernelTrialBalance(
+      await computeTrialBalance(store, tenant, chart, this.currency, { to: previousDay(from) }),
+    );
+
+    const income = incomeStatement(periodTb);
+    const bs = balanceSheet(endTb, income.netIncome);
+    const cf = cashFlow(startTb, endTb, income.netIncome, subtypeCashFlowClassifier(chart));
+
+    return ok(
+      financialStatementsJson({
+        period: `${from}..${to}`,
+        currency: this.currency.code,
+        income,
+        balanceSheet: bs,
+        cashFlow: cf,
+      }),
+    );
+  }
+
+  /** One account's register (GL detail with a running balance). */
+  private async register(
+    tenant: TenantId,
+    code: string,
+    query: Readonly<Record<string, string>>,
+  ): Promise<ServiceResponse> {
+    const chart = await this.backend.chart(tenant);
+    const account = chart.getByCode(code);
+    if (!account) return notFound(`unknown account code ${code}`);
+    const entries = await this.backend.store(tenant).list(tenant);
+    const window = this.windowFrom(query);
+    const detail = accountLedger(entries, account.id, chart, this.currency, window);
+    if (!detail) return notFound(`unknown account code ${code}`);
+    return ok({
+      tenant,
+      code: detail.code,
+      name: detail.name,
+      type: detail.type,
+      opening_minor: detail.opening.minorUnits.toString(),
+      closing_minor: detail.closing.minorUnits.toString(),
+      total_debit_minor: detail.totalDebit.minorUnits.toString(),
+      total_credit_minor: detail.totalCredit.minorUnits.toString(),
+      rows: detail.rows.map((r) => ({
+        entry_id: r.entryId,
+        date: r.date,
+        memo: r.memo,
+        debit_minor: r.debit.minorUnits.toString(),
+        credit_minor: r.credit.minorUnits.toString(),
+        balance_minor: r.balance.minorUnits.toString(),
+      })),
+    });
+  }
+
+  // --- go-live --------------------------------------------------------------
+
+  private async goLive(tenant: TenantId, body: string): Promise<ServiceResponse> {
+    const data = parseJson(body);
+    if (!data) return bad("invalid JSON body");
+    const dto = { ...(data as unknown as GoLiveDto), tenant_id: String(tenant) };
+    const request = goLiveFromDto(dto);
+    const result = await executeGoLive(
+      this.backend.store(tenant),
+      this.backend.periods(tenant),
+      request,
+      this.opts.now(),
+    );
+    for (const account of result.chart.list()) await this.backend.saveAccount(tenant, account);
+    return ok({
+      tenant,
+      opening_entry_id: result.cutover.entry.id,
+      accounts: result.chart.list().length,
+      created_accounts: result.createdAccounts.length,
+      locked_period: result.cutover.record.lockedThroughPeriod,
+      opening_total_minor: result.cutover.record.openingTotal.minorUnits.toString(),
+    });
+  }
+}

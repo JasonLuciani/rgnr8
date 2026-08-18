@@ -1,6 +1,6 @@
 import { Money, type Currency } from "./money.js";
 import { PostingEngine } from "./postingEngine.js";
-import { PeriodRegistry } from "./periods.js";
+import type { PeriodStore } from "./periods.js";
 import type { LedgerStore } from "./ledgerStore.js";
 import {
   asIdempotencyKey,
@@ -147,7 +147,7 @@ export interface CutoverResult {
  */
 export async function executeCutover(
   engine: PostingEngine,
-  periods: PeriodRegistry,
+  periods: PeriodStore,
   store: LedgerStore,
   plan: CutoverPlan,
   postedAt: string,

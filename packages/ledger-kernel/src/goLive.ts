@@ -1,7 +1,7 @@
 import { Money, getCurrency, type Currency } from "./money.js";
 import { ChartOfAccounts } from "./chartOfAccounts.js";
 import { PostingEngine } from "./postingEngine.js";
-import { PeriodRegistry } from "./periods.js";
+import type { PeriodStore } from "./periods.js";
 import type { LedgerStore } from "./ledgerStore.js";
 import {
   BusinessCategory,
@@ -133,7 +133,7 @@ function buildGoLiveChart(request: GoLiveRequest): { chart: ChartOfAccounts; cre
  */
 export async function executeGoLive(
   store: LedgerStore,
-  periods: PeriodRegistry,
+  periods: PeriodStore,
   request: GoLiveRequest,
   postedAt: string,
 ): Promise<GoLiveResult> {
