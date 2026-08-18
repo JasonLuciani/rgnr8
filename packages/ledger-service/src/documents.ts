@@ -30,6 +30,8 @@ export interface DocLineRecord {
   readonly unitAmountMinor: string;
   readonly accountCode: string;
   readonly amountMinor: string;
+  /** Whether sales tax applies to this line. Defaults to true on an invoice. */
+  readonly taxable: boolean;
 }
 
 export interface DocRecord {
@@ -38,6 +40,13 @@ export interface DocRecord {
   readonly partyId: string;
   readonly date: string;
   readonly dueDate: string;
+  /** The line total before tax. */
+  readonly netMinor: string;
+  /** Sales tax charged on this document (invoices only; 0 otherwise). */
+  readonly taxMinor: string;
+  /** Rate applied, in parts per million (8.25% = 82500) — kept for the audit trail. */
+  readonly taxRatePpm: number;
+  /** Net plus tax — what is actually owed. */
   readonly totalMinor: string;
   readonly openMinor: string;
   readonly status: DocStatus;
@@ -171,6 +180,9 @@ CREATE TABLE IF NOT EXISTS doc (
   party_id     text NOT NULL,
   doc_date     text NOT NULL,
   due_date     text NOT NULL,
+  net_minor    numeric(38,0) NOT NULL DEFAULT 0,
+  tax_minor    numeric(38,0) NOT NULL DEFAULT 0,
+  tax_rate_ppm integer NOT NULL DEFAULT 0,
   total_minor  numeric(38,0) NOT NULL,
   open_minor   numeric(38,0) NOT NULL,
   status       text NOT NULL,
@@ -186,10 +198,21 @@ CREATE TABLE IF NOT EXISTS doc_line (
   description       text,
   quantity          numeric(20,4) NOT NULL,
   unit_amount_minor numeric(38,0) NOT NULL,
+  taxable           boolean NOT NULL DEFAULT true,
   account_code      text NOT NULL,
   amount_minor      numeric(38,0) NOT NULL,
   CONSTRAINT doc_line_pk PRIMARY KEY (tenant_id, kind, doc_id, line_index)
 );
+
+-- Schema evolution: CREATE TABLE IF NOT EXISTS silently skips an existing table,
+-- so a column added after the first deploy has to be added explicitly or it will
+-- only ever exist on fresh databases.
+ALTER TABLE doc      ADD COLUMN IF NOT EXISTS net_minor    numeric(38,0) NOT NULL DEFAULT 0;
+ALTER TABLE doc      ADD COLUMN IF NOT EXISTS tax_minor    numeric(38,0) NOT NULL DEFAULT 0;
+ALTER TABLE doc      ADD COLUMN IF NOT EXISTS tax_rate_ppm integer       NOT NULL DEFAULT 0;
+ALTER TABLE doc_line ADD COLUMN IF NOT EXISTS taxable      boolean       NOT NULL DEFAULT true;
+-- Documents written before tax existed had no tax, so their net IS their total.
+UPDATE doc SET net_minor = total_minor WHERE net_minor = 0 AND total_minor <> 0;
 
 CREATE TABLE IF NOT EXISTS doc_payment (
   tenant_id    text NOT NULL,
@@ -271,14 +294,18 @@ export class PgDocumentStore implements DocumentStore {
     await this.tx(tenant, async (db) => {
       await db.query(
         `INSERT INTO doc (tenant_id, kind, id, party_id, doc_date, due_date,
+                          net_minor, tax_minor, tax_rate_ppm,
                           total_minor, open_minor, status, memo)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
          ON CONFLICT (tenant_id, kind, id) DO UPDATE SET
            party_id=EXCLUDED.party_id, doc_date=EXCLUDED.doc_date, due_date=EXCLUDED.due_date,
+           net_minor=EXCLUDED.net_minor, tax_minor=EXCLUDED.tax_minor,
+           tax_rate_ppm=EXCLUDED.tax_rate_ppm,
            total_minor=EXCLUDED.total_minor, open_minor=EXCLUDED.open_minor,
            status=EXCLUDED.status, memo=EXCLUDED.memo`,
         [
           tenant, doc.kind, doc.id, doc.partyId, doc.date, doc.dueDate,
+          doc.netMinor, doc.taxMinor, doc.taxRatePpm,
           doc.totalMinor, doc.openMinor, doc.status, doc.memo,
         ],
       );
@@ -286,15 +313,16 @@ export class PgDocumentStore implements DocumentStore {
         const l = doc.lines[i]!;
         await db.query(
           `INSERT INTO doc_line (tenant_id, kind, doc_id, line_index, description,
-                                 quantity, unit_amount_minor, account_code, amount_minor)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                                 quantity, unit_amount_minor, account_code, amount_minor, taxable)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
            ON CONFLICT (tenant_id, kind, doc_id, line_index) DO UPDATE SET
              description=EXCLUDED.description, quantity=EXCLUDED.quantity,
              unit_amount_minor=EXCLUDED.unit_amount_minor,
-             account_code=EXCLUDED.account_code, amount_minor=EXCLUDED.amount_minor`,
+             account_code=EXCLUDED.account_code, amount_minor=EXCLUDED.amount_minor,
+             taxable=EXCLUDED.taxable`,
           [
             tenant, doc.kind, doc.id, i, l.description, l.quantity,
-            l.unitAmountMinor, l.accountCode, l.amountMinor,
+            l.unitAmountMinor, l.accountCode, l.amountMinor, l.taxable,
           ],
         );
       }
@@ -311,7 +339,8 @@ export class PgDocumentStore implements DocumentStore {
       const row = res.rows[0];
       if (!row) return undefined;
       const lines = await db.query(
-        `SELECT line_index, description, quantity, unit_amount_minor, account_code, amount_minor
+        `SELECT line_index, description, quantity, unit_amount_minor, account_code,
+                amount_minor, taxable
          FROM doc_line WHERE tenant_id=$1 AND kind=$2 AND doc_id=$3`,
         [tenant, kind, id],
       );
@@ -322,13 +351,14 @@ export class PgDocumentStore implements DocumentStore {
   async listDocs(tenant: string, kind: DocKind): Promise<DocRecord[]> {
     return this.tx(tenant, async (db) => {
       const res = await db.query(
-        `SELECT id, party_id, doc_date, due_date, total_minor, open_minor, status, memo
+        `SELECT id, party_id, doc_date, due_date, net_minor, tax_minor, tax_rate_ppm,
+                total_minor, open_minor, status, memo
          FROM doc WHERE tenant_id=$1 AND kind=$2`,
         [tenant, kind],
       );
       const lines = await db.query(
         `SELECT doc_id, line_index, description, quantity, unit_amount_minor,
-                account_code, amount_minor
+                account_code, amount_minor, taxable
          FROM doc_line WHERE tenant_id=$1 AND kind=$2`,
         [tenant, kind],
       );
@@ -414,6 +444,9 @@ function rowToDoc(
     partyId: str(r["party_id"]),
     date: str(r["doc_date"]),
     dueDate: str(r["due_date"]),
+    netMinor: str(r["net_minor"] ?? r["total_minor"]),
+    taxMinor: str(r["tax_minor"] ?? "0"),
+    taxRatePpm: Number(r["tax_rate_ppm"] ?? 0),
     totalMinor: str(r["total_minor"]),
     openMinor: str(r["open_minor"]),
     status: str(r["status"]) as DocStatus,
@@ -426,6 +459,7 @@ function rowToDoc(
         unitAmountMinor: str(l["unit_amount_minor"]),
         accountCode: str(l["account_code"]),
         amountMinor: str(l["amount_minor"]),
+        taxable: l["taxable"] !== false && l["taxable"] !== "f",
       })),
   };
 }

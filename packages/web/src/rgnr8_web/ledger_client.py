@@ -186,6 +186,7 @@ class LedgerClient:
     def create_document(
         self, tenant: str, kind: str, doc_id: str, party_id: str, date: str,
         lines: list[dict[str, object]], *, memo: str = "", due_date: str = "",
+        tax_rate_ppm: int = 0,
     ) -> LedgerResponse:
         payload: dict[str, object] = {
             "id": doc_id, "party_id": party_id, "date": date, "lines": lines,
@@ -194,7 +195,35 @@ class LedgerClient:
             payload["memo"] = memo
         if due_date:
             payload["due_date"] = due_date
+        if tax_rate_ppm:
+            payload["tax_rate_ppm"] = tax_rate_ppm
         return self._call("POST", f"/t/{tenant}/{kind}", payload)
+
+    def issue_credit(
+        self, tenant: str, kind: str, doc_id: str, date: str,
+        *, amount_minor: str = "", memo: str = "",
+    ) -> LedgerResponse:
+        """Reduce what is owed on an open invoice or bill."""
+        payload: dict[str, object] = {"date": date}
+        if amount_minor:
+            payload["amount_minor"] = amount_minor
+        if memo:
+            payload["memo"] = memo
+        return self._call("POST", f"/t/{tenant}/{kind}/{doc_id}/credits", payload)
+
+    def issue_refund(
+        self, tenant: str, doc_id: str, date: str,
+        *, amount_minor: str = "", memo: str = "", bank_code: str = "",
+    ) -> LedgerResponse:
+        """Send money back on an invoice that was already collected."""
+        payload: dict[str, object] = {"date": date}
+        if amount_minor:
+            payload["amount_minor"] = amount_minor
+        if memo:
+            payload["memo"] = memo
+        if bank_code:
+            payload["bank_code"] = bank_code
+        return self._call("POST", f"/t/{tenant}/invoices/{doc_id}/refunds", payload)
 
     def record_payment(
         self, tenant: str, kind: str, doc_id: str, date: str, amount_minor: str,

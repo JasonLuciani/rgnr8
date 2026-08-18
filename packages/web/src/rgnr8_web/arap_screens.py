@@ -41,6 +41,61 @@ def _party_names(parties: Mapping[str, object]) -> dict[str, str]:
     return out
 
 
+def _tax_note(d: Mapping[str, object]) -> str:
+    """Sales tax, spelled out. It is the state's money, not the business's."""
+    tax = _minor(d.get("tax_minor")) or 0
+    if tax <= 0:
+        return ""
+    ppm = _minor(d.get("tax_rate_ppm")) or 0
+    rate = f"{ppm / 10000:.4f}".rstrip("0").rstrip(".")
+    return (
+        f'<br><span class="muted" style="font-size:12px">'
+        f'{money(d.get("net_minor"))} + {money(d.get("tax_minor"))} sales tax'
+        f'{f" ({rate}%)" if ppm else ""}</span>'
+    )
+
+
+def _adjust_controls(
+    tenant: str, kind: str, d: Mapping[str, object], can_post: bool
+) -> str:
+    """Credit what is still owed; refund what has already been collected.
+
+    Only one of the two is ever offered, because only one of them is ever the
+    right answer: money that hasn't arrived can't be sent back, and money that
+    has can't be un-owed.
+    """
+    if not can_post:
+        return ""
+    doc_id = _esc(d.get("id"))
+    open_minor = _minor(d.get("open_minor")) or 0
+    total = _minor(d.get("total_minor")) or 0
+    collected = total - open_minor
+    is_ar = kind == "invoices"
+
+    if open_minor > 0:
+        label = "Credit" if is_ar else "Vendor credit"
+        return (
+            f'<form method="post" action="/t/{_esc(tenant)}/{_esc(kind)}/{doc_id}/credits" '
+            'style="display:flex;gap:6px;align-items:center;margin:4px 0 0">'
+            f'<input name="amount" placeholder="{money(d.get("open_minor"))[1:]}" '
+            'style="width:100px;padding:6px 8px" inputmode="decimal">'
+            f'<button class="btn ghost" style="padding:6px 10px;margin:0" type="submit" '
+            f'title="Reduce what is owed — the document itself is never edited">'
+            f'{label}</button></form>'
+        )
+    if is_ar and collected > 0:
+        return (
+            f'<form method="post" action="/t/{_esc(tenant)}/{_esc(kind)}/{doc_id}/refunds" '
+            'style="display:flex;gap:6px;align-items:center;margin:4px 0 0">'
+            f'<input name="amount" placeholder="{money(str(collected))[1:]}" '
+            'style="width:100px;padding:6px 8px" inputmode="decimal">'
+            '<button class="btn ghost" style="padding:6px 10px;margin:0" type="submit" '
+            'title="Send money back — this moves cash out of the bank">'
+            "Refund</button></form>"
+        )
+    return ""
+
+
 def render_documents(
     tenant: str,
     kind: str,
@@ -79,12 +134,12 @@ def render_documents(
             )
         rows.append(
             f"<tr><td><strong>{doc_id}</strong><br>"
-            f'<span class="muted">{_esc(d.get("memo"))}</span></td>'
+            f'<span class="muted">{_esc(d.get("memo"))}</span>{_tax_note(d)}</td>'
             f"<td>{_esc(party)}</td><td>{_esc(d.get('date'))}</td>"
             f"<td>{_esc(d.get('due_date'))}</td>"
             f"{_num(d.get('total_minor'))}{_num(d.get('open_minor'))}"
             f"<td>{_status_chip(d.get('status'), overdue)}</td>"
-            f"<td>{pay_cell}</td></tr>"
+            f"<td>{pay_cell}{_adjust_controls(tenant, kind, d, can_post)}</td></tr>"
         )
 
     empty = (
@@ -164,14 +219,25 @@ def _render_new_form(
         f'<div><label>Number</label><input name="id" placeholder="{"INV-1001" if is_ar else "BILL-2001"}"></div>'
         f'<div><label>Date</label><input name="date" value="{_esc(today)}"></div>'
         "</div>"
-        '<div class="grid2">'
+        '<div class="grid3">'
         '<div><label>Memo</label><input name="memo" placeholder="Optional note"></div>'
         '<div><label>Due date (blank = payment terms)</label><input name="due_date" placeholder="YYYY-MM-DD"></div>'
-        "</div>"
+        + (
+            '<div><label>Sales tax rate %</label>'
+            '<input name="tax_rate" placeholder="8.25" inputmode="decimal"></div>'
+            if is_ar else "<div></div>"
+        )
+        + "</div>"
         f"{lines}"
         f'<p class="note">Each line posts to the account code you give it '
         f'({"income" if is_ar else "expense"}). The total {"debits Accounts Receivable" if is_ar else "credits Accounts Payable"} '
-        "in the ledger.</p>"
+        "in the ledger."
+        + (
+            " Sales tax is held as a liability — it is the state's money, not "
+            "income, so it never shows up in your revenue."
+            if is_ar else ""
+        )
+        + "</p>"
         f'<button class="btn" type="submit">Create {"invoice" if is_ar else "bill"}</button></form>',
     )
 

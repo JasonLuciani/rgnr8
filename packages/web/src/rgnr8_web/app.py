@@ -224,6 +224,22 @@ def _minor_decimal(v: object) -> str:
     return f"{sign}{whole}.{frac:02d}"
 
 
+def _percent_to_ppm(raw: str) -> int:
+    """"8.25" -> 82500. Exact: a tax rate never passes through a float."""
+    text = raw.strip().rstrip("%").strip()
+    if not text:
+        return 0
+    negative = text.startswith("-")
+    if negative:
+        raise ValueError("a tax rate cannot be negative")
+    if not all(c.isdigit() or c == "." for c in text) or text.count(".") > 1:
+        raise ValueError(f"not a valid tax rate: {raw!r}")
+    whole, _, frac = text.partition(".")
+    if len(frac) > 4:
+        raise ValueError("a tax rate finer than four decimal places is a typo")
+    return int(whole or "0") * 10_000 + int((frac or "0").ljust(4, "0"))
+
+
 def _suggested_code(suggestion: object) -> str:
     if isinstance(suggestion, dict):
         return str(suggestion.get("account_code", ""))
@@ -792,6 +808,13 @@ class WebApp:
                 doc_id = parts[3]
                 return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
                                      lambda t: self._arap_pay(subject, t, kind, doc_id, req.body))
+            # A credit reduces what is owed; a refund sends money back.
+            if (len(parts) == 5 and parts[4] in ("credits", "refunds")
+                    and req.method == "POST"):
+                doc_id, action = parts[3], parts[4]
+                return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                     lambda t: self._arap_adjust(subject, t, kind, doc_id,
+                                                                 action, req.body))
         # /t/<tenant>/customers|vendors  -> add a party (form POST)
         if (len(parts) == 3 and parts[0] == "t" and parts[2] in ("customers", "vendors")
                 and req.method == "POST"):
@@ -1207,15 +1230,63 @@ class WebApp:
         if not lines:
             return _redirect(f"/t/{t.tenant_id}/{kind}?err={_qs_escape('Add at least one line')}")
 
+        # A tax rate is typed as a percentage and stored as parts per million,
+        # so 8.25% is 82500 exactly — never 0.0825 through a float.
+        try:
+            tax_ppm = _percent_to_ppm(str(data.get("tax_rate", "")))
+        except ValueError as exc:
+            return _redirect(f"/t/{t.tenant_id}/{kind}?err={_qs_escape(str(exc))}")
+
         res = self._ledger.create_document(
             t.tenant_id, kind, doc_id, party_id, date, lines,
             memo=str(data.get("memo", "")).strip(),
             due_date=str(data.get("due_date", "")).strip(),
+            tax_rate_ppm=tax_ppm,
         )
         if not res.ok:
             return _redirect(f"/t/{t.tenant_id}/{kind}?err={_qs_escape(res.error())}")
         noun = "Invoice" if kind == "invoices" else "Bill"
         return _redirect(f"/t/{t.tenant_id}/{kind}?ok={_qs_escape(f'{noun} {doc_id} created')}")
+
+    def _arap_adjust(
+        self, subject: str, t: _Tenant, kind: str, doc_id: str, action: str, body: str
+    ) -> Response:
+        """Credit an open document, or refund one that was already collected.
+
+        The ledger owns every rule about which is allowed when — crediting a
+        settled invoice and refunding an unpaid one are both refused there, with
+        a message that says which one you actually wanted."""
+        back = f"/t/{t.tenant_id}/{kind}"
+        if self._ledger is None:
+            return _redirect(f"{back}?err={_qs_escape('No ledger service configured')}")
+        data = self._form_or_json(body)
+        try:
+            minor = self._amount_to_minor(str(data.get("amount", "")))
+        except ValueError as exc:
+            return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+        if minor is not None and minor <= 0:
+            return _redirect(f"{back}?err={_qs_escape('Enter a positive amount')}")
+        date = str(data.get("date", "")).strip() or self._today(t)
+        memo = str(data.get("memo", "")).strip()
+
+        if action == "credits":
+            res = self._ledger.issue_credit(
+                t.tenant_id, kind, doc_id, date,
+                amount_minor=str(minor) if minor else "", memo=memo,
+            )
+        else:
+            res = self._ledger.issue_refund(
+                t.tenant_id, doc_id, date,
+                amount_minor=str(minor) if minor else "", memo=memo,
+            )
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        applied = _minor_decimal(res.body.get("applied_minor", "0"))
+        if self._audit is not None:
+            self._audit.record(subject, f"arap.{action[:-1]}", self._session_clock(),
+                               tenant_id=t.tenant_id, target=doc_id, detail=applied)
+        word = "Credited" if action == "credits" else "Refunded"
+        return _redirect(f"{back}?ok={_qs_escape(f'{word} {applied} against {doc_id}')}")
 
     def _arap_pay(self, subject: str, t: _Tenant, kind: str, doc_id: str, body: str) -> Response:
         """Collect against an invoice, or pay a bill."""

@@ -131,6 +131,12 @@ def _service_post(base: str, path: str, payload: dict[str, Any]) -> Any:
         return json.loads(r.read().decode())
 
 
+def _signed(base: str, tenant: str) -> dict[str, int]:
+    """Signed trial-balance amounts by account code (debit-positive)."""
+    tb = _service_get(base, f"/t/{tenant}/trial-balance")
+    return {r["code"]: int(r["debit_minor"]) - int(r["credit_minor"]) for r in tb["rows"]}
+
+
 def test_owner_runs_their_books_end_to_end_against_the_real_service(ledger_service: str) -> None:
     base = ledger_service
     app = _app(base, ["northwind"])
@@ -585,3 +591,71 @@ def test_the_real_service_refuses_to_overpay_payroll_liabilities(ledger_service:
     r = _req(app, "overpayco", "/t/overpayco/payroll/remit", "POST",
              "date=2026-08-18&amount=500.00")
     assert "overpay" in str(r.headers.get("Location", ""))
+
+
+def test_sales_tax_credits_and_refunds_against_the_real_service(ledger_service: str) -> None:
+    """The three adjustments a real business needs, end to end: tax collected as
+    a liability, a credit for over-billing, and a refund for money already taken."""
+    base = ledger_service
+    app = _app(base, ["taxco"])
+    _seed(base, "taxco", "PROFESSIONAL_SERVICES")
+    _req(app, "taxco", "/t/taxco/customers", "POST", "name=Halcyon+LLC&terms_days=30")
+
+    # $1,000 of work at 8.25%
+    r = _req(app, "taxco", "/t/taxco/invoices", "POST",
+             "id=INV-1&party_id=halcyon-llc&date=2026-08-01&tax_rate=8.25"
+             "&amount1=1000.00&code1=4100&desc1=Consulting")
+    assert r.status == 302 and "err=" not in str(r.headers.get("Location", ""))
+
+    page = _req(app, "taxco", "/t/taxco/invoices")
+    assert "$1,000.00 + $82.50 sales tax (8.25%)" in page.body
+    assert "$1,082.50" in page.body
+
+    signed = _signed(base, "taxco")
+    assert signed["1200"] == 108250, "AR is what they owe, tax included"
+    assert signed["4100"] == -100000, "revenue is the NET"
+    assert -signed["2200"] == 8250, "the tax is a liability, not income"
+
+    # over-billed by $250 — credit it, don't edit the invoice
+    _req(app, "taxco", "/t/taxco/invoices/INV-1/credits", "POST",
+         "amount=250.00&date=2026-08-05&memo=Overbilled")
+    signed = _signed(base, "taxco")
+    assert signed["1200"] == 83250
+    assert signed["4100"] == -75000, "revenue came back down"
+    inv = _service_get(base, "/t/taxco/invoices/INV-1")["document"]
+    assert inv["total_minor"] == "108250", "the invoice still says what it said"
+    assert inv["open_minor"] == "83250"
+
+    # they pay the rest, then cancel — the money physically goes back
+    _req(app, "taxco", "/t/taxco/invoices/INV-1/payments", "POST",
+         "amount=832.50&date=2026-08-12")
+    assert _signed(base, "taxco")["1000"] == 83250
+    refunded = _req(app, "taxco", "/t/taxco/invoices/INV-1/refunds", "POST",
+                    "amount=300.00&date=2026-08-20")
+    assert "Refunded%20300.00" in str(refunded.headers.get("Location", ""))
+    signed = _signed(base, "taxco")
+    assert signed["1000"] == 53250, "cash left the bank"
+    assert signed["4100"] == -45000, "and the revenue went with it"
+
+    tb = _service_get(base, "/t/taxco/trial-balance")
+    assert tb["in_balance"] is True
+    # every adjustment is its own entry — nothing was edited
+    assert len(_service_get(base, "/t/taxco/entries")["entries"]) == 4
+
+
+def test_the_real_service_refuses_the_wrong_adjustment(ledger_service: str) -> None:
+    base = ledger_service
+    app = _app(base, ["adjco"])
+    _seed(base, "adjco", "PROFESSIONAL_SERVICES")
+    _req(app, "adjco", "/t/adjco/customers", "POST", "name=Halcyon+LLC")
+    _req(app, "adjco", "/t/adjco/invoices", "POST",
+         "id=INV-1&party_id=halcyon-llc&date=2026-08-01&amount1=100.00&code1=4100")
+
+    # nothing collected yet, so a refund is the wrong tool
+    r = _req(app, "adjco", "/t/adjco/invoices/INV-1/refunds", "POST", "amount=50.00")
+    assert "credit%20instead" in str(r.headers.get("Location", ""))
+
+    # settle it, and now a credit is the wrong tool
+    _req(app, "adjco", "/t/adjco/invoices/INV-1/payments", "POST", "amount=100.00")
+    r = _req(app, "adjco", "/t/adjco/invoices/INV-1/credits", "POST", "amount=50.00")
+    assert "refund%2C%20not%20a%20credit" in str(r.headers.get("Location", ""))

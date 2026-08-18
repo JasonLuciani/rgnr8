@@ -40,6 +40,8 @@ import {
   ArApError,
   aging,
   createDocument,
+  issueCredit,
+  issueRefund,
   recordPayment,
   validateParty,
   type ArApContext,
@@ -290,6 +292,25 @@ export class LedgerService {
         }
         if (rest.length === 3 && rest[2] === "payments" && req.method === "POST") {
           return await this.payDoc(tenant, docKind, rest[1]!, req.body);
+        }
+        // A credit reduces what is owed; a refund sends money back. Different
+        // entries, deliberately different routes.
+        if (rest.length === 3 && rest[2] === "credits" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          return this.creditJson(tenant, await issueCredit(
+            docKind, rest[1]!, data as Parameters<typeof issueCredit>[2],
+            await this.arapCtx(tenant),
+          ));
+        }
+        if (rest.length === 3 && rest[2] === "refunds" && req.method === "POST") {
+          if (docKind !== "invoice") return bad("only an invoice can be refunded");
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          return this.creditJson(tenant, await issueRefund(
+            rest[1]!, data as Parameters<typeof issueRefund>[1],
+            await this.arapCtx(tenant),
+          ));
         }
       }
       if (rest[0] === "aging" && rest.length === 2 && req.method === "GET") {
@@ -798,6 +819,9 @@ export class LedgerService {
       party_id: d.partyId,
       date: d.date,
       due_date: d.dueDate,
+      net_minor: d.netMinor,
+      tax_minor: d.taxMinor,
+      tax_rate_ppm: d.taxRatePpm,
       total_minor: d.totalMinor,
       open_minor: d.openMinor,
       status: d.status,
@@ -808,6 +832,7 @@ export class LedgerService {
         unit_amount_minor: l.unitAmountMinor,
         account_code: l.accountCode,
         amount_minor: l.amountMinor,
+        taxable: l.taxable,
       })),
     };
   }
@@ -868,6 +893,19 @@ export class LedgerService {
       document: this.docJson(result.doc),
       entry_id: result.entryId,
       applied_minor: result.appliedMinor,
+    });
+  }
+
+  private creditJson(
+    tenant: TenantId,
+    result: { doc: DocRecord; entryId: string; appliedMinor: string; kind: string },
+  ): ServiceResponse {
+    return ok({
+      tenant,
+      document: this.docJson(result.doc),
+      entry_id: result.entryId,
+      applied_minor: result.appliedMinor,
+      kind: result.kind,
     });
   }
 

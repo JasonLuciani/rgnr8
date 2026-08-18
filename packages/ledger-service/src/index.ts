@@ -29,8 +29,11 @@ export {
   createDocument,
   recordPayment,
   aging,
+  issueCredit,
+  issueRefund,
   ArApError,
   DEFAULT_CONTROLS,
+  DEFAULT_SALES_TAX_CODE,
 } from "./arap.js";
 export {
   reconcileView,
