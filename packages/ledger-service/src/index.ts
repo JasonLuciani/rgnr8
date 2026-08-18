@@ -96,4 +96,5 @@ export {
   type EmployeeRecord,
   type PayrollContext,
 } from "./payroll.js";
+export { rlsDdl, appRoleDdl, superuserWarning, TENANT_TABLES } from "./security.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";

@@ -19,6 +19,7 @@ import {
 import { InMemoryReconStore, PgReconStore, type ReconStore } from "./reconcile.js";
 import { InMemoryFeedStore, PgFeedStore, type FeedStore } from "./feed.js";
 import { InMemoryPayrollStore, PgPayrollStore, type PayrollStore } from "./payroll.js";
+import { rlsDdl } from "./security.js";
 
 /**
  * The storage seam the ledger service runs on.
@@ -143,7 +144,19 @@ export class PostgresBackend implements LedgerBackend {
   private readonly feedStore: PgFeedStore;
   private readonly payrollStore: PgPayrollStore;
 
-  constructor(pool: Pool) {
+  /**
+   * @param pool     a connection pool.
+   * @param options  `enforceRls` defaults to true and should stay true in
+   *                 production. It exists because `pg-mem` — the in-process
+   *                 fake the fast tests run against — cannot execute the
+   *                 plpgsql the policies are created with. Turning it off is a
+   *                 statement that this database is a test double, not a
+   *                 decision about security.
+   */
+  constructor(
+    private readonly pool: Pool,
+    private readonly options: { readonly enforceRls?: boolean } = {},
+  ) {
     this.ledger = new PgLedgerStore(pool);
     this.accounts = new PgAccountStore(pool);
     this.periodStore = new SqlPeriodStore(pool);
@@ -160,6 +173,12 @@ export class PostgresBackend implements LedgerBackend {
     await this.reconStore.migrate();
     await this.feedStore.migrate();
     await this.payrollStore.migrate();
+    // Last, once every table exists: make the database itself enforce tenant
+    // isolation, so a query that forgets its tenant filter returns nothing
+    // rather than everything.
+    if (this.options.enforceRls !== false) {
+      await this.pool.query(rlsDdl());
+    }
   }
 
   documents(): DocumentStore {

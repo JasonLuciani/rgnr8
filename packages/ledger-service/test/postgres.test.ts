@@ -1,7 +1,9 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import pg from "pg";
-import { LedgerService, PostgresBackend } from "../src/index.js";
+import {
+  LedgerService, PostgresBackend, TENANT_TABLES, appRoleDdl, superuserWarning,
+} from "../src/index.js";
 
 /**
  * Real-PostgreSQL integration. `pg-mem` covers the SQL shape in the fast suite;
@@ -328,5 +330,176 @@ describe("real PostgreSQL", { skip: URL_ ? false : "set RGNR8_TEST_DATABASE_URL 
     assert.equal((resync.body as Record<string, unknown>)["duplicates"], 1);
 
     await poolB.end();
+  });
+
+  test("ROW-LEVEL SECURITY: the database refuses a query that forgets its tenant", async () => {
+    const suffix = `${Date.now()}`.slice(-8);
+    const alpha = `rls_alpha_${suffix}`;
+    const bravo = `rls_bravo_${suffix}`;
+    const role = `rgnr8_rls_${suffix}`;
+    const password = `pw-${suffix}`;
+
+    const ownerPool = new pg.Pool({ connectionString: URL_ });
+    const backend = new PostgresBackend(ownerPool as never);
+    await backend.migrate();
+    const svc = new LedgerService(backend, { now: () => NOW });
+    const call = (
+      method: string, path: string, body: unknown = "",
+    ): Promise<{ status: number; body: unknown }> =>
+      svc.handle({
+        method, path, query: {},
+        body: typeof body === "string" ? body : JSON.stringify(body),
+        headers: {},
+      });
+
+    for (const t of [alpha, bravo]) {
+      await call("POST", `/t/${t}/accounts/seed`, { category: "PROFESSIONAL_SERVICES" });
+      await call("POST", `/t/${t}/entries`, {
+        date: "2026-08-05", memo: `${t} sale`,
+        lines: [
+          { code: "1000", side: "DEBIT", amount_minor: "111100" },
+          { code: "4100", side: "CREDIT", amount_minor: "111100" },
+        ],
+      });
+    }
+
+    // Policies are FORCEd, so even the table's owner is subject to them.
+    const forced = await ownerPool.query(
+      `SELECT relname FROM pg_class WHERE relname = ANY($1)
+         AND relrowsecurity AND relforcerowsecurity`,
+      [[...TENANT_TABLES]],
+    );
+    assert.equal(
+      forced.rows.length, TENANT_TABLES.length,
+      "every tenant table must have RLS enabled AND forced",
+    );
+
+    await ownerPool.query(appRoleDdl(role, password));
+    const url = new URL(URL_);
+    url.username = role;
+    url.password = password;
+    const appPool = new pg.Pool({ connectionString: url.toString() });
+
+    try {
+      const client = await appPool.connect();
+      try {
+        // A raw query with NO tenant filter at all — exactly what a future bug
+        // looks like. It must come back empty, not with everyone's books.
+        const naked = await client.query("SELECT * FROM journal_entry");
+        assert.equal(
+          naked.rows.length, 0,
+          "with no app.tenant_id bound, a filterless query must return nothing",
+        );
+
+        // Bind one tenant and the same filterless query sees only that tenant.
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.tenant_id', $1, true)", [alpha]);
+        const scoped = await client.query("SELECT tenant_id FROM journal_entry");
+        assert.ok(scoped.rows.length > 0, "alpha can see its own entries");
+        assert.ok(
+          scoped.rows.every((r) => String(r["tenant_id"]) === alpha),
+          "bravo's rows are invisible even with no WHERE clause",
+        );
+
+        // And writing INTO another tenant is rejected outright by WITH CHECK.
+        await assert.rejects(
+          client.query(
+            `INSERT INTO feed_txn (tenant_id, id, account_code, txn_date, amount_minor)
+             VALUES ($1, 'smuggled', '1000', '2026-08-05', '100')`,
+            [bravo],
+          ),
+          /row-level security/i,
+        );
+        await client.query("ROLLBACK");
+      } finally {
+        client.release();
+      }
+    } finally {
+      await appPool.end();
+      await ownerPool.query(`DROP OWNED BY "${role}"`).catch(() => undefined);
+      await ownerPool.query(`DROP ROLE IF EXISTS "${role}"`).catch(() => undefined);
+      await ownerPool.end();
+    }
+  });
+
+  test("a SUPERUSER connection bypasses RLS entirely — which is why the app role is not optional", async () => {
+    // This is the uncomfortable half of the story and it belongs in a test
+    // rather than a comment: Postgres exempts superusers from every policy, so
+    // RLS protects nothing if the service connects as one. `superuserWarning`
+    // is what stops that configuration going unnoticed in production.
+    const suffix = `${Date.now()}`.slice(-8);
+    const tenant = `rls_super_${suffix}`;
+    const pool = new pg.Pool({ connectionString: URL_ });
+    const backend = new PostgresBackend(pool as never);
+    await backend.migrate();
+    const svc = new LedgerService(backend, { now: () => NOW });
+    await svc.handle({
+      method: "POST", path: `/t/${tenant}/accounts/seed`, query: {},
+      body: JSON.stringify({ category: "PROFESSIONAL_SERVICES" }), headers: {},
+    });
+
+    const warning = await superuserWarning(pool as never);
+    if (warning) {
+      // The test database is a superuser connection, so prove the bypass is real.
+      const naked = await pool.query("SELECT tenant_id FROM account LIMIT 1");
+      assert.ok(naked.rows.length > 0, "a superuser sees rows with no tenant bound");
+      assert.match(warning, /superuser|BYPASSRLS/i);
+    }
+    await pool.end();
+  });
+
+  test("the app role can change rows but not the rules that constrain it", async () => {
+    const suffix = `${Date.now()}`.slice(-8);
+    const tenant = `rls_role_${suffix}`;
+    const role = `rgnr8_app_${suffix}`;
+    const password = `pw-${suffix}`;
+
+    const ownerPool = new pg.Pool({ connectionString: URL_ });
+    const backend = new PostgresBackend(ownerPool as never);
+    await backend.migrate();
+    const svc = new LedgerService(backend, { now: () => NOW });
+    await svc.handle({
+      method: "POST", path: `/t/${tenant}/accounts/seed`, query: {},
+      body: JSON.stringify({ category: "PROFESSIONAL_SERVICES" }), headers: {},
+    });
+    await ownerPool.query(appRoleDdl(role, password));
+
+    // Connect AS the app role — the way production should.
+    const url = new URL(URL_);
+    url.username = role;
+    url.password = password;
+    const appPool = new pg.Pool({ connectionString: url.toString() });
+    try {
+      const client = await appPool.connect();
+      try {
+        // it can read its own tenant's rows
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenant]);
+        const rows = await client.query("SELECT code FROM account");
+        assert.ok(rows.rows.length > 0);
+        await client.query("COMMIT");
+
+        // but it cannot drop the policy that constrains it, or reshape the table
+        await assert.rejects(
+          client.query("DROP POLICY journal_entry_tenant_isolation ON journal_entry"),
+          /must be owner|permission denied/i,
+        );
+        await assert.rejects(
+          client.query("ALTER TABLE journal_entry DISABLE ROW LEVEL SECURITY"),
+          /must be owner|permission denied/i,
+        );
+        await assert.rejects(
+          client.query("CREATE TABLE rls_escape_hatch (x int)"),
+          /permission denied/i,
+        );
+      } finally {
+        client.release();
+      }
+    } finally {
+      await appPool.end();
+      await ownerPool.query(`DROP OWNED BY "${role}"`).catch(() => undefined);
+      await ownerPool.query(`DROP ROLE IF EXISTS "${role}"`).catch(() => undefined);
+      await ownerPool.end();
+    }
   });
 });

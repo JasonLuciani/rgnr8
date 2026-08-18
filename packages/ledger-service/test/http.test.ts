@@ -84,7 +84,12 @@ test("the books are durable on the PostgreSQL backend, and tenant-isolated", asy
   const db = newDb();
   const pg = db.adapters.createPg();
   const pool = new pg.Pool();
-  const { call, close } = await boot(new PostgresBackend(pool as never));
+  // pg-mem can't execute the plpgsql the RLS policies are created with, so this
+  // fast test covers the SQL shape only. Real row-level security is proven
+  // against a real Postgres in postgres.test.ts.
+  const { call, close } = await boot(
+    new PostgresBackend(pool as never, { enforceRls: false }),
+  );
   try {
     await call("POST", "/t/acme/accounts/seed", { category: "SERVICE_GENERAL" });
     await call("POST", "/t/beta/accounts/seed", { category: "RETAIL" });
