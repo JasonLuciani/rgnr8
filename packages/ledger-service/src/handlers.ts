@@ -172,6 +172,22 @@ import {
   type WipContext,
 } from "./wip.js";
 import {
+  BillingError,
+  applyDraft,
+  billMilestone,
+  billProgress,
+  billTimeAndMaterials,
+  billingView,
+  depositApplication,
+  postRetainage,
+  releaseRetainageRequest,
+  saveMilestones,
+  saveSchedule,
+  takeDeposit,
+  type BillingContext,
+  type BillingDraft,
+} from "./billing.js";
+import {
   ReconcileError,
   finishReconciliation,
   importStatement,
@@ -788,6 +804,98 @@ export class LedgerService {
             })),
           });
         }
+        // --- billing a job ------------------------------------------------
+        if (rest.length === 3 && rest[2] === "billing" && req.method === "GET") {
+          return ok(await billingView(this.billingCtx(tenant), rest[1]!));
+        }
+        if (rest.length === 3 && rest[2] === "schedule" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const lines = await saveSchedule(this.billingCtx(tenant), rest[1]!, data);
+          return ok({
+            tenant,
+            job_id: rest[1],
+            schedule: lines.map((l) => ({
+              line_no: l.lineNo,
+              description: l.description,
+              cost_code: l.costCode,
+              scheduled_value_minor: l.scheduledValueMinor,
+              billed_minor: l.billedMinor,
+            })),
+          });
+        }
+        if (rest.length === 3 && rest[2] === "milestones" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const saved = await saveMilestones(this.billingCtx(tenant), rest[1]!, data);
+          return created({
+            tenant,
+            job_id: rest[1],
+            milestones: saved.map((m) => ({
+              id: m.id, name: m.name, amount_minor: m.amountMinor,
+              due_date: m.dueDate, status: m.status,
+            })),
+          });
+        }
+        if (rest.length === 4 && rest[2] === "bill" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const ctx = this.billingCtx(tenant);
+          let draft: BillingDraft;
+          if (rest[3] === "progress") draft = await billProgress(ctx, rest[1]!, data);
+          else if (rest[3] === "milestone") draft = await billMilestone(ctx, rest[1]!, data);
+          else if (rest[3] === "time-and-materials") {
+            draft = await billTimeAndMaterials(ctx, rest[1]!, data);
+          } else return notFound(`unknown billing method ${rest[3]}`);
+          return await this.postBillingDraft(tenant, ctx, draft);
+        }
+        if (rest.length === 4 && rest[2] === "retainage" && rest[3] === "release"
+            && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const request = await releaseRetainageRequest(
+            this.billingCtx(tenant), rest[1]!, data,
+          );
+          const result = await createDocument(
+            "invoice", request as unknown as CreateDocumentRequest,
+            await this.arapCtx(tenant),
+          );
+          return created({
+            tenant, invoice: this.docJson(result.doc), entry_id: result.entryId,
+          });
+        }
+        if (rest.length === 3 && rest[2] === "deposits" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const result = await takeDeposit(this.billingCtx(tenant), rest[1]!, data);
+          return created({
+            tenant, job_id: rest[1],
+            entry_id: result.entryId, deposit_held_minor: result.heldMinor,
+          });
+        }
+        if (rest.length === 4 && rest[2] === "deposits" && rest[3] === "apply"
+            && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const ctx = this.billingCtx(tenant);
+          const application = await depositApplication(ctx, rest[1]!, data);
+          const result = await recordPayment(
+            "invoice", application.docId,
+            {
+              date: application.date,
+              amount_minor: application.amountMinor,
+              bank_code: "2400",
+              memo: "Deposit applied",
+            },
+            await this.arapCtx(tenant),
+          );
+          return created({
+            tenant,
+            job_id: rest[1],
+            invoice: this.docJson(result.doc),
+            entry_id: result.entryId,
+          });
+        }
         if (rest.length === 3 && rest[2] === "work-orders" && req.method === "GET") {
           return ok(await workOrdersForJob(this.workOrderCtx(tenant), rest[1]!));
         }
@@ -1034,6 +1142,7 @@ export class LedgerService {
       if (err instanceof WorkOrderError) return bad(err.message);
       if (err instanceof PurchasingError) return bad(err.message);
       if (err instanceof WipError) return bad(err.message);
+      if (err instanceof BillingError) return bad(err.message);
       return bad(err instanceof Error ? err.message : String(err));
     }
     return notFound("not found");
@@ -1339,6 +1448,40 @@ export class LedgerService {
   }
 
   // --- jobs ------------------------------------------------------------------
+
+  private billingCtx(tenant: TenantId): BillingContext {
+    return {
+      backend: this.backend, tenant, currency: this.currency, now: this.opts.now,
+    };
+  }
+
+  /**
+   * Post a billing draft: the invoice through the ordinary AR path, then the
+   * retained portion, then whatever the draft consumed. In that order, so a
+   * refused invoice leaves the schedule, the milestone and the timesheets
+   * exactly as they were.
+   */
+  private async postBillingDraft(
+    tenant: TenantId, ctx: BillingContext, draft: BillingDraft,
+  ): Promise<ServiceResponse> {
+    const result = await createDocument(
+      "invoice", draft.request as unknown as CreateDocumentRequest,
+      await this.arapCtx(tenant),
+    );
+    const invoiceId = String(draft.request["id"]);
+    const date = String(draft.request["date"]);
+    const retainageEntry = await postRetainage(ctx, draft, invoiceId, date);
+    await applyDraft(ctx, draft, invoiceId);
+    return created({
+      tenant,
+      job_id: draft.job.id,
+      invoice: this.docJson(result.doc),
+      entry_id: result.entryId,
+      gross_minor: draft.grossMinor.toString(),
+      retainage_minor: draft.retainageMinor.toString(),
+      retainage_entry_id: retainageEntry,
+    });
+  }
 
   private wipCtx(tenant: TenantId): WipContext {
     return {

@@ -259,6 +259,32 @@ export {
   type WipSchedule,
   type WipRow,
 } from "./wip.js";
+export {
+  InMemoryBillingStore,
+  PgBillingStore,
+  BILLING_DDL,
+  BillingError,
+  RETAINAGE_RECEIVABLE_CODE,
+  CUSTOMER_DEPOSITS_CODE,
+  saveSchedule,
+  billProgress,
+  saveMilestones,
+  billMilestone,
+  billTimeAndMaterials,
+  postRetainage,
+  applyDraft,
+  releaseRetainageRequest,
+  takeDeposit,
+  depositApplication,
+  depositHeld,
+  retainageHeld,
+  billingView,
+  type BillingStore,
+  type BillingContext,
+  type BillingDraft,
+  type ScheduleLineRecord,
+  type MilestoneRecord,
+} from "./billing.js";
 export { ten99Report, Ten99Error, type Ten99Context, type Ten99Json } from "./ten99.js";
 export { rlsDdl, appRoleDdl, superuserWarning, TENANT_TABLES } from "./security.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";
