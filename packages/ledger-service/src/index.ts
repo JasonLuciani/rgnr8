@@ -195,6 +195,22 @@ export {
   type EstimateStatus,
   type EstimateContext,
 } from "./estimates.js";
+export {
+  InMemorySalesOrderStore,
+  PgSalesOrderStore,
+  SALES_ORDER_DDL,
+  SalesOrderError,
+  saveSalesOrder,
+  invoiceFromOrder,
+  setOrderStatus,
+  salesOrderTotals,
+  salesOrderJson,
+  backlog,
+  type SalesOrderStore,
+  type SalesOrderRecord,
+  type SalesOrderStatus,
+  type SalesOrderContext,
+} from "./salesorders.js";
 export { ten99Report, Ten99Error, type Ten99Context, type Ten99Json } from "./ten99.js";
 export { rlsDdl, appRoleDdl, superuserWarning, TENANT_TABLES } from "./security.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";

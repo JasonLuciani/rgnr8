@@ -132,6 +132,16 @@ import {
   type EstimateStatus,
 } from "./estimates.js";
 import {
+  SalesOrderError,
+  backlog,
+  invoiceFromOrder,
+  salesOrderJson,
+  saveSalesOrder,
+  setOrderStatus,
+  type SalesOrderContext,
+  type SalesOrderStatus,
+} from "./salesorders.js";
+import {
   ReconcileError,
   finishReconciliation,
   importStatement,
@@ -393,6 +403,66 @@ export class LedgerService {
         return ok(await ten99Report(
           { backend: this.backend, tenant, currency: this.currency }, rest[1],
         ));
+      }
+
+      // --- sales orders -----------------------------------------------------
+      if (rest[0] === "sales-orders") {
+        const ctx = this.salesOrderCtx(tenant);
+        if (rest.length === 1 && req.method === "GET") {
+          const list = await this.backend.salesOrders().list(String(tenant));
+          return ok({ tenant, orders: list.map(salesOrderJson) });
+        }
+        if (rest.length === 1 && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          return created({ tenant, order: salesOrderJson(await saveSalesOrder(ctx, data)) });
+        }
+        if (rest.length === 2 && rest[1] === "backlog" && req.method === "GET") {
+          return ok(await backlog(ctx, {
+            ...(req.query["job_id"] ? { job_id: req.query["job_id"] } : {}),
+            ...(req.query["customer_id"] ? { customer_id: req.query["customer_id"] } : {}),
+          }));
+        }
+        if (rest.length === 2 && req.method === "GET") {
+          const order = await this.backend.salesOrders().get(String(tenant), rest[1]!);
+          if (!order) return notFound(`unknown order ${rest[1]}`);
+          return ok({ tenant, order: salesOrderJson(order) });
+        }
+        if (rest.length === 2 && req.method === "DELETE") {
+          await this.backend.salesOrders().remove(String(tenant), rest[1]!);
+          return ok({ tenant, removed: rest[1] });
+        }
+        if (rest.length === 3 && rest[2] === "status" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const status = str(data["status"]).trim().toUpperCase();
+          if (!["OPEN", "CLOSED", "CANCELLED"].includes(status)) {
+            return bad("status must be OPEN, CLOSED or CANCELLED — invoicing sets the rest");
+          }
+          return ok({
+            tenant,
+            order: salesOrderJson(
+              await setOrderStatus(ctx, rest[1]!, status as SalesOrderStatus),
+            ),
+          });
+        }
+        if (rest.length === 3 && rest[2] === "invoice" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const draft = await invoiceFromOrder(ctx, rest[1]!, data);
+          const result = await createDocument(
+            "invoice", draft.request as unknown as CreateDocumentRequest,
+            await this.arapCtx(tenant),
+          );
+          // Only draw the order down once the invoice has actually posted.
+          await this.backend.salesOrders().save(String(tenant), draft.order);
+          return created({
+            tenant,
+            order: salesOrderJson(draft.order),
+            invoice: this.docJson(result.doc),
+            entry_id: result.entryId,
+          });
+        }
       }
 
       // --- estimates -------------------------------------------------------
@@ -768,6 +838,7 @@ export class LedgerService {
       if (err instanceof Ten99Error) return bad(err.message);
       if (err instanceof JobError) return bad(err.message);
       if (err instanceof EstimateError) return bad(err.message);
+      if (err instanceof SalesOrderError) return bad(err.message);
       return bad(err instanceof Error ? err.message : String(err));
     }
     return notFound("not found");
@@ -1073,6 +1144,10 @@ export class LedgerService {
   }
 
   // --- jobs ------------------------------------------------------------------
+
+  private salesOrderCtx(tenant: TenantId): SalesOrderContext {
+    return { backend: this.backend, tenant, currency: this.currency };
+  }
 
   private estimateCtx(tenant: TenantId): EstimateContext {
     return { backend: this.backend, tenant, currency: this.currency };
