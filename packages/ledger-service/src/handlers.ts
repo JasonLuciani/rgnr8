@@ -63,6 +63,17 @@ import {
 } from "./inbox.js";
 import type { FeedStatus } from "./feed.js";
 import {
+  PayrollServiceError,
+  createRun,
+  liabilityView,
+  postRun,
+  remit,
+  runJson,
+  saveEmployee,
+  voidRun,
+  type PayrollContext,
+} from "./payroll.js";
+import {
   ReconcileError,
   finishReconciliation,
   reconcileView,
@@ -286,6 +297,52 @@ export class LedgerService {
         return await this.aging(tenant, rest[1] === "ar" ? "invoice" : "bill", req.query);
       }
 
+      // --- payroll --------------------------------------------------------
+      if (rest[0] === "payroll") {
+        const ctx = this.payrollCtx(tenant);
+        if (rest[1] === "employees" && rest.length === 2) {
+          if (req.method === "GET") {
+            return ok({ tenant, employees: await this.backend.payroll().listEmployees(String(tenant)) });
+          }
+          if (req.method === "POST") {
+            const data = parseJson(req.body);
+            if (!data) return bad("invalid JSON body");
+            return created({ tenant, employee: await saveEmployee(ctx, data) });
+          }
+        }
+        if (rest[1] === "runs" && rest.length === 2) {
+          if (req.method === "GET") {
+            const runs = await this.backend.payroll().listRuns(String(tenant));
+            return ok({ tenant, runs: runs.map(runJson) });
+          }
+          if (req.method === "POST") {
+            const data = parseJson(req.body);
+            if (!data) return bad("invalid JSON body");
+            return created({
+              tenant,
+              run: runJson(await createRun(ctx, data as Parameters<typeof createRun>[1])),
+            });
+          }
+        }
+        if (rest[1] === "runs" && rest.length === 3 && req.method === "GET") {
+          const run = await this.backend.payroll().getRun(String(tenant), rest[2]!);
+          if (!run) return notFound(`unknown payroll run ${rest[2]}`);
+          return ok({ tenant, run: runJson(run) });
+        }
+        if (rest[1] === "runs" && rest.length === 4 && req.method === "POST") {
+          if (rest[3] === "post") return ok(await postRun(ctx, rest[2]!));
+          if (rest[3] === "void") return ok({ tenant, run: await voidRun(ctx, rest[2]!) });
+        }
+        if (rest[1] === "liabilities" && rest.length === 2 && req.method === "GET") {
+          return ok(await liabilityView(ctx, req.query["code"] || undefined));
+        }
+        if (rest[1] === "remit" && rest.length === 2 && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          return ok(await remit(ctx, data as Parameters<typeof remit>[1]));
+        }
+      }
+
       // --- the bank feed review inbox ------------------------------------
       if (rest[0] === "feed") {
         // POST /feed/bulk-accept        — checked first: it is not an account code
@@ -333,6 +390,7 @@ export class LedgerService {
       if (err instanceof ArApError) return bad(err.message);
       if (err instanceof ReconcileError) return bad(err.message);
       if (err instanceof InboxError) return bad(err.message);
+      if (err instanceof PayrollServiceError) return bad(err.message);
       return bad(err instanceof Error ? err.message : String(err));
     }
     return notFound("not found");
@@ -591,6 +649,17 @@ export class LedgerService {
         balance_minor: r.balance.minorUnits.toString(),
       })),
     });
+  }
+
+  // --- payroll ---------------------------------------------------------------
+
+  private payrollCtx(tenant: TenantId): PayrollContext {
+    return {
+      backend: this.backend,
+      tenant,
+      currency: this.currency,
+      now: this.opts.now,
+    };
   }
 
   // --- the bank feed review inbox -------------------------------------------

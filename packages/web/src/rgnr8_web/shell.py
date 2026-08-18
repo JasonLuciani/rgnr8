@@ -28,6 +28,7 @@ _NAV: list[tuple[str, str, Permission]] = [
     ("books", "Books", Permission.VIEW_TRANSACTIONS),
     ("invoices", "Invoices", Permission.VIEW_TRANSACTIONS),
     ("bills", "Bills", Permission.VIEW_TRANSACTIONS),
+    ("payroll", "Payroll", Permission.VIEW_TRANSACTIONS),
     ("scenarios", "Scenarios", Permission.VIEW_CASH),
     ("receivables", "Receivables", Permission.VIEW_CASH),
     ("reports", "Reports", Permission.VIEW_CASH),

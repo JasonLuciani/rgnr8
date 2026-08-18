@@ -78,4 +78,22 @@ export {
   type InboxItem,
   type MatchCandidate,
 } from "./inbox.js";
+export {
+  InMemoryPayrollStore,
+  PgPayrollStore,
+  PAYROLL_DDL,
+  DEFAULT_PAYROLL_CODES,
+  PayrollServiceError,
+  createRun,
+  postRun,
+  voidRun,
+  remit,
+  liabilityView,
+  saveEmployee,
+  totalsOf,
+  type PayrollStore,
+  type PayrollRunRecord,
+  type EmployeeRecord,
+  type PayrollContext,
+} from "./payroll.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";

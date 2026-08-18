@@ -205,6 +205,40 @@ class LedgerClient:
             payload["memo"] = memo
         return self._call("POST", f"/t/{tenant}/{kind}/{doc_id}/payments", payload)
 
+    # --- payroll -------------------------------------------------------------
+
+    def payroll_employees(self, tenant: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/payroll/employees")
+
+    def save_employee(self, tenant: str, employee: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/payroll/employees", dict(employee))
+
+    def payroll_runs(self, tenant: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/payroll/runs")
+
+    def payroll_run(self, tenant: str, run_id: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/payroll/runs/{urllib.parse.quote(run_id)}")
+
+    def create_payroll_run(self, tenant: str, run: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/payroll/runs", dict(run))
+
+    def post_payroll_run(self, tenant: str, run_id: str) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/payroll/runs/{urllib.parse.quote(run_id)}/post", {}
+        )
+
+    def void_payroll_run(self, tenant: str, run_id: str) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/payroll/runs/{urllib.parse.quote(run_id)}/void", {}
+        )
+
+    def payroll_liabilities(self, tenant: str, *, code: str = "") -> LedgerResponse:
+        qs = f"?code={urllib.parse.quote(code)}" if code else ""
+        return self._call("GET", f"/t/{tenant}/payroll/liabilities{qs}")
+
+    def payroll_remit(self, tenant: str, payment: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/payroll/remit", dict(payment))
+
     # --- the bank feed review inbox ------------------------------------------
 
     def feed_inbox(

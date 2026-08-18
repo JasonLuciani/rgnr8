@@ -18,6 +18,7 @@ import {
 } from "./documents.js";
 import { InMemoryReconStore, PgReconStore, type ReconStore } from "./reconcile.js";
 import { InMemoryFeedStore, PgFeedStore, type FeedStore } from "./feed.js";
+import { InMemoryPayrollStore, PgPayrollStore, type PayrollStore } from "./payroll.js";
 
 /**
  * The storage seam the ledger service runs on.
@@ -46,6 +47,8 @@ export interface LedgerBackend {
   recon(): ReconStore;
   /** The bank-feed review inbox and its categorization rules. */
   feed(): FeedStore;
+  /** Employees and payroll runs. */
+  payroll(): PayrollStore;
   /** Create/verify schema. Safe to run repeatedly. */
   migrate(): Promise<void>;
 }
@@ -55,6 +58,7 @@ export class InMemoryBackend implements LedgerBackend {
   private readonly docs = new InMemoryDocumentStore();
   private readonly reconStore = new InMemoryReconStore();
   private readonly feedStore = new InMemoryFeedStore();
+  private readonly payrollStore = new InMemoryPayrollStore();
   private readonly accounts = new Map<string, Map<string, Account>>();
   private readonly stores = new Map<string, InMemoryLedgerStore>();
   private readonly periodStores = new Map<string, InMemoryPeriodStore>();
@@ -113,10 +117,15 @@ export class InMemoryBackend implements LedgerBackend {
     return this.feedStore;
   }
 
+  payroll(): PayrollStore {
+    return this.payrollStore;
+  }
+
   async migrate(): Promise<void> {
     await this.docs.migrate();
     await this.reconStore.migrate();
     await this.feedStore.migrate();
+    await this.payrollStore.migrate();
   }
 }
 
@@ -132,6 +141,7 @@ export class PostgresBackend implements LedgerBackend {
   private readonly docs: PgDocumentStore;
   private readonly reconStore: PgReconStore;
   private readonly feedStore: PgFeedStore;
+  private readonly payrollStore: PgPayrollStore;
 
   constructor(pool: Pool) {
     this.ledger = new PgLedgerStore(pool);
@@ -140,6 +150,7 @@ export class PostgresBackend implements LedgerBackend {
     this.docs = new PgDocumentStore(pool);
     this.reconStore = new PgReconStore(pool);
     this.feedStore = new PgFeedStore(pool);
+    this.payrollStore = new PgPayrollStore(pool);
   }
 
   async migrate(): Promise<void> {
@@ -148,6 +159,7 @@ export class PostgresBackend implements LedgerBackend {
     await this.docs.migrate();
     await this.reconStore.migrate();
     await this.feedStore.migrate();
+    await this.payrollStore.migrate();
   }
 
   documents(): DocumentStore {
@@ -160,6 +172,10 @@ export class PostgresBackend implements LedgerBackend {
 
   feed(): FeedStore {
     return this.feedStore;
+  }
+
+  payroll(): PayrollStore {
+    return this.payrollStore;
   }
 
   chart(tenant: TenantId): Promise<ChartOfAccounts> {

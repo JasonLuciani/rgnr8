@@ -246,4 +246,87 @@ describe("real PostgreSQL", { skip: URL_ ? false : "set RGNR8_TEST_DATABASE_URL 
 
     await poolB.end();
   });
+
+  test("the feed inbox and payroll are durable across a restart", async () => {
+    const tenant = `feedpay_${`${Date.now()}`.slice(-8)}`;
+
+    // --- instance #1 ---
+    const poolA = new pg.Pool({ connectionString: URL_ });
+    const backendA = new PostgresBackend(poolA as never);
+    await backendA.migrate();
+    const svcA = new LedgerService(backendA, { now: () => NOW });
+    const callA = (
+      method: string, path: string, body: unknown = "", query: Record<string, string> = {},
+    ): Promise<{ status: number; body: unknown }> =>
+      svcA.handle({
+        method, path, query,
+        body: typeof body === "string" ? body : JSON.stringify(body),
+        headers: {},
+      });
+
+    await callA("POST", `/t/${tenant}/accounts/seed`, { category: "PROFESSIONAL_SERVICES" });
+    await callA("POST", `/t/${tenant}/feed-rules`, {
+      id: "rent", account_code: "6300", description_contains: "RIVERSIDE",
+    });
+    await callA("POST", `/t/${tenant}/feed/1000`, {
+      source: "plaid-like",
+      transactions: [
+        { id: "d-1", date: "2026-08-03", amount_minor: "500000", description: "DEPOSIT" },
+        { id: "d-2", date: "2026-08-09", amount_minor: "-350000", description: "RIVERSIDE RENT" },
+      ],
+    });
+    await callA("POST", `/t/${tenant}/feed/txn/d-1/accept`, { category_code: "4100" });
+
+    await callA("POST", `/t/${tenant}/payroll/employees`, { id: "ada", name: "Ada Reyes" });
+    await callA("POST", `/t/${tenant}/payroll/runs`, {
+      id: "PR-1", date: "2026-08-15", employer_taxes_minor: "7650",
+      lines: [{ employee_id: "ada", gross_minor: "100000", employee_taxes_minor: "22000" }],
+    });
+    await callA("POST", `/t/${tenant}/payroll/runs/PR-1/post`, {});
+    await poolA.end();
+
+    // --- instance #2: everything is still there ---
+    const poolB = new pg.Pool({ connectionString: URL_ });
+    const svcB = new LedgerService(new PostgresBackend(poolB as never), { now: () => NOW });
+    const get = async (
+      path: string, query: Record<string, string> = {},
+    ): Promise<Record<string, unknown>> =>
+      (await svcB.handle({ method: "GET", path, query, body: "", headers: {} }))
+        .body as Record<string, unknown>;
+
+    // the un-actioned line is still waiting, still carrying its rule suggestion
+    const queue = await get(`/t/${tenant}/feed`);
+    assert.equal(queue["pending"], 1);
+    assert.equal(queue["posted"], 1);
+    const item = (queue["items"] as Array<Record<string, unknown>>)[0]!;
+    assert.equal(item["id"], "d-2");
+    assert.equal((item["suggestion"] as Record<string, unknown>)["account_code"], "6300");
+    assert.equal((item["suggestion"] as Record<string, unknown>)["source"], "rule");
+
+    // the accepted line kept its link to the entry it produced
+    const posted = await get(`/t/${tenant}/feed`, { status: "POSTED" });
+    const done = (posted["items"] as Array<Record<string, unknown>>)[0]!;
+    assert.equal(done["category_code"], "4100");
+    assert.ok(String(done["entry_id"]).length > 0);
+
+    // payroll survived, liabilities and all
+    const runs = (await get(`/t/${tenant}/payroll/runs`))["runs"] as Array<Record<string, unknown>>;
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!["status"], "POSTED");
+    assert.equal((runs[0]!["totals"] as Record<string, unknown>)["total_cost_minor"], "107650");
+    assert.equal((await get(`/t/${tenant}/payroll/liabilities`))["owed_minor"], "29650");
+
+    // and a re-synced feed window still doesn't duplicate, from a fresh process
+    const resync = await svcB.handle({
+      method: "POST", path: `/t/${tenant}/feed/1000`, query: {},
+      body: JSON.stringify({ transactions: [
+        { id: "d-1", date: "2026-08-03", amount_minor: "500000", description: "DEPOSIT" },
+      ] }),
+      headers: {},
+    });
+    assert.equal((resync.body as Record<string, unknown>)["added"], 0);
+    assert.equal((resync.body as Record<string, unknown>)["duplicates"], 1);
+
+    await poolB.end();
+  });
 });

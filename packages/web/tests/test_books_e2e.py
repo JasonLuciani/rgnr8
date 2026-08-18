@@ -522,3 +522,66 @@ def test_a_feed_line_cannot_be_posted_into_a_closed_month(ledger_service: str) -
     assert "err=" in str(r.headers.get("Location", ""))
     # and it is still waiting rather than silently lost
     assert "1 to review" in _req(app, "lockedco", "/t/lockedco/inbox").body
+
+
+def test_payroll_end_to_end_against_the_real_service(ledger_service: str) -> None:
+    """Payroll as an accrual: the run costs more than the cash that leaves, and
+    the difference is a real liability until the deposit is made."""
+    base = ledger_service
+    app = _app(base, ["payco"])
+    _seed(base, "payco", "PROFESSIONAL_SERVICES")
+
+    _req(app, "payco", "/t/payco/payroll/employees", "POST", "name=Ada+Reyes")
+    _req(app, "payco", "/t/payco/payroll/employees", "POST", "name=Jo+Okafor")
+
+    draft = _req(app, "payco", "/t/payco/payroll", "POST",
+                 "id=PR-2026-08-15&date=2026-08-15&memo=August+1-15&employer_taxes=612.00"
+                 "&employee1=ada-reyes&gross1=5,000.00&taxes1=1100.00&deductions1=200.00"
+                 "&employee2=jo-okafor&gross2=3000.00&taxes2=600.00")
+    assert draft.status == 302 and "err=" not in str(draft.headers.get("Location", ""))
+
+    # a draft posts nothing
+    assert not _service_get(base, "/t/payco/trial-balance")["rows"]
+
+    page = _req(app, "payco", "/t/payco/payroll")
+    assert "$8,612.00" in page.body      # what it really costs
+    assert "$6,100.00" in page.body      # what actually leaves the bank
+
+    assert _req(app, "payco", "/t/payco/payroll/PR-2026-08-15/post", "POST").status == 302
+
+    tb = _service_get(base, "/t/payco/trial-balance")
+    signed = {r["code"]: int(r["debit_minor"]) - int(r["credit_minor"]) for r in tb["rows"]}
+    assert signed["6200"] == 800000, "wages expense is gross"
+    assert signed["6210"] == 61200, "the employer's own taxes are a cost"
+    assert signed["1000"] == -610000, "only net pay left the bank"
+    assert -signed["2300"] == 251200, "the rest is owed"
+    assert tb["in_balance"] is True
+
+    owed = _req(app, "payco", "/t/payco/payroll")
+    assert "You owe $2,512.00 in payroll liabilities" in owed.body
+
+    # deposit it in two goes
+    _req(app, "payco", "/t/payco/payroll/remit", "POST", "date=2026-08-18&amount=1700.00")
+    part = _req(app, "payco", "/t/payco/payroll")
+    assert "You owe $812.00" in part.body
+    _req(app, "payco", "/t/payco/payroll/remit", "POST", "date=2026-08-20&amount=812.00")
+    clear = _req(app, "payco", "/t/payco/payroll")
+    assert "No outstanding payroll liabilities" in clear.body
+
+    tb = _service_get(base, "/t/payco/trial-balance")
+    signed = {r["code"]: int(r["debit_minor"]) - int(r["credit_minor"]) for r in tb["rows"]}
+    assert signed.get("2300", 0) == 0
+    assert signed["1000"] == -861200, "in the end the full cost left the bank"
+
+
+def test_the_real_service_refuses_to_overpay_payroll_liabilities(ledger_service: str) -> None:
+    base = ledger_service
+    app = _app(base, ["overpayco"])
+    _seed(base, "overpayco", "PROFESSIONAL_SERVICES")
+    _req(app, "overpayco", "/t/overpayco/payroll/employees", "POST", "name=Ada")
+    _req(app, "overpayco", "/t/overpayco/payroll", "POST",
+         "id=PR-1&date=2026-08-15&employee1=ada&gross1=1000.00&taxes1=200.00")
+    _req(app, "overpayco", "/t/overpayco/payroll/PR-1/post", "POST")
+    r = _req(app, "overpayco", "/t/overpayco/payroll/remit", "POST",
+             "date=2026-08-18&amount=500.00")
+    assert "overpay" in str(r.headers.get("Location", ""))

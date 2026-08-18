@@ -91,6 +91,11 @@ from .owner_reports import render_owner_report
 from .ledger_client import LedgerClient
 from .arap_screens import render_aging as render_arap_aging, render_documents
 from .reconcile_screens import render_pick_account, render_reconcile
+from .payroll_screens import (
+    render_payroll_home,
+    render_payroll_run,
+    render_payroll_unavailable,
+)
 from .inbox_screens import (
     render_actioned,
     render_feed_unavailable,
@@ -798,6 +803,37 @@ class WebApp:
             return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
                                  lambda t: self._arap_aging(subject, t, side, req.query))
 
+        # --- payroll ---
+        # /t/<tenant>/payroll -> runs, liabilities, and the run form
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "payroll":
+            if req.method == "POST":
+                return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                     lambda t: self._payroll_create(subject, t, req.body))
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._payroll_page(subject, t, req.query))
+        # /t/<tenant>/payroll/employees -> add someone to the payroll
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "payroll"
+                and parts[3] == "employees" and req.method == "POST"):
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._payroll_employee(subject, t, req.body))
+        # /t/<tenant>/payroll/remit -> record the tax deposit
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "payroll"
+                and parts[3] == "remit" and req.method == "POST"):
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._payroll_remit(subject, t, req.body))
+        # /t/<tenant>/payroll/<run> -> one run in detail
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "payroll"
+                and req.method == "GET"):
+            run_id = parts[3]
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._payroll_run_page(subject, t, run_id))
+        # /t/<tenant>/payroll/<run>/post|void
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "payroll"
+                and req.method == "POST" and parts[4] in ("post", "void")):
+            run_id, action = parts[3], parts[4]
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._payroll_run_action(subject, t, run_id, action))
+
         # --- the bank feed review inbox ---
         # /t/<tenant>/inbox -> the review queue (or an actioned list via ?status=)
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "inbox":
@@ -1289,6 +1325,149 @@ class WebApp:
         if not res.ok:
             return self._shell(subject, t, "books", render_books_unavailable(res.error()))
         return self._shell(subject, t, "books", render_register(t.tenant_id, res.body))
+
+    # --- payroll ---------------------------------------------------------------
+
+    def _payroll_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "payroll", render_payroll_unavailable(
+                "No ledger service is configured for this deployment."))
+        runs = self._ledger.payroll_runs(t.tenant_id)
+        if not runs.ok:
+            return self._shell(subject, t, "payroll", render_payroll_unavailable(runs.error()))
+        liabilities = self._ledger.payroll_liabilities(t.tenant_id)
+        employees = self._ledger.payroll_employees(t.tenant_id)
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_post = self._policy is None or Permission.POST_JOURNAL in perms
+        body = render_payroll_home(
+            t.tenant_id, runs.body,
+            liabilities.body if liabilities.ok else {},
+            employees.body if employees.ok else {},
+            can_post=can_post,
+            message=query.get("done", ""), error=query.get("err", ""),
+        )
+        return self._shell(subject, t, "payroll", body)
+
+    def _payroll_run_page(self, subject: str, t: _Tenant, run_id: str) -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "payroll", render_payroll_unavailable())
+        res = self._ledger.payroll_run(t.tenant_id, run_id)
+        if not res.ok:
+            return self._shell(subject, t, "payroll", render_payroll_unavailable(res.error()))
+        employees = self._ledger.payroll_employees(t.tenant_id)
+        run = res.body.get("run")
+        return self._shell(subject, t, "payroll", render_payroll_run(
+            t.tenant_id, run if isinstance(run, Mapping) else {},
+            employees.body if employees.ok else {},
+        ))
+
+    def _payroll_create(self, subject: str, t: _Tenant, body: str) -> Response:
+        """Draft a run from the owner form. Amounts are parsed exactly; an
+        employee with no gross pay is simply not in this run."""
+        back = f"/t/{t.tenant_id}/payroll"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        lines: list[dict[str, object]] = []
+        try:
+            for i in range(1, 41):
+                employee = str(data.get(f"employee{i}", "")).strip()
+                if not employee:
+                    continue
+                gross = self._amount_to_minor(str(data.get(f"gross{i}", "")))
+                if not gross:
+                    continue   # nothing to pay them this run
+                lines.append({
+                    "employee_id": employee,
+                    "gross_minor": str(gross),
+                    "employee_taxes_minor": str(
+                        self._amount_to_minor(str(data.get(f"taxes{i}", ""))) or 0),
+                    "deductions_minor": str(
+                        self._amount_to_minor(str(data.get(f"deductions{i}", ""))) or 0),
+                })
+            employer = self._amount_to_minor(str(data.get("employer_taxes", ""))) or 0
+        except ValueError as exc:
+            return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+        if not lines:
+            return _redirect(
+                f"{back}?err={_qs_escape('Enter gross pay for at least one employee')}")
+
+        run: dict[str, object] = {
+            "id": str(data.get("id", "")).strip(),
+            "date": str(data.get("date", "")).strip(),
+            "memo": str(data.get("memo", "")).strip(),
+            "employer_taxes_minor": str(employer),
+            "bank_code": str(data.get("bank_code", "")).strip() or "1000",
+            "lines": lines,
+        }
+        res = self._ledger.create_payroll_run(t.tenant_id, run)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        drafted = res.body.get("run")
+        run_id = drafted.get("id") if isinstance(drafted, Mapping) else ""
+        if self._audit is not None:
+            self._audit.record(subject, "payroll.drafted", self._session_clock(),
+                               tenant_id=t.tenant_id, target=str(run_id))
+        return _redirect(
+            f"{back}?done={_qs_escape('Draft created — review it, then post it')}")
+
+    def _payroll_run_action(
+        self, subject: str, t: _Tenant, run_id: str, action: str
+    ) -> Response:
+        back = f"/t/{t.tenant_id}/payroll"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        res = (self._ledger.post_payroll_run(t.tenant_id, run_id) if action == "post"
+               else self._ledger.void_payroll_run(t.tenant_id, run_id))
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, f"payroll.{action}", self._session_clock(),
+                               tenant_id=t.tenant_id, target=run_id)
+        done = ("Payroll posted — gross wages, your taxes, and the liability"
+                if action == "post"
+                else "Voided — a reversing entry was posted; the original stays in the journal")
+        return _redirect(f"{back}?done={_qs_escape(done)}")
+
+    def _payroll_employee(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/payroll"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        res = self._ledger.save_employee(t.tenant_id, {
+            "id": str(data.get("id", "")).strip(),
+            "name": str(data.get("name", "")).strip(),
+        })
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        return _redirect(f"{back}?done={_qs_escape('Employee added')}")
+
+    def _payroll_remit(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/payroll"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        try:
+            amount = self._amount_to_minor(str(data.get("amount", "")))
+        except ValueError as exc:
+            return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+        if not amount:
+            return _redirect(f"{back}?err={_qs_escape('Enter how much you are depositing')}")
+        res = self._ledger.payroll_remit(t.tenant_id, {
+            "date": str(data.get("date", "")).strip(),
+            "amount_minor": str(amount),
+            "bank_code": str(data.get("bank_code", "")).strip() or "1000",
+            "memo": str(data.get("memo", "")).strip(),
+        })
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        remaining = res.body.get("remaining_minor", "0")
+        if self._audit is not None:
+            self._audit.record(subject, "payroll.remitted", self._session_clock(),
+                               tenant_id=t.tenant_id, detail=str(amount))
+        left = _minor_decimal(remaining)
+        return _redirect(
+            f"{back}?done={_qs_escape(f'Deposit recorded — {left} still owed')}")
 
     # --- the bank feed review inbox -------------------------------------------
 
