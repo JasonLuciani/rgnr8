@@ -352,7 +352,18 @@ export async function budgetReport(
     ctx.currency,
     { from: `${period}-01`, to: `${period}-31` },
   );
-  const report = budgetVsActual(budget, fromKernelTrialBalance(tb), asPeriodKey(period));
+  // A budget is about what you earn and what you spend. Comparing a bank
+  // balance or a tax liability against a budget of zero produces a row that
+  // says "worse than planned" about a number nobody planned — noise that
+  // makes the real misses harder to see.
+  const actuals = fromKernelTrialBalance(tb);
+  const pAndL = {
+    ...actuals,
+    entries: actuals.entries.filter(
+      (e) => e.accountClass === "revenue" || e.accountClass === "expense",
+    ),
+  };
+  const report = budgetVsActual(budget, pAndL, asPeriodKey(period));
   return {
     ...budgetVsActualJson(report),
     budgeted_accounts: stored.length,

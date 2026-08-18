@@ -153,6 +153,15 @@ test("under-spending is favourable and under-earning is not", async () => {
   assert.equal(by("6300")["variance_minor"], "0");
 });
 
+test("only income and expense accounts appear — a bank balance was never planned", async () => {
+  const s = await ready();
+  await call(s, "POST", "/t/acme/budget", BUDGET);
+  const lines = obj(await call(s, "GET", "/t/acme/budget/2026-08"))["lines"] as Row[];
+  const codes = lines.map((l) => String(l["code"]));
+  assert.ok(!codes.includes("1000"), "cash is not a budget line");
+  assert.ok(codes.includes("4100") && codes.includes("6300"));
+});
+
 test("the budget covers the period only, not the balance carried into it", async () => {
   const s = await ready();
   await call(s, "POST", "/t/acme/budget", BUDGET);

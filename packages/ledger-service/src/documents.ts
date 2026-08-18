@@ -332,7 +332,8 @@ export class PgDocumentStore implements DocumentStore {
   async getDoc(tenant: string, kind: DocKind, id: string): Promise<DocRecord | undefined> {
     return this.tx(tenant, async (db) => {
       const res = await db.query(
-        `SELECT id, party_id, doc_date, due_date, total_minor, open_minor, status, memo
+        `SELECT id, party_id, doc_date, due_date, net_minor, tax_minor, tax_rate_ppm,
+                total_minor, open_minor, status, memo
          FROM doc WHERE tenant_id=$1 AND kind=$2 AND id=$3`,
         [tenant, kind, id],
       );
@@ -444,7 +445,9 @@ function rowToDoc(
     partyId: str(r["party_id"]),
     date: str(r["doc_date"]),
     dueDate: str(r["due_date"]),
-    netMinor: str(r["net_minor"] ?? r["total_minor"]),
+    netMinor: r["net_minor"] === undefined
+      ? str(r["total_minor"])
+      : str(r["net_minor"]),
     taxMinor: str(r["tax_minor"] ?? "0"),
     taxRatePpm: Number(r["tax_rate_ppm"] ?? 0),
     totalMinor: str(r["total_minor"]),

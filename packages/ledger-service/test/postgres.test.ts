@@ -157,6 +157,27 @@ describe("real PostgreSQL", { skip: URL_ ? false : "set RGNR8_TEST_DATABASE_URL 
     const aging = await get(`/t/${tenant}/aging/ar`, { as_of: "2026-08-31" });
     assert.equal(aging["grand_total_minor"], "100000");
 
+    // A TAXED invoice reads back with its tax intact — a column added to the
+    // table but forgotten in one SELECT reads as "no tax was charged", which
+    // is exactly the kind of quiet wrongness this whole codebase is against.
+    await svcB.handle({
+      method: "POST", path: `/t/${tenant}/invoices`, query: {},
+      body: JSON.stringify({
+        id: "INV-TAX", party_id: "c1", date: "2026-08-02",
+        tax_rate_ppm: 82_500,
+        lines: [{ unit_amount_minor: "100000", account_code: "4100" }],
+      }),
+      headers: {},
+    });
+    const taxed = (await get(`/t/${tenant}/invoices/INV-TAX`))["document"] as Record<string, unknown>;
+    assert.equal(taxed["net_minor"], "100000");
+    assert.equal(taxed["tax_minor"], "8250");
+    assert.equal(taxed["tax_rate_ppm"], 82500);
+    assert.equal(taxed["total_minor"], "108250");
+    const listed = ((await get(`/t/${tenant}/invoices`))["documents"] as Array<Record<string, unknown>>)
+      .find((d) => d["id"] === "INV-TAX")!;
+    assert.equal(listed["tax_minor"], "8250", "the list must agree with the detail");
+
     await poolB.end();
   });
 
