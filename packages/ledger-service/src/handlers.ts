@@ -152,6 +152,20 @@ import {
   type WorkOrderContext,
 } from "./workorders.js";
 import {
+  PurchasingError,
+  committedByCostCode,
+  matchToBill,
+  outstandingOrders,
+  postGrniAdjustment,
+  purchaseOrderJson,
+  receive as receiveGoods,
+  receiptJson,
+  savePurchaseOrder,
+  setPurchaseOrderStatus,
+  type PurchaseOrderStatus,
+  type PurchasingContext,
+} from "./purchasing.js";
+import {
   ReconcileError,
   finishReconciliation,
   importStatement,
@@ -413,6 +427,89 @@ export class LedgerService {
         return ok(await ten99Report(
           { backend: this.backend, tenant, currency: this.currency }, rest[1],
         ));
+      }
+
+      // --- purchase orders, receiving and the three-way match ---------------
+      if (rest[0] === "purchase-orders") {
+        const ctx = this.purchasingCtx(tenant);
+        const store = this.backend.purchasing();
+        if (rest.length === 1 && req.method === "GET") {
+          const list = await store.list(String(tenant));
+          return ok({ tenant, purchase_orders: list.map(purchaseOrderJson) });
+        }
+        if (rest.length === 1 && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          return created({
+            tenant, purchase_order: purchaseOrderJson(await savePurchaseOrder(ctx, data)),
+          });
+        }
+        if (rest.length === 2 && rest[1] === "committed" && req.method === "GET") {
+          return ok(await outstandingOrders(ctx, {
+            ...(req.query["job_id"] ? { job_id: req.query["job_id"] } : {}),
+            ...(req.query["vendor_id"] ? { vendor_id: req.query["vendor_id"] } : {}),
+          }));
+        }
+        if (rest.length === 2 && req.method === "GET") {
+          const order = await store.get(String(tenant), rest[1]!);
+          if (!order) return notFound(`unknown purchase order ${rest[1]}`);
+          return ok({
+            tenant,
+            purchase_order: purchaseOrderJson(order),
+            receipts: (await store.listReceipts(String(tenant), rest[1]!)).map(receiptJson),
+          });
+        }
+        if (rest.length === 2 && req.method === "DELETE") {
+          await store.remove(String(tenant), rest[1]!);
+          return ok({ tenant, removed: rest[1] });
+        }
+        if (rest.length === 3 && rest[2] === "status" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const status = str(data["status"]).trim().toUpperCase();
+          if (!["OPEN", "CLOSED", "CANCELLED"].includes(status)) {
+            return bad("status must be OPEN, CLOSED or CANCELLED — receiving sets the rest");
+          }
+          return ok({
+            tenant,
+            purchase_order: purchaseOrderJson(
+              await setPurchaseOrderStatus(ctx, rest[1]!, status as PurchaseOrderStatus),
+            ),
+          });
+        }
+        if (rest.length === 3 && rest[2] === "receipts" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const result = await receiveGoods(ctx, rest[1]!, data);
+          return created({
+            tenant,
+            receipt: receiptJson(result.receipt),
+            purchase_order: purchaseOrderJson(result.order),
+            accrued_minor: result.accruedMinor,
+          });
+        }
+        if (rest.length === 3 && rest[2] === "bill" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const draft = await matchToBill(ctx, rest[1]!, data);
+          const result = await createDocument(
+            "bill", draft.request as unknown as CreateDocumentRequest,
+            await this.arapCtx(tenant),
+          );
+          await this.backend.purchasing().save(String(tenant), draft.order);
+          const varianceEntry = await postGrniAdjustment(
+            ctx, draft.order, String(draft.request["id"]),
+            String(draft.request["date"]), draft.grniAdjustment,
+          );
+          return created({
+            tenant,
+            purchase_order: purchaseOrderJson(draft.order),
+            bill: this.docJson(result.doc),
+            entry_id: result.entryId,
+            variances: draft.variances,
+            variance_entry_id: varianceEntry,
+          });
+        }
       }
 
       // --- work orders ------------------------------------------------------
@@ -677,9 +774,13 @@ export class LedgerService {
         }
         if (rest.length === 3 && rest[2] === "cost" && req.method === "GET") {
           const through = req.query["through"];
-          return ok(await jobCostReport(
-            ctx, rest[1]!, through ? { through } : {},
-          ));
+          // Committed cost comes from purchasing, which the jobs module has no
+          // opinion about — it is passed in so the report works either way.
+          const committed = await committedByCostCode(this.purchasingCtx(tenant), rest[1]!);
+          return ok(await jobCostReport(ctx, rest[1]!, {
+            ...(through ? { through } : {}),
+            committed,
+          }));
         }
       }
 
@@ -912,6 +1013,7 @@ export class LedgerService {
       if (err instanceof EstimateError) return bad(err.message);
       if (err instanceof SalesOrderError) return bad(err.message);
       if (err instanceof WorkOrderError) return bad(err.message);
+      if (err instanceof PurchasingError) return bad(err.message);
       return bad(err instanceof Error ? err.message : String(err));
     }
     return notFound("not found");
@@ -1217,6 +1319,12 @@ export class LedgerService {
   }
 
   // --- jobs ------------------------------------------------------------------
+
+  private purchasingCtx(tenant: TenantId): PurchasingContext {
+    return {
+      backend: this.backend, tenant, currency: this.currency, now: this.opts.now,
+    };
+  }
 
   private workOrderCtx(tenant: TenantId): WorkOrderContext {
     return {

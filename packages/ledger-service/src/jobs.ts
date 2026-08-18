@@ -643,8 +643,14 @@ export async function saveJobBudget(
     if (seen.has(costCode)) throw new JobError(`cost code ${costCode} appears twice`);
     seen.add(costCode);
     const budgetCostMinor = requireMinor(raw.budget_cost_minor, `${costCode} budget`);
+    // An unsupplied revision keeps whatever the current estimate is — unless
+    // it was never actually revised (it is still equal to the old bid), in
+    // which case it follows the new bid. Correcting a typo in the budget
+    // shouldn't leave a stale estimate behind that nobody typed.
+    const prior = existing.get(costCode);
+    const everRevised = prior !== undefined && prior.revisedCostMinor !== prior.budgetCostMinor;
     const revised = raw.revised_cost_minor === undefined || raw.revised_cost_minor === ""
-      ? (existing.get(costCode)?.revisedCostMinor ?? budgetCostMinor)
+      ? (everRevised ? prior.revisedCostMinor : budgetCostMinor)
       : requireMinor(raw.revised_cost_minor, `${costCode} revised estimate`);
     lines.push({
       costCode,
