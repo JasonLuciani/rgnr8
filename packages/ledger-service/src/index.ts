@@ -326,6 +326,22 @@ export {
   type OpportunityRecord,
   type CrmContext,
 } from "./crm.js";
+export {
+  InMemoryConsolidationStore,
+  PgConsolidationStore,
+  CONSOLIDATION_DDL,
+  ConsolidationServiceError,
+  saveGroup,
+  saveElimination,
+  consolidate,
+  consolidatedStatements,
+  groupJson,
+  eliminationJson,
+  type ConsolidationStore,
+  type GroupRecord,
+  type EliminationEntry,
+  type ConsolidationContext,
+} from "./consolidation.js";
 export { ten99Report, Ten99Error, type Ten99Context, type Ten99Json } from "./ten99.js";
 export { rlsDdl, appRoleDdl, superuserWarning, TENANT_TABLES } from "./security.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";

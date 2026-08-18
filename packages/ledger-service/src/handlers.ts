@@ -214,6 +214,16 @@ import {
   type CrmContext,
 } from "./crm.js";
 import {
+  ConsolidationServiceError,
+  consolidate,
+  consolidatedStatements,
+  eliminationJson,
+  groupJson,
+  saveElimination,
+  saveGroup,
+  type ConsolidationContext,
+} from "./consolidation.js";
+import {
   ReconcileError,
   finishReconciliation,
   importStatement,
@@ -475,6 +485,62 @@ export class LedgerService {
         return ok(await ten99Report(
           { backend: this.backend, tenant, currency: this.currency }, rest[1],
         ));
+      }
+
+      // --- multi-entity consolidation ---------------------------------------
+      if (rest[0] === "consolidation") {
+        const ctx = this.consolidationCtx(tenant);
+        const store = this.backend.consolidation();
+        if (rest.length === 2 && rest[1] === "groups") {
+          if (req.method === "GET") {
+            const groups = await store.listGroups(String(tenant));
+            return ok({ tenant, groups: groups.map(groupJson) });
+          }
+          if (req.method === "POST") {
+            const data = parseJson(req.body);
+            if (!data) return bad("invalid JSON body");
+            return created({ tenant, group: groupJson(await saveGroup(ctx, data)) });
+          }
+        }
+        if (rest.length === 3 && rest[1] === "groups") {
+          if (req.method === "GET") {
+            const group = await store.getGroup(String(tenant), rest[2]!);
+            if (!group) return notFound(`unknown group ${rest[2]}`);
+            return ok({
+              tenant,
+              group: groupJson(group),
+              eliminations: (await store.listEliminations(String(tenant), rest[2]!))
+                .map(eliminationJson),
+            });
+          }
+          if (req.method === "DELETE") {
+            await store.removeGroup(String(tenant), rest[2]!);
+            return ok({ tenant, removed: rest[2] });
+          }
+        }
+        if (rest.length === 4 && rest[1] === "groups" && rest[3] === "eliminations"
+            && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          return created({
+            tenant, elimination: eliminationJson(await saveElimination(ctx, rest[2]!, data)),
+          });
+        }
+        if (rest.length === 4 && rest[1] === "groups" && rest[3] === "report"
+            && req.method === "GET") {
+          return ok(await consolidate(ctx, rest[2]!, {
+            ...(req.query["through"] ? { through: req.query["through"] } : {}),
+            ...(req.query["from"] ? { from: req.query["from"] } : {}),
+            ...(req.query["allow_mismatch"] === "1" ? { allow_mismatch: true } : {}),
+          }));
+        }
+        if (rest.length === 4 && rest[1] === "groups" && rest[3] === "statements"
+            && req.method === "GET") {
+          const from = req.query["from"];
+          const to = req.query["to"];
+          if (!from || !to) return bad("statements need ?from=YYYY-MM-DD&to=YYYY-MM-DD");
+          return ok(await consolidatedStatements(ctx, rest[2]!, from, to));
+        }
       }
 
       // --- the pipeline -----------------------------------------------------
@@ -1333,6 +1399,7 @@ export class LedgerService {
       if (err instanceof BillingError) return bad(err.message);
       if (err instanceof InventoryError) return bad(err.message);
       if (err instanceof CrmError) return bad(err.message);
+      if (err instanceof ConsolidationServiceError) return bad(err.message);
       return bad(err instanceof Error ? err.message : String(err));
     }
     return notFound("not found");
@@ -1638,6 +1705,10 @@ export class LedgerService {
   }
 
   // --- jobs ------------------------------------------------------------------
+
+  private consolidationCtx(tenant: TenantId): ConsolidationContext {
+    return { backend: this.backend, tenant, currency: this.currency };
+  }
 
   private crmCtx(tenant: TenantId): CrmContext {
     return {

@@ -75,6 +75,10 @@ export const TENANT_TABLES: readonly string[] = Object.freeze([
   "crm_lead",
   "crm_opportunity",
   "crm_event",
+  "entity_group",
+  "entity_group_member",
+  "elimination_entry",
+  "elimination_line",
 ]);
 
 /**
