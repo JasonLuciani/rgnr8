@@ -85,6 +85,9 @@ export const TENANT_TABLES: readonly string[] = Object.freeze([
   // debt
   "loan",
   "loan_payment",
+  // fixed assets
+  "fixed_asset",
+  "fixed_asset_period",
 ]);
 
 /**

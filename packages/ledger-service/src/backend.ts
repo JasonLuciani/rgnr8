@@ -51,6 +51,7 @@ import {
 import { InMemoryCrmStore, PgCrmStore, type CrmStore } from "./crm.js";
 import { InMemorySettingsStore, PgSettingsStore, type SettingsStore } from "./settings.js";
 import { InMemoryDebtStore, PgDebtStore, type DebtStore } from "./debt.js";
+import { InMemoryFixedAssetStore, PgFixedAssetStore, type FixedAssetStore } from "./fixedassets.js";
 import {
   InMemoryConsolidationStore, PgConsolidationStore, type ConsolidationStore,
 } from "./consolidation.js";
@@ -122,6 +123,8 @@ export interface LedgerBackend {
   settings(): SettingsStore;
   /** Loans, lines of credit and their payments — the debt layer over the ledger. */
   debt(): DebtStore;
+  /** Fixed assets and their depreciation schedules. */
+  fixedAssets(): FixedAssetStore;
   /** Create/verify schema. Safe to run repeatedly. */
   migrate(): Promise<void>;
   /** A readiness probe: true when the store is reachable (for /ready). */
@@ -149,6 +152,7 @@ export class InMemoryBackend implements LedgerBackend {
   private readonly consolidationStore = new InMemoryConsolidationStore();
   private readonly settingsStore = new InMemorySettingsStore();
   private readonly debtStore = new InMemoryDebtStore();
+  private readonly fixedAssetStore = new InMemoryFixedAssetStore();
   private readonly accounts = new Map<string, Map<string, Account>>();
   private readonly stores = new Map<string, InMemoryLedgerStore>();
   private readonly periodStores = new Map<string, InMemoryPeriodStore>();
@@ -271,6 +275,10 @@ export class InMemoryBackend implements LedgerBackend {
     return this.debtStore;
   }
 
+  fixedAssets(): FixedAssetStore {
+    return this.fixedAssetStore;
+  }
+
   async migrate(): Promise<void> {
     await this.docs.migrate();
     await this.reconStore.migrate();
@@ -291,6 +299,7 @@ export class InMemoryBackend implements LedgerBackend {
     await this.consolidationStore.migrate();
     await this.settingsStore.migrate();
     await this.debtStore.migrate();
+    await this.fixedAssetStore.migrate();
   }
 
   ping(): Promise<boolean> {
@@ -326,6 +335,7 @@ export class PostgresBackend implements LedgerBackend {
   private readonly consolidationStore: PgConsolidationStore;
   private readonly settingsStore: PgSettingsStore;
   private readonly debtStore: PgDebtStore;
+  private readonly fixedAssetStore: PgFixedAssetStore;
 
   /**
    * @param pool     a connection pool.
@@ -362,6 +372,7 @@ export class PostgresBackend implements LedgerBackend {
     this.consolidationStore = new PgConsolidationStore(pool);
     this.settingsStore = new PgSettingsStore(pool);
     this.debtStore = new PgDebtStore(pool);
+    this.fixedAssetStore = new PgFixedAssetStore(pool);
   }
 
   async migrate(): Promise<void> {
@@ -418,6 +429,7 @@ export class PostgresBackend implements LedgerBackend {
     await this.consolidationStore.migrate();
     await this.settingsStore.migrate();
     await this.debtStore.migrate();
+    await this.fixedAssetStore.migrate();
     // Last, once every table exists: make the database itself enforce tenant
     // isolation, so a query that forgets its tenant filter returns nothing
     // rather than everything.
@@ -500,6 +512,10 @@ export class PostgresBackend implements LedgerBackend {
 
   debt(): DebtStore {
     return this.debtStore;
+  }
+
+  fixedAssets(): FixedAssetStore {
+    return this.fixedAssetStore;
   }
 
   async ping(): Promise<boolean> {

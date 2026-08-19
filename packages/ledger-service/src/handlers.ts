@@ -216,6 +216,18 @@ import {
   type DebtContext,
 } from "./debt.js";
 import {
+  FixedAssetError,
+  saveAsset,
+  runDepreciation,
+  recordUsage,
+  disposeAsset,
+  depreciationSchedule,
+  assetJson,
+  depreciationRowJson,
+  assetRegister,
+  type FixedAssetContext,
+} from "./fixedassets.js";
+import {
   CrmError,
   attachEstimate,
   convertLead,
@@ -838,6 +850,50 @@ export class LedgerService {
           if (!data) return bad("invalid JSON body");
           const result = await recordDraw(ctx, data);
           return created({ tenant, loan: loanJson(result.loan), entry_id: result.entryId });
+        }
+      }
+
+      // --- fixed assets and depreciation ------------------------------------
+      if (rest[0] === "assets") {
+        const ctx = this.fixedAssetCtx(tenant);
+        const store = this.backend.fixedAssets();
+        if (rest.length === 1 && req.method === "GET") {
+          return ok(await assetRegister(ctx));
+        }
+        if (rest.length === 1 && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const result = await saveAsset(ctx, data);
+          return created({ tenant, asset: assetJson(result.asset), entry_id: result.entryId });
+        }
+        if (rest.length === 2 && req.method === "GET") {
+          const asset = await store.getAsset(String(tenant), rest[1]!);
+          if (!asset) return notFound(`unknown asset ${rest[1]}`);
+          return ok({ tenant, asset: assetJson(asset), schedule: depreciationSchedule(asset).map(depreciationRowJson) });
+        }
+        if (rest.length === 3 && rest[2] === "depreciate" && req.method === "POST") {
+          const data = parseJson(req.body) ?? {};
+          const result = await runDepreciation(ctx, { ...data, asset_id: rest[1]! });
+          return created({
+            tenant, asset: assetJson(result.asset),
+            posted_minor: result.postedMinor, entry_id: result.entryId,
+          });
+        }
+        if (rest.length === 3 && rest[2] === "usage" && req.method === "POST") {
+          const data = parseJson(req.body) ?? {};
+          const result = await recordUsage(ctx, { ...data, asset_id: rest[1]! });
+          return created({
+            tenant, asset: assetJson(result.asset),
+            posted_minor: result.postedMinor, entry_id: result.entryId,
+          });
+        }
+        if (rest.length === 3 && rest[2] === "dispose" && req.method === "POST") {
+          const data = parseJson(req.body) ?? {};
+          const result = await disposeAsset(ctx, { ...data, asset_id: rest[1]! });
+          return created({
+            tenant, asset: assetJson(result.asset),
+            gain_loss_minor: result.gainLossMinor, entry_id: result.entryId,
+          });
         }
       }
 
@@ -1547,6 +1603,7 @@ export class LedgerService {
       if (err instanceof ConsolidationServiceError) return bad(err.message);
       if (err instanceof SettingsError) return bad(err.message);
       if (err instanceof DebtError) return bad(err.message);
+      if (err instanceof FixedAssetError) return bad(err.message);
       return bad(err instanceof Error ? err.message : String(err));
     }
     return notFound("not found");
@@ -1873,6 +1930,12 @@ export class LedgerService {
   }
 
   private debtCtx(tenant: TenantId): DebtContext {
+    return {
+      backend: this.backend, tenant, currency: this.currency, now: this.opts.now,
+    };
+  }
+
+  private fixedAssetCtx(tenant: TenantId): FixedAssetContext {
     return {
       backend: this.backend, tenant, currency: this.currency, now: this.opts.now,
     };

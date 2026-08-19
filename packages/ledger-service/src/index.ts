@@ -383,5 +383,26 @@ export {
   type LoanKind,
   type PaymentFrequency,
 } from "./debt.js";
+export {
+  InMemoryFixedAssetStore,
+  PgFixedAssetStore,
+  FIXED_ASSET_DDL,
+  FixedAssetError,
+  saveAsset,
+  runDepreciation,
+  recordUsage,
+  disposeAsset,
+  depreciationSchedule,
+  depreciableBase,
+  targetAccumulated,
+  assetJson,
+  depreciationRowJson,
+  assetRegister,
+  type FixedAssetStore,
+  type FixedAssetContext,
+  type AssetRecord,
+  type DepreciationMethod,
+  type DepreciationRow,
+} from "./fixedassets.js";
 export { rlsDdl, appRoleDdl, superuserWarning, TENANT_TABLES } from "./security.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";
