@@ -18,13 +18,13 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src", "../forecast/src", "../briefing/src", "../web/src", "../runtime/src", "../billing/src", "../obs/src", "../alerts/src", "../recon-monitor/src", "../analytics/src", "../scenario/src", "../ar/src", "../categorize/src", "../reports/src", "../qbo/src"]
+pythonpath = ["src", "../forecast/src", "../briefing/src", "../web/src", "../ocr/src", "../runtime/src", "../billing/src", "../obs/src", "../alerts/src", "../recon-monitor/src", "../analytics/src", "../scenario/src", "../ar/src", "../categorize/src", "../reports/src", "../qbo/src"]
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
 files = ["src", "tests"]
-mypy_path = "src:../obs/src:../forecast/src:../briefing/src:../web/src:../runtime/src:../billing/src:../alerts/src:../recon-monitor/src:../analytics/src:../scenario/src:../ar/src:../categorize/src:../reports/src:../qbo/src"
+mypy_path = "src:../obs/src:../forecast/src:../briefing/src:../web/src:../ocr/src:../runtime/src:../billing/src:../alerts/src:../recon-monitor/src:../analytics/src:../scenario/src:../ar/src:../categorize/src:../reports/src:../qbo/src"
 
 # reportlab / openpyxl (pulled in transitively via rgnr8-reports' export
 # renderers) ship no type information.
