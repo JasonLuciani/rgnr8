@@ -165,6 +165,8 @@ from .recurring_screens import (
 )
 from .reporting_screens import render_budget, render_general_ledger
 from .settings_screens import render_settings, render_settings_unavailable
+from rgnr8_ocr import HeuristicExtractor, to_bill_draft
+from .capture_screens import render_capture, render_capture_unavailable
 from .debt_screens import render_debt, render_debt_unavailable, render_loan_detail
 from .asset_screens import render_asset_detail, render_assets, render_assets_unavailable
 from .health_screens import render_health, render_health_unavailable
@@ -341,6 +343,14 @@ def _ratio_to_micro(v: object) -> str:
 
 def _units_to_milli(v: object) -> str:
     return _scaled(v, 3)
+
+
+def _slug(name: str) -> str:
+    """A stable party id from a display name: lower-case, alnum and dashes only."""
+    out = "".join(c if c.isalnum() else "-" for c in name.lower()).strip("-")
+    while "--" in out:
+        out = out.replace("--", "-")
+    return (out or "vendor")[:40]
 
 
 def _provenance_note(facts: "LedgerFacts", split: "dict[str, int]") -> str:
@@ -1008,6 +1018,18 @@ class WebApp:
             asset_id = parts[3]
             return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
                                  lambda t: self._asset_detail_page(subject, t, asset_id, req.query))
+
+        # --- receipt capture (OCR → drafted bill) ---
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "capture":
+            if req.method == "POST":
+                return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                     lambda t: self._capture_scan(subject, t, req.body))
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._capture_page(subject, t, req.query))
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "capture"
+                and parts[3] == "bill" and req.method == "POST"):
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._capture_bill(subject, t, req.body))
 
         # --- financial health / ratios (read-only) ---
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "health":
@@ -4353,6 +4375,62 @@ class WebApp:
         if not res.ok:
             return self._shell(subject, t, "health", render_health_unavailable(res.error()))
         return self._shell(subject, t, "health", render_health(t.tenant_id, res.body))
+
+    # --- receipt capture (OCR → drafted bill) -------------------------------
+    def _capture_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        body = render_capture(t.tenant_id, done=query.get("done", ""), error=query.get("err", ""))
+        return self._shell(subject, t, "capture", body)
+
+    def _capture_scan(self, subject: str, t: _Tenant, body: str) -> Response:
+        data = self._form_or_json(body)
+        text = str(data.get("text", ""))
+        if not text.strip():
+            return self._shell(subject, t, "capture",
+                               render_capture(t.tenant_id, error="Paste some receipt text first."))
+        extracted = HeuristicExtractor().extract(text)
+        draft = to_bill_draft(extracted).to_dict()
+        vendors: list[object] = []
+        if self._ledger is not None:
+            res = self._ledger.parties(t.tenant_id, "vendors")
+            if res.ok:
+                raw = res.body.get("parties") or res.body.get("vendors") or []
+                vendors = list(raw) if isinstance(raw, list) else []
+        return self._shell(subject, t, "capture",
+                           render_capture(t.tenant_id, draft=draft, raw_text=text, vendors=vendors))
+
+    def _capture_bill(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/capture"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        d = self._form_or_json(body)
+        date = str(d.get("date", "")).strip()
+        amount = self._amount_to_minor(str(d.get("amount", "")))
+        if not date or amount is None or amount <= 0:
+            return _redirect(f"{back}?err={_qs_escape('A date and a positive amount are required')}")
+
+        # Resolve the vendor: an existing party, or create one from the typed name.
+        party_id = str(d.get("vendor_id", "")).strip()
+        if not party_id:
+            name = str(d.get("vendor", "")).strip() or "Captured vendor"
+            party_id = _slug(name)
+            self._ledger.create_party(t.tenant_id, "vendors", party_id, name)
+
+        doc_id = f"CAP-{date.replace('-', '')}-{party_id}"[:48]
+        code = str(d.get("expense_account_code", "")).strip() or "6400"
+        lines = [{
+            "description": "Captured receipt", "quantity": 1,
+            "unit_amount_minor": str(amount), "account_code": code,
+        }]
+        res = self._ledger.create_document(
+            t.tenant_id, "bills", doc_id, party_id, date, lines,
+            memo=str(d.get("memo", "")).strip() or "From captured receipt",
+        )
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "capture.bill_created", self._session_clock(),
+                               tenant_id=t.tenant_id, target=doc_id)
+        return _redirect(f"/t/{t.tenant_id}/bills?done=Bill+created+from+receipt")
 
     def _transactions_page(self, subject: str, t: _Tenant) -> Response:
         """The bank register.
