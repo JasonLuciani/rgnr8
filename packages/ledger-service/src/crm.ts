@@ -353,6 +353,14 @@ export class PgCrmStore implements CrmStore {
     tenant: string, event: Omit<CrmEventRecord, "sequence">,
   ): Promise<CrmEventRecord> {
     return this.tx(tenant, async (db) => {
+      // The feed's sequence is COALESCE(MAX,0)+1. Under READ COMMITTED two
+      // concurrent appends for the same tenant read the same MAX and race to
+      // insert the same sequence — one loses on the primary key and the whole
+      // append throws, so the state change that triggered it is left with no
+      // event on the feed a consumer polls. A per-tenant transaction-scoped
+      // advisory lock serializes sequence assignment: the second append waits,
+      // reads the now-committed MAX, and takes the next number cleanly.
+      await db.query("SELECT pg_advisory_xact_lock(hashtext('crm_event'), hashtext($1))", [tenant]);
       const res = await db.query(
         `INSERT INTO crm_event (tenant_id, sequence, at, kind, subject, payload)
          SELECT $1, COALESCE(MAX(sequence), 0) + 1, $2, $3, $4, $5
@@ -652,6 +660,12 @@ export async function winOpportunity(
   const opportunity = await store.getOpportunity(String(ctx.tenant), id);
   if (!opportunity) throw new CrmError(`unknown opportunity ${id}`);
   if (opportunity.stage === "WON") throw new CrmError(`opportunity ${id} is already won`);
+  // A closed deal is sticky in both directions: you cannot flip a lost one
+  // straight to won (or vice versa) — that silently rewrites history and skews
+  // the win rate. Reopen it deliberately first.
+  if (opportunity.stage === "LOST") {
+    throw new CrmError(`opportunity ${id} was lost — reopen it before marking it won`);
+  }
 
   const jobId = String(input.job_id ?? "").trim();
   if (jobId && !await ctx.backend.jobs().getJob(String(ctx.tenant), jobId)) {
@@ -687,16 +701,60 @@ export async function loseOpportunity(
   const store = ctx.backend.crm();
   const opportunity = await store.getOpportunity(String(ctx.tenant), id);
   if (!opportunity) throw new CrmError(`unknown opportunity ${id}`);
+  if (opportunity.stage === "LOST") throw new CrmError(`opportunity ${id} is already lost`);
+  if (opportunity.stage === "WON") {
+    throw new CrmError(`opportunity ${id} was won — reopen it before marking it lost`);
+  }
   const reason = String(input.reason ?? "").trim();
   if (!reason) {
     throw new CrmError("say why it was lost — the pattern in those reasons is the point");
   }
   const updated: OpportunityRecord = {
-    ...opportunity, stage: "LOST", probabilityPpm: 0, lostReason: reason,
+    // A lost deal is not attached to a job — clear any link so a LOST row never
+    // points at real work.
+    ...opportunity, stage: "LOST", probabilityPpm: 0, lostReason: reason, jobId: "",
   };
   await store.saveOpportunity(String(ctx.tenant), updated);
   await recordEvent(ctx, "opportunity.lost", id, {
     reason, value_minor: updated.valueMinor,
+  });
+  return updated;
+}
+
+/**
+ * Reopen a closed (WON or LOST) opportunity back into the pipeline.
+ *
+ * A close is sticky in both directions, so the only sanctioned way out of WON or
+ * LOST is a deliberate reopen — a distinct, logged act rather than a silent
+ * re-edit. It lands the deal back on an open stage (NEGOTIATION unless the caller
+ * names another open one), clears the lost reason, and — because a live deal is
+ * no longer the record of finished work — clears any job link a prior WON left
+ * behind. The win-rate math only holds if this transition is visible, so it
+ * emits its own event.
+ */
+export async function reopenOpportunity(
+  ctx: CrmContext, id: string, stage?: string,
+): Promise<OpportunityRecord> {
+  const store = ctx.backend.crm();
+  const opportunity = await store.getOpportunity(String(ctx.tenant), id);
+  if (!opportunity) throw new CrmError(`unknown opportunity ${id}`);
+  if (opportunity.stage !== "WON" && opportunity.stage !== "LOST") {
+    throw new CrmError(`opportunity ${id} is already open (${opportunity.stage})`);
+  }
+  const target = String(stage ?? "NEGOTIATION").trim().toUpperCase() as Stage;
+  if (target === "WON" || target === "LOST" || !STAGES.includes(target)) {
+    throw new CrmError("reopen onto an open stage: NEW, QUALIFIED, PROPOSAL, or NEGOTIATION");
+  }
+  const updated: OpportunityRecord = {
+    ...opportunity,
+    stage: target,
+    probabilityPpm: DEFAULT_PROBABILITY[target],
+    lostReason: "",
+    jobId: "",
+  };
+  await store.saveOpportunity(String(ctx.tenant), updated);
+  await recordEvent(ctx, "opportunity.reopened", id, {
+    from: opportunity.stage, to: target,
   });
   return updated;
 }

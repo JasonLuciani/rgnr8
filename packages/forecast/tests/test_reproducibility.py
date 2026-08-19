@@ -1,17 +1,17 @@
 from datetime import date
 
+from factory import AS_OF, usd
 from rgnr8_forecast import (
     CashPosition,
+    CustomerHistory,
     ForecastConfig,
     ForecastInputs,
     Invoice,
-    CustomerHistory,
     PublicationStatus,
     Scenario,
     run_forecast,
 )
 from rgnr8_forecast.reproducibility import fingerprint
-from factory import AS_OF, usd
 
 
 def _inputs(amount: str = "10000.00") -> ForecastInputs:

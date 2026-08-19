@@ -16,6 +16,14 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from rgnr8_obs import (
+    ErrorReporter,
+    InMemoryErrorReporter,
+    MetricsRegistry,
+    StreamLogSink,
+    StructuredLogger,
+)
+from rgnr8_runtime.subscriptions import SqlSubscriptionStore
 from rgnr8_web import (
     FinancialPackageReader,
     HttpJwksProvider,
@@ -34,15 +42,6 @@ from rgnr8_web import (
     WebApp,
     wsgi_app,
 )
-from rgnr8_obs import (
-    ErrorReporter,
-    InMemoryErrorReporter,
-    MetricsRegistry,
-    StreamLogSink,
-    StructuredLogger,
-)
-
-from rgnr8_runtime.subscriptions import SqlSubscriptionStore
 
 from .config import ConfigError, Settings
 from .fleet import Fleet

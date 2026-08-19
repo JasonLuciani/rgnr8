@@ -41,6 +41,30 @@ def test_role_permission_boundaries() -> None:
     assert not p.can("u-cpa", "acme", Permission.MANAGE_CONNECTORS)
 
 
+def test_new_account_admin_permissions_are_scoped_to_the_right_roles() -> None:
+    d = _dir()
+    d.set_membership("u-ctrl", "acme", Role.CONTROLLER)
+    d.set_membership("u-view", "acme", Role.VIEWER)
+    p = AccessPolicy(d)
+
+    # the owner holds every account-admin capability, including irreversible erase
+    for perm in (Permission.MANAGE_SETTINGS, Permission.MANAGE_INTEGRATIONS,
+                 Permission.MANAGE_DATA_RETENTION, Permission.ERASE_DATA):
+        assert p.can("u-owner", "acme", perm)
+
+    # a controller can configure settings/integrations/retention but NOT erase data
+    assert p.can("u-ctrl", "acme", Permission.MANAGE_SETTINGS)
+    assert p.can("u-ctrl", "acme", Permission.MANAGE_INTEGRATIONS)
+    assert p.can("u-ctrl", "acme", Permission.MANAGE_DATA_RETENTION)
+    assert not p.can("u-ctrl", "acme", Permission.ERASE_DATA)
+
+    # a bookkeeper and a viewer hold none of the account-admin capabilities
+    for uid in ("u-book", "u-view"):
+        for perm in (Permission.MANAGE_SETTINGS, Permission.MANAGE_INTEGRATIONS,
+                     Permission.MANAGE_DATA_RETENTION, Permission.ERASE_DATA):
+            assert not p.can(uid, "acme", perm)
+
+
 def test_everyone_can_view_cash() -> None:
     p = AccessPolicy(_dir())
     for uid in ("u-owner", "u-book", "u-cpa"):

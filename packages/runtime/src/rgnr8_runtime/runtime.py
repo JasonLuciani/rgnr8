@@ -20,9 +20,9 @@ from __future__ import annotations
 from datetime import datetime
 
 from rgnr8_briefing import (
+    Deliverer,
     DeliveryEnvelope,
     DeliveryOutcome,
-    Deliverer,
     Subscription,
     build_briefing,
     build_envelope,

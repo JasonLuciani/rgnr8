@@ -139,7 +139,7 @@ def render_books_home(
         + '<div class="table-scroll"><table><thead><tr><th>Code</th><th>Account</th>'
         '<th class="num">Debit</th><th class="num">Credit</th></tr></thead><tbody>'
         + ("".join(rows) or empty)
-        + f'<tr style="font-weight:700"><td colspan="2">Totals</td>'
+        + '<tr style="font-weight:700"><td colspan="2">Totals</td>'
         + _num(tb.get("total_debit_minor"), ccy)
         + _num(tb.get("total_credit_minor"), ccy)
         + "</tr></tbody></table></div>"
@@ -237,7 +237,7 @@ def render_register(tenant: str, reg: Mapping[str, object]) -> str:
         "</tr></thead><tbody>"
         f'<tr class="muted"><td colspan="4">Opening balance</td>{_num(reg.get("opening_minor"))}</tr>'
         + ("".join(rows) or empty)
-        + f'<tr style="font-weight:700"><td colspan="2">Closing balance</td>'
+        + '<tr style="font-weight:700"><td colspan="2">Closing balance</td>'
         + _num(reg.get("total_debit_minor"))
         + _num(reg.get("total_credit_minor"))
         + _num(reg.get("closing_minor"))
@@ -267,12 +267,12 @@ def render_books_statements(period: str, data: Mapping[str, object]) -> str:
             "Income Statement",
             '<div class="table-scroll"><table><tbody>'
             '<tr class="rg-eyebrow"><td colspan="3">Revenue</td></tr>' + lines("revenue")
-            + f'<tr style="font-weight:700"><td colspan="2">Total revenue</td>'
+            + '<tr style="font-weight:700"><td colspan="2">Total revenue</td>'
             + _num(_cents(income.get("total_revenue")), ccy) + "</tr>"
             '<tr class="rg-eyebrow"><td colspan="3">Expenses</td></tr>' + lines("expenses")
-            + f'<tr style="font-weight:700"><td colspan="2">Total expenses</td>'
+            + '<tr style="font-weight:700"><td colspan="2">Total expenses</td>'
             + _num(_cents(income.get("total_expenses")), ccy) + "</tr>"
-            + f'<tr style="font-weight:800"><td colspan="2">Net income</td>'
+            + '<tr style="font-weight:800"><td colspan="2">Net income</td>'
             + _num(_cents(income.get("net_income")), ccy) + "</tr>"
             "</tbody></table></div>",
         )
@@ -296,13 +296,13 @@ def render_books_statements(period: str, data: Mapping[str, object]) -> str:
             "Balance Sheet",
             banner + '<div class="table-scroll"><table><tbody>'
             + section("assets", "Assets")
-            + f'<tr style="font-weight:700"><td colspan="2">Total assets</td>'
+            + '<tr style="font-weight:700"><td colspan="2">Total assets</td>'
             + _num(_cents(bs.get("total_assets")), ccy) + "</tr>"
             + section("liabilities", "Liabilities")
-            + f'<tr style="font-weight:700"><td colspan="2">Total liabilities</td>'
+            + '<tr style="font-weight:700"><td colspan="2">Total liabilities</td>'
             + _num(_cents(bs.get("total_liabilities")), ccy) + "</tr>"
             + section("equity", "Equity")
-            + f'<tr style="font-weight:700"><td colspan="2">Total equity</td>'
+            + '<tr style="font-weight:700"><td colspan="2">Total equity</td>'
             + _num(_cents(bs.get("total_equity")), ccy) + "</tr>"
             "</tbody></table></div>",
         )

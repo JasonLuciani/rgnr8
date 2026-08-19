@@ -76,6 +76,28 @@ class HttpClient(Protocol):
     def post_json(self, url: str, body: str, headers: dict[str, str]) -> HttpResponse: ...
 
 
+class UrllibHttpClient:
+    """A concrete HTTP POST client over stdlib urllib — the production transport
+    the delivery worker uses. No new dependency; a transport error raises, which
+    the durable dispatcher turns into a backoff-and-retry."""
+
+    def __init__(self, *, timeout: float = 10.0) -> None:
+        self._timeout = timeout
+
+    def post_json(self, url: str, body: str, headers: dict[str, str]) -> HttpResponse:
+        import urllib.error
+        import urllib.request
+
+        req = urllib.request.Request(url, data=body.encode("utf-8"),
+                                     headers=dict(headers), method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                return HttpResponse(resp.status, resp.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as exc:  # non-2xx still a real HTTP response
+            return HttpResponse(exc.code, exc.read().decode("utf-8", "replace"))
+        # URLError / socket timeouts propagate → the dispatcher schedules a retry.
+
+
 @dataclass(frozen=True, slots=True)
 class WebhookEndpoint:
     id: str
@@ -115,6 +137,8 @@ class DeliveryResult:
 class WebhookEndpointStore(Protocol):
     def save(self, endpoint: WebhookEndpoint) -> None: ...
     def for_tenant(self, tenant_id: str) -> list[WebhookEndpoint]: ...
+    def get(self, endpoint_id: str) -> WebhookEndpoint | None: ...
+    def delete(self, endpoint_id: str) -> None: ...
 
 
 class InMemoryWebhookEndpointStore:
@@ -125,7 +149,104 @@ class InMemoryWebhookEndpointStore:
         self._eps[endpoint.id] = endpoint
 
     def for_tenant(self, tenant_id: str) -> list[WebhookEndpoint]:
-        return [e for e in self._eps.values() if e.tenant_id == tenant_id]
+        return sorted((e for e in self._eps.values() if e.tenant_id == tenant_id),
+                      key=lambda e: e.id)
+
+    def get(self, endpoint_id: str) -> WebhookEndpoint | None:
+        return self._eps.get(endpoint_id)
+
+    def delete(self, endpoint_id: str) -> None:
+        self._eps.pop(endpoint_id, None)
+
+
+class _EpCursor(Protocol):
+    def execute(self, sql: str, params: object = ..., /) -> object: ...
+    def fetchall(self) -> list[tuple[object, ...]]: ...
+    def close(self) -> None: ...
+
+
+class _EpConnection(Protocol):
+    def cursor(self) -> _EpCursor: ...
+    def commit(self) -> None: ...
+
+
+class SqlWebhookEndpointStore:
+    """Per-tenant webhook endpoints over any DB-API 2.0 connection. The endpoint
+    secret is stored as-is here; wrap the connection's column, or pass a cipher at
+    a higher layer, if the deployment wants it encrypted at rest like the QBO
+    tokens. ``events`` is stored as a comma-separated list."""
+
+    def __init__(self, connection: _EpConnection, *, table: str = "webhook_endpoint",
+                 placeholder: str = "?") -> None:
+        self._conn = connection
+        self._t = table
+        self._ph = placeholder
+
+    def create_schema(self) -> None:
+        cur = self._conn.cursor()
+        try:
+            cur.execute(
+                f"CREATE TABLE IF NOT EXISTS {self._t} "
+                "(id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, url TEXT NOT NULL, "
+                "secret TEXT NOT NULL, events TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1)"
+            )
+        finally:
+            cur.close()
+        self._conn.commit()
+
+    def _row(self, r: tuple[object, ...]) -> WebhookEndpoint:
+        events = tuple(e for e in str(r[4]).split(",") if e)
+        return WebhookEndpoint(str(r[0]), str(r[1]), str(r[2]), str(r[3]),
+                               events or EVENTS, bool(int(str(r[5]))))
+
+    def save(self, endpoint: WebhookEndpoint) -> None:
+        p = self._ph
+        cur = self._conn.cursor()
+        try:
+            cur.execute(
+                f"INSERT INTO {self._t} (id, tenant_id, url, secret, events, active) "
+                f"VALUES ({p}, {p}, {p}, {p}, {p}, {p}) "
+                "ON CONFLICT (id) DO UPDATE SET tenant_id=excluded.tenant_id, url=excluded.url, "
+                "secret=excluded.secret, events=excluded.events, active=excluded.active",
+                (endpoint.id, endpoint.tenant_id, endpoint.url, endpoint.secret,
+                 ",".join(endpoint.events), 1 if endpoint.active else 0),
+            )
+        finally:
+            cur.close()
+        self._conn.commit()
+
+    def for_tenant(self, tenant_id: str) -> list[WebhookEndpoint]:
+        p = self._ph
+        cur = self._conn.cursor()
+        try:
+            cur.execute(
+                f"SELECT id, tenant_id, url, secret, events, active FROM {self._t} "
+                f"WHERE tenant_id={p} ORDER BY id", (tenant_id,))
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+        return [self._row(r) for r in rows]
+
+    def get(self, endpoint_id: str) -> WebhookEndpoint | None:
+        p = self._ph
+        cur = self._conn.cursor()
+        try:
+            cur.execute(
+                f"SELECT id, tenant_id, url, secret, events, active FROM {self._t} WHERE id={p}",
+                (endpoint_id,))
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+        return self._row(rows[0]) if rows else None
+
+    def delete(self, endpoint_id: str) -> None:
+        p = self._ph
+        cur = self._conn.cursor()
+        try:
+            cur.execute(f"DELETE FROM {self._t} WHERE id={p}", (endpoint_id,))
+        finally:
+            cur.close()
+        self._conn.commit()
 
 
 def sign(body: str, secret: str) -> str:

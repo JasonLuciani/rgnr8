@@ -9,7 +9,6 @@ import type {
   NormalizedInput,
   ProviderAdapter,
   RawRecord,
-  TransactionKind,
 } from "./types.js";
 
 /** Internal mutable row; the public type is the readonly CanonicalTransaction. */

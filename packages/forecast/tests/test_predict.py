@@ -1,7 +1,6 @@
-from datetime import date
 
-from rgnr8_forecast import CustomerHistory, ForecastConfig, predict_days_late
 from factory import history
+from rgnr8_forecast import CustomerHistory, ForecastConfig, predict_days_late
 
 
 def test_override_wins() -> None:

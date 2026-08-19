@@ -205,6 +205,7 @@ def _qr(body: dict) -> HttpResponse:
 
 def _connected_app(*, ledger=None, extra_queries: list | None = None):
     from datetime import timedelta
+
     from rgnr8_qbo import QboConnection, QboStatus
 
     store = InMemoryConnectionStore()

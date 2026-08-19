@@ -110,7 +110,7 @@ def render_budget(data: Mapping[str, object]) -> str:
         '<th class="num">Budget</th><th class="num">Actual</th><th class="num">Variance</th>'
         '<th class="num">% of budget</th><th>Status</th></tr></thead><tbody>'
         + ("".join(body_rows) or empty)
-        + f'<tr style="font-weight:700"><td colspan="2">Total</td>'
+        + '<tr style="font-weight:700"><td colspan="2">Total</td>'
         + _num_cell(data.get("total_budget_minor"), ccy) + _num_cell(data.get("total_actual_minor"), ccy)
         + _num_cell(data.get("total_variance_minor"), ccy) + '<td></td><td></td></tr>'
         + '</tbody></table></div>'

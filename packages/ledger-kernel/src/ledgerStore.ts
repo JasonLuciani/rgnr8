@@ -1,4 +1,4 @@
-import type { DraftEntry, EntryId, IdempotencyKey, PostedEntry, TenantId } from "./types.js";
+import type { AccountId, DraftEntry, EntryId, IdempotencyKey, PostedEntry, TenantId } from "./types.js";
 
 /**
  * Append-only journal store. Posted entries are never updated or deleted; the
@@ -20,6 +20,19 @@ export interface LedgerStore {
   getBySequence(tenant: TenantId, sequence: number): Promise<PostedEntry | undefined>;
   /** All entries for a tenant, in posting order. */
   list(tenant: TenantId): Promise<readonly PostedEntry[]>;
+  /**
+   * Optional aggregation: the net debit position (minor units, debit-positive)
+   * per account over an inclusive `entryDate` window. A backend that can push
+   * this into the database (`SUM(...) GROUP BY account`) implements it so a
+   * trial balance or statement doesn't load a tenant's whole journal into
+   * memory. When absent, callers sum `list()` instead. The result MUST equal
+   * summing every line of `list()` in the same window — this is a performance
+   * optimisation, never a semantic change, and the reference in-memory store
+   * deliberately omits it so the two paths can be checked for parity.
+   */
+  netByAccount?(
+    tenant: TenantId, window?: { from?: string; to?: string },
+  ): Promise<Map<AccountId, bigint>>;
 }
 
 interface TenantLog {

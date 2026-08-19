@@ -13,8 +13,16 @@ from typing import Any
 
 from rgnr8_forecast import CashPosition, ForecastConfig, ForecastInputs, Money
 from rgnr8_web import (
-    InMemoryAuditLog, InMemoryUserDirectory, JwtAuthenticator, LedgerClient,
-    LedgerResponse, Request, Role, User, WebApp, sign_jwt,
+    InMemoryAuditLog,
+    InMemoryUserDirectory,
+    JwtAuthenticator,
+    LedgerClient,
+    LedgerResponse,
+    Request,
+    Role,
+    User,
+    WebApp,
+    sign_jwt,
 )
 from rgnr8_web.multipart import boundary_of, parse_multipart, to_bytes
 
@@ -78,7 +86,6 @@ def test_an_untouched_file_input_is_not_an_empty_file() -> None:
 
 def test_a_body_this_parser_does_not_understand_is_refused_not_guessed() -> None:
     import pytest
-
     from rgnr8_web.multipart import MultipartError
 
     with pytest.raises(MultipartError):

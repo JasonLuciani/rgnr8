@@ -696,33 +696,91 @@ export async function acceptEstimate(
     created = true;
   }
 
-  // Seed the budget from the cost side of the estimate, grouped by cost code.
-  const byCode = new Map<string, { cost: bigint; revenue: bigint }>();
-  for (const l of estimate.lines) {
-    if (!l.costCode) continue;
-    const bucket = byCode.get(l.costCode) ?? { cost: 0n, revenue: 0n };
-    bucket.cost += BigInt(l.extendedCostMinor);
-    bucket.revenue += BigInt(l.extendedPriceMinor);
-    byCode.set(l.costCode, bucket);
+  // What an estimate contributes to a job budget, grouped by cost code.
+  const costsByCode = (est: EstimateRecord): Map<string, { cost: bigint; revenue: bigint }> => {
+    const m = new Map<string, { cost: bigint; revenue: bigint }>();
+    for (const l of est.lines) {
+      if (!l.costCode) continue;
+      const bucket = m.get(l.costCode) ?? { cost: 0n, revenue: 0n };
+      bucket.cost += BigInt(l.extendedCostMinor);
+      bucket.revenue += BigInt(l.extendedPriceMinor);
+      m.set(l.costCode, bucket);
+    }
+    return m;
+  };
+
+  // If a PRIOR revision of this same estimate root already landed on this job,
+  // the job already carries its contract and budget. Re-accepting a newer
+  // revision (e.g. a full-restatement change order made with reviseEstimate,
+  // which copies every line forward) must apply only the DELTA versus that
+  // prior revision — otherwise the original scope is counted twice, inflating
+  // the contract that multiplies percent-complete revenue and corrupting the
+  // budget baseline. A brand-new job has no prior; a change order raised as a
+  // *separate* estimate (a different root) is correctly additive and finds no
+  // prior revision here. reviseEstimate carries the job link forward, so the
+  // prior revision is discoverable by (same root, already on this job).
+  let priorRev: EstimateRecord | undefined;
+  if (!created) {
+    for (const sib of await store.list(String(ctx.tenant))) {
+      if (sib.rootId !== estimate.rootId || sib.id === estimate.id || sib.jobId !== jobId) continue;
+      if (!priorRev || sib.revision > priorRev.revision) priorRev = sib;
+    }
   }
-  if (byCode.size > 0) {
+
+  const addByCode = costsByCode(estimate);
+  const priorByCode = priorRev ? costsByCode(priorRev) : new Map<string, { cost: bigint; revenue: bigint }>();
+  if (addByCode.size > 0 || priorByCode.size > 0) {
+    // MERGE, never replace, and apply the delta of this revision against any
+    // prior revision of the same root — so re-accepting a restated change order
+    // nets to the new scope instead of doubling the original. Every other cost
+    // code's baseline (from other roots) is left exactly where it was.
+    const prior = new Map(
+      (await ctx.backend.jobs().listBudget(String(ctx.tenant), jobId))
+        .map((b) => [b.costCode, b]),
+    );
+    const codes = new Set([...prior.keys(), ...addByCode.keys(), ...priorByCode.keys()]);
+    const lines = [...codes].map((code) => {
+      const add = addByCode.get(code) ?? { cost: 0n, revenue: 0n };
+      const prev = priorByCode.get(code) ?? { cost: 0n, revenue: 0n };
+      const deltaCost = add.cost - prev.cost;
+      const deltaRevenue = add.revenue - prev.revenue;
+      const base = prior.get(code);
+      const budget = BigInt(base?.budgetCostMinor ?? "0") + deltaCost;
+      const revised = BigInt(base?.revisedCostMinor ?? base?.budgetCostMinor ?? "0") + deltaCost;
+      const revenue = BigInt(base?.budgetRevenueMinor ?? "0") + deltaRevenue;
+      return {
+        cost_code: code,
+        budget_cost_minor: budget.toString(),
+        revised_cost_minor: revised.toString(),
+        budget_revenue_minor: revenue.toString(),
+      };
+    });
     try {
-      await saveJobBudget(jobCtx, jobId, {
-        lines: [...byCode.entries()].map(([costCode, b]) => ({
-          cost_code: costCode,
-          budget_cost_minor: b.cost.toString(),
-          budget_revenue_minor: b.revenue.toString(),
-        })),
-      });
+      await saveJobBudget(jobCtx, jobId, { lines });
     } catch (err) {
       if (err instanceof JobError) throw new EstimateError(err.message);
       throw err;
     }
   }
 
+  // A change order raises the contract. On a new job the contract was already
+  // set to the estimate total; on an existing one, add this revision's price and
+  // back out any prior revision's price so percent-complete and projected margin
+  // reflect the current scope, not the sum of every restatement.
+  if (!created) {
+    const job = await ctx.backend.jobs().getJob(String(ctx.tenant), jobId);
+    if (job) {
+      const priorPrice = priorRev ? BigInt(estimateTotals(priorRev).price_minor) : 0n;
+      const raised = (
+        BigInt(job.contractMinor) + BigInt(totals.price_minor) - priorPrice
+      ).toString();
+      await ctx.backend.jobs().saveJob(String(ctx.tenant), { ...job, contractMinor: raised });
+    }
+  }
+
   const accepted: EstimateRecord = { ...estimate, status: "ACCEPTED", jobId };
   await store.save(String(ctx.tenant), accepted);
-  return { estimate: accepted, jobId, created, budgetSeeded: byCode.size };
+  return { estimate: accepted, jobId, created, budgetSeeded: addByCode.size };
 }
 
 /**

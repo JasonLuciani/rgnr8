@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from rgnr8_forecast import Category, Direction, ForecastResult, Money
+from rgnr8_forecast import Category, Direction, ForecastResult
 
 from .build import _largest, _outflow_drivers
 from .models import Evidence, Fact

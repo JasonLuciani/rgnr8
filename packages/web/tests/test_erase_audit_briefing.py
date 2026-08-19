@@ -8,7 +8,6 @@ from datetime import date
 from typing import Any
 
 import pytest
-
 from rgnr8_forecast import CashPosition, ForecastConfig, ForecastInputs, Money
 from rgnr8_web import (
     BankTransaction,
@@ -54,6 +53,33 @@ def _app(*, audit: InMemoryAuditLog | None = None) -> tuple[WebApp, InMemoryAudi
 def _h(sub: str) -> dict[str, str]:
     return {"authorization": f"Bearer {sign_jwt({'sub': sub, 'tenant': 'acme', 'exp': NOW + 3600}, SECRET)}",
             "content-type": "application/json"}
+
+
+# --- retention ---------------------------------------------------------------
+
+
+def test_audit_purge_older_than_removes_only_aged_rows_for_the_tenant() -> None:
+    log = InMemoryAuditLog()
+    log.record("a", "x", 100, tenant_id="acme")
+    log.record("a", "y", 500, tenant_id="acme")
+    log.record("a", "z", 100, tenant_id="beta")  # another tenant, also old
+    removed = log.purge_older_than("acme", before_at=200)
+    assert removed == 1, "only acme's pre-200 row is purged"
+    assert [e.action for e in log.events(tenant_id="acme")] == ["y"]
+    assert len(log.events(tenant_id="beta")) == 1, "another tenant's rows are untouched"
+
+
+def test_retention_sweep_is_gated_by_manage_data_retention() -> None:
+    audit = InMemoryAuditLog()
+    app, _ = _app(audit=audit)
+    # owner holds MANAGE_DATA_RETENTION → the sweep runs (no ledger here, so 0 days,
+    # nothing purged, but a 200 and a retention.swept audit event)
+    r = app.handle(Request("POST", "/api/acme/retention", _h("owner@acme.com")))
+    assert r.status == 200
+    assert json.loads(r.body)["purged"] == 0
+    assert any(e.action == "retention.swept" for e in audit.events(tenant_id="acme"))
+    # a viewer cannot run it
+    assert app.handle(Request("POST", "/api/acme/retention", _h("view@acme.com"))).status == 403
 
 
 # --- erasure -----------------------------------------------------------------

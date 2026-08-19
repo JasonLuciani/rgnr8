@@ -543,10 +543,22 @@ export async function postWipAdjustment(
     return { ...l, dimensions };
   });
 
+  // Re-running WIP for the same period-end after a late cost must post the
+  // *incremental* correction, not throw. A pure date key made the second run
+  // collide (same key, different payload → the engine rejects it), which broke
+  // the module's own promise that a late cost "simply corrects the difference".
+  // Suffix the key with how many WIP entries already exist for this date/scope:
+  // a genuine retry computes the same count (idempotent no-op), while a fresh
+  // correction after a real change gets the next number (a new delta entry).
+  const priorRuns = (await ctx.backend.store(ctx.tenant).list(ctx.tenant)).filter(
+    (e) => e.provenance.sourceSystem === WIP_SOURCE && e.entryDate === date
+      && (!input.job_id || e.lines.some((l) => l.dimensions?.[JOB_DIMENSION] === input.job_id)),
+  ).length;
+
   const command: PostCommand = {
     tenantId: ctx.tenant,
     idempotencyKey: asIdempotencyKey(
-      `wip:${input.job_id ? `${input.job_id}:` : ""}${date}`,
+      `wip:${input.job_id ? `${input.job_id}:` : ""}${date}#${priorRuns}`,
     ),
     periodKey: asPeriodKey(date.slice(0, 7)),
     currency: ctx.currency,

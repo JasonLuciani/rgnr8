@@ -74,6 +74,7 @@ export function incomeStatement(tb: TrialBalance): IncomeStatement {
 
 /** Synthetic account id for the current-period earnings line on the BS. */
 export const NET_INCOME_ACCOUNT_ID: AccountId = asAccountId("__CURRENT_PERIOD_NET_INCOME__");
+export const RETAINED_EARNINGS_ACCOUNT_ID: AccountId = asAccountId("__RETAINED_EARNINGS_PRIOR__");
 
 export interface BalanceSheet {
   readonly currency: Currency;
@@ -88,19 +89,33 @@ export interface BalanceSheet {
 }
 
 /**
- * Balance sheet from a trial balance, folding the period's net income into
- * equity (the retained-earnings movement). On a sound ledger this balances to
- * exactly zero: assets = liabilities + equity.
+ * Balance sheet from a trial balance, folding retained earnings into equity.
+ *
+ * A balance sheet is drawn as-of a date, so its equity has to carry **all**
+ * earnings the business has retained through that date — not just the current
+ * period's. RGNR8 posts no automatic period-close entry (a period *lock* moves
+ * nothing), so revenue and expense earned before the reporting window are never
+ * swept into a retained-earnings account and would otherwise vanish from the
+ * sheet, leaving it out of balance by exactly the accumulated prior net income.
+ *
+ * `netIncome` is the reporting period's result; `beginningRetained` is the
+ * cumulative net income earned through the day before the window opened. Both
+ * fold into equity. Callers reporting from inception (no prior activity) can omit
+ * `beginningRetained` — it defaults to zero and the behaviour is unchanged. On a
+ * sound ledger this balances to exactly zero: assets = liabilities + equity.
  */
-export function balanceSheet(tb: TrialBalance, netIncome: Money): BalanceSheet {
+export function balanceSheet(
+  tb: TrialBalance, netIncome: Money, beginningRetained?: Money,
+): BalanceSheet {
   const assetLines = entriesOfClass(tb, "asset");
   const liabLines = entriesOfClass(tb, "liability");
   const equityLines = entriesOfClass(tb, "equity");
 
+  const priorRetained = beginningRetained ?? Money.fromMinorUnits(0n, tb.currency);
   const assets = sumNatural(assetLines, tb.currency);
   const liabilities = sumNatural(liabLines, tb.currency);
   const bookedEquity = sumNatural(equityLines, tb.currency);
-  const equity = bookedEquity.plus(netIncome);
+  const equity = bookedEquity.plus(priorRetained).plus(netIncome);
 
   const residual = assets.minus(liabilities.plus(equity));
 
@@ -111,13 +126,22 @@ export function balanceSheet(tb: TrialBalance, netIncome: Money): BalanceSheet {
     accountClass: "equity",
     amount: netIncome,
   };
+  // Only present a prior-earnings line when there is prior activity, so a
+  // from-inception sheet reads exactly as it did before.
+  const retainedLine: StatementLine = {
+    accountId: RETAINED_EARNINGS_ACCOUNT_ID,
+    code: "3998",
+    name: "Retained earnings (prior periods)",
+    accountClass: "equity",
+    amount: priorRetained,
+  };
   const lines = [
     ...assetLines.map(toLine),
     ...liabLines.map(toLine),
     ...equityLines.map(toLine),
   ]
     .sort(byLineCode)
-    .concat(niLine);
+    .concat(priorRetained.isZero() ? [niLine] : [retainedLine, niLine]);
 
   return {
     currency: tb.currency,

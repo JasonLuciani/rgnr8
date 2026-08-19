@@ -3,6 +3,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from factory import at_risk_tenant, steady_tenant
 from rgnr8_forecast import Money
 from rgnr8_ops import (
     ConnectorHealth,
@@ -11,7 +12,6 @@ from rgnr8_ops import (
     build_ops_report,
     render_operator_console,
 )
-from factory import at_risk_tenant, steady_tenant
 
 
 def _usd(s: str) -> Money:

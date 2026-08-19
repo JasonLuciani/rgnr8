@@ -4,6 +4,7 @@ import json
 from datetime import date
 
 from rgnr8_forecast import CashPosition, ForecastConfig, ForecastInputs, Money
+from rgnr8_mcp import McpServer
 from rgnr8_web import (
     InMemoryUserDirectory,
     JwtAuthenticator,
@@ -12,7 +13,6 @@ from rgnr8_web import (
     WebApp,
     sign_jwt,
 )
-from rgnr8_mcp import McpServer
 
 SECRET = "mcp-secret"
 NOW = 1_760_000_000

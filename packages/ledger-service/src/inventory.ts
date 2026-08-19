@@ -78,13 +78,32 @@ export interface MovementRecord {
   readonly memo: string;
 }
 
+/**
+ * A FIFO cost layer — one receipt's remaining quantity and value. Only used when
+ * the account's costing method is FIFO; moving-average keeps a single blended
+ * figure on the item and needs no layers. Issues relieve the lowest `seq` first.
+ */
+export interface LotRecord {
+  readonly seq: number;               // per-(tenant, sku), assigned on receipt
+  readonly sku: string;
+  readonly date: string;
+  readonly unitCostMinor: string;
+  readonly remainingQtyMilli: string;
+  readonly remainingValueMinor: string;
+}
+
 export interface InventoryStore {
   migrate(): Promise<void>;
   listItems(tenant: string): Promise<ItemRecord[]>;
   getItem(tenant: string, sku: string): Promise<ItemRecord | undefined>;
   saveItem(tenant: string, item: ItemRecord): Promise<void>;
   listMovements(tenant: string, sku?: string): Promise<MovementRecord[]>;
+  getMovement(tenant: string, id: string): Promise<MovementRecord | undefined>;
   saveMovement(tenant: string, movement: MovementRecord): Promise<void>;
+  /** All FIFO lots for a SKU, oldest first (by seq). Empty for a moving-avg item. */
+  lots(tenant: string, sku: string): Promise<LotRecord[]>;
+  /** Insert or update one lot (keyed by tenant, sku, seq). */
+  saveLot(tenant: string, lot: LotRecord): Promise<void>;
 }
 
 // --- in-memory ---------------------------------------------------------------
@@ -92,8 +111,22 @@ export interface InventoryStore {
 export class InMemoryInventoryStore implements InventoryStore {
   private readonly items = new Map<string, ItemRecord>();
   private readonly movements = new Map<string, MovementRecord>();
+  private readonly lotRows = new Map<string, LotRecord>();
 
   migrate(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  lots(tenant: string, sku: string): Promise<LotRecord[]> {
+    const out: LotRecord[] = [];
+    for (const [k, v] of this.lotRows) {
+      if (k.startsWith(`${tenant}::${sku}::`)) out.push(v);
+    }
+    return Promise.resolve(out.sort((a, b) => a.seq - b.seq));
+  }
+
+  saveLot(tenant: string, lot: LotRecord): Promise<void> {
+    this.lotRows.set(`${tenant}::${lot.sku}::${lot.seq}`, lot);
     return Promise.resolve();
   }
 
@@ -122,6 +155,10 @@ export class InMemoryInventoryStore implements InventoryStore {
     return Promise.resolve(out.sort((a, b) => (
       a.date === b.date ? a.id.localeCompare(b.id) : a.date.localeCompare(b.date)
     )));
+  }
+
+  getMovement(tenant: string, id: string): Promise<MovementRecord | undefined> {
+    return Promise.resolve(this.movements.get(`${tenant}::${id}`));
   }
 
   saveMovement(tenant: string, movement: MovementRecord): Promise<void> {
@@ -163,6 +200,17 @@ CREATE TABLE IF NOT EXISTS inventory_movement (
   entry_id        text NOT NULL DEFAULT '',
   memo            text NOT NULL DEFAULT '',
   CONSTRAINT inventory_movement_pk PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS inventory_lot (
+  tenant_id             text NOT NULL,
+  sku                   text NOT NULL,
+  seq                   integer NOT NULL,
+  lot_date              text NOT NULL,
+  unit_cost_minor       text NOT NULL DEFAULT '0',
+  remaining_qty_milli   text NOT NULL DEFAULT '0',
+  remaining_value_minor text NOT NULL DEFAULT '0',
+  CONSTRAINT inventory_lot_pk PRIMARY KEY (tenant_id, sku, seq)
 );
 `;
 
@@ -276,6 +324,28 @@ export class PgInventoryStore implements InventoryStore {
     });
   }
 
+  async getMovement(tenant: string, id: string): Promise<MovementRecord | undefined> {
+    return this.tx(tenant, async (db) => {
+      const res = await db.query(
+        "SELECT * FROM inventory_movement WHERE tenant_id=$1 AND id=$2", [tenant, id],
+      );
+      const r = res.rows[0];
+      if (!r) return undefined;
+      return {
+        id: String(r["id"]),
+        sku: String(r["sku"]),
+        date: String(r["move_date"]),
+        kind: String(r["kind"]) as MovementKind,
+        quantityMilli: String(r["quantity_milli"] ?? "0"),
+        unitCostMinor: String(r["unit_cost_minor"] ?? "0"),
+        valueMinor: String(r["value_minor"] ?? "0"),
+        reference: String(r["reference"] ?? ""),
+        entryId: String(r["entry_id"] ?? ""),
+        memo: String(r["memo"] ?? ""),
+      };
+    });
+  }
+
   async saveMovement(tenant: string, movement: MovementRecord): Promise<void> {
     await this.tx(tenant, (db) => db.query(
       `INSERT INTO inventory_movement (tenant_id, id, sku, move_date, kind,
@@ -290,6 +360,40 @@ export class PgInventoryStore implements InventoryStore {
         tenant, movement.id, movement.sku, movement.date, movement.kind,
         movement.quantityMilli, movement.unitCostMinor, movement.valueMinor,
         movement.reference, movement.entryId, movement.memo,
+      ],
+    ));
+  }
+
+  async lots(tenant: string, sku: string): Promise<LotRecord[]> {
+    return this.tx(tenant, async (db) => {
+      const res = await db.query(
+        `SELECT seq, sku, lot_date, unit_cost_minor, remaining_qty_milli, remaining_value_minor
+         FROM inventory_lot WHERE tenant_id=$1 AND sku=$2 ORDER BY seq`,
+        [tenant, sku],
+      );
+      return res.rows.map((r) => ({
+        seq: Number(r["seq"]),
+        sku: String(r["sku"]),
+        date: String(r["lot_date"]),
+        unitCostMinor: String(r["unit_cost_minor"] ?? "0"),
+        remainingQtyMilli: String(r["remaining_qty_milli"] ?? "0"),
+        remainingValueMinor: String(r["remaining_value_minor"] ?? "0"),
+      }));
+    });
+  }
+
+  async saveLot(tenant: string, lot: LotRecord): Promise<void> {
+    await this.tx(tenant, (db) => db.query(
+      `INSERT INTO inventory_lot (tenant_id, sku, seq, lot_date, unit_cost_minor,
+         remaining_qty_milli, remaining_value_minor)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (tenant_id, sku, seq) DO UPDATE SET
+         lot_date=EXCLUDED.lot_date, unit_cost_minor=EXCLUDED.unit_cost_minor,
+         remaining_qty_milli=EXCLUDED.remaining_qty_milli,
+         remaining_value_minor=EXCLUDED.remaining_value_minor`,
+      [
+        tenant, lot.sku, lot.seq, lot.date, lot.unitCostMinor,
+        lot.remainingQtyMilli, lot.remainingValueMinor,
       ],
     ));
   }
@@ -418,6 +522,13 @@ export async function applyReceipt(
   if (input.quantityMilli <= 0n) {
     throw new InventoryError("a receipt needs a quantity");
   }
+  // Idempotent with the ledger post that precedes it: if this movement id has
+  // already been applied, the ledger deduped the journal entry and the shelf
+  // was already moved — applying again would double-count units and value while
+  // the ledger recorded one receipt, silently breaking the tie-out.
+  if (input.id && await ctx.backend.inventory().getMovement(String(ctx.tenant), input.id)) {
+    return item;
+  }
   const addedValue = mulDiv(input.quantityMilli, input.unitCostMinor, MILLI);
   const quantity = BigInt(item.quantityMilli) + input.quantityMilli;
   const value = BigInt(item.valueMinor) + addedValue;
@@ -443,7 +554,79 @@ export async function applyReceipt(
     entryId: input.entryId ?? "",
     memo: input.memo ?? "",
   });
+  // Under FIFO, a receipt is a new cost layer. Issues will relieve the oldest
+  // layer first; the item's blended unit cost above is only a display figure,
+  // the lots are the source of truth for what an issue actually costs.
+  if (await costingMethod(ctx) === "FIFO") {
+    const existing = await ctx.backend.inventory().lots(String(ctx.tenant), item.sku);
+    const seq = existing.reduce((m, l) => Math.max(m, l.seq), 0) + 1;
+    await ctx.backend.inventory().saveLot(String(ctx.tenant), {
+      seq,
+      sku: item.sku,
+      date: input.date,
+      unitCostMinor: input.unitCostMinor.toString(),
+      remainingQtyMilli: input.quantityMilli.toString(),
+      remainingValueMinor: addedValue.toString(),
+    });
+  }
   return updated;
+}
+
+/** The account's inventory costing method, defaulting to moving average. */
+async function costingMethod(ctx: InventoryContext): Promise<"MOVING_AVERAGE" | "FIFO"> {
+  return (await ctx.backend.settings().get(String(ctx.tenant))).inventoryCostingMethod;
+}
+
+/**
+ * Relieve `qty` from the oldest open FIFO lots, mutating them, and return the
+ * exact cost consumed. Consuming a lot's whole remaining takes its stored value
+ * exactly (so a drained lot leaves nothing behind); a partial take is priced at
+ * the lot's unit cost. The caller has already checked there is enough on hand.
+ */
+async function consumeFifo(ctx: InventoryContext, sku: string, qty: bigint): Promise<bigint> {
+  const store = ctx.backend.inventory();
+  const lots = (await store.lots(String(ctx.tenant), sku))
+    .filter((l) => BigInt(l.remainingQtyMilli) > 0n);
+  let need = qty;
+  let cost = 0n;
+  for (const lot of lots) {
+    if (need <= 0n) break;
+    const lotQty = BigInt(lot.remainingQtyMilli);
+    const take = need < lotQty ? need : lotQty;
+    const taken = take === lotQty
+      ? BigInt(lot.remainingValueMinor)                         // whole lot: exact
+      : mulDiv(take, BigInt(lot.unitCostMinor), MILLI);         // partial: at lot cost
+    cost += taken;
+    await store.saveLot(String(ctx.tenant), {
+      ...lot,
+      remainingQtyMilli: (lotQty - take).toString(),
+      remainingValueMinor: (BigInt(lot.remainingValueMinor) - taken).toString(),
+    });
+    need -= take;
+  }
+  return cost;
+}
+
+/**
+ * The FIFO cost of issuing `qty`, computed WITHOUT mutating the lots — the value
+ * the journal entry is posted with, before `consumeFifo` relieves the layers for
+ * real. Both walk the same lots in the same order, so they agree exactly.
+ */
+async function previewFifoCost(ctx: InventoryContext, sku: string, qty: bigint): Promise<bigint> {
+  const lots = (await ctx.backend.inventory().lots(String(ctx.tenant), sku))
+    .filter((l) => BigInt(l.remainingQtyMilli) > 0n);
+  let need = qty;
+  let cost = 0n;
+  for (const lot of lots) {
+    if (need <= 0n) break;
+    const lotQty = BigInt(lot.remainingQtyMilli);
+    const take = need < lotQty ? need : lotQty;
+    cost += take === lotQty
+      ? BigInt(lot.remainingValueMinor)
+      : mulDiv(take, BigInt(lot.unitCostMinor), MILLI);
+    need -= take;
+  }
+  return cost;
 }
 
 /** Take stock out at the moving average. Non-posting, for the same reason. */
@@ -457,18 +640,40 @@ export async function applyIssue(
 ): Promise<{ item: ItemRecord; valueMinor: bigint; unitCostMinor: bigint }> {
   const item = await requireStockItem(ctx, input.sku);
   if (input.quantityMilli <= 0n) throw new InventoryError("an issue needs a quantity");
+  // Idempotent with the preceding ledger post (see applyReceipt): a replayed
+  // movement id must not relieve the shelf twice against one journal credit.
+  if (input.id) {
+    const seen = await ctx.backend.inventory().getMovement(String(ctx.tenant), input.id);
+    if (seen) {
+      const already = -BigInt(seen.valueMinor);
+      return { item, valueMinor: already, unitCostMinor: BigInt(seen.unitCostMinor) };
+    }
+  }
   const onHand = BigInt(item.quantityMilli);
   if (input.quantityMilli > onHand) {
     throw new InventoryError(
       `${item.sku}: ${input.quantityMilli} thousandths issued against ${onHand} on hand — count it before you cost it`,
     );
   }
-  const unitCost = BigInt(item.unitCostMinor);
-  // The last issue takes the remaining value exactly, so a fully issued item is
-  // worth nothing rather than a few cents of rounding.
-  const value = input.quantityMilli === onHand
-    ? BigInt(item.valueMinor)
-    : mulDiv(input.quantityMilli, unitCost, MILLI);
+  // What the issue costs depends on the account's method. FIFO relieves the
+  // oldest cost layers; moving average takes the blended unit cost. Either way
+  // the last issue empties the item to exactly zero value (no rounding dust),
+  // and the item's aggregate value stays equal to the sum of remaining lots.
+  const isFifo = await costingMethod(ctx) === "FIFO";
+  let value: bigint;
+  if (input.quantityMilli === onHand) {
+    value = BigInt(item.valueMinor);                 // takes everything, exactly
+    if (isFifo) await consumeFifo(ctx, item.sku, input.quantityMilli);
+  } else if (isFifo) {
+    value = await consumeFifo(ctx, item.sku, input.quantityMilli);
+  } else {
+    value = mulDiv(input.quantityMilli, BigInt(item.unitCostMinor), MILLI);
+  }
+  // The unit cost reported on the movement: FIFO's actual blended draw across
+  // the layers it consumed, or (moving average) the item's blended unit cost.
+  const unitCost = isFifo && input.quantityMilli > 0n
+    ? mulDiv(value, MILLI, input.quantityMilli)
+    : BigInt(item.unitCostMinor);
   const quantity = onHand - input.quantityMilli;
   const remaining = BigInt(item.valueMinor) - value;
   const updated: ItemRecord = {
@@ -529,7 +734,18 @@ export async function receiveStock(
   if (!paidFrom) throw new InventoryError(`unknown account code ${paidFromCode}`);
 
   const value = mulDiv(quantity, unitCost, MILLI);
-  const id = String(input.id ?? "").trim() || `${sku}-${date}`;
+  // With an explicit id a receipt is idempotent — a retried request posts once.
+  // Without one, two real supply-house trips for the same SKU on the same day
+  // (or two same-day deliveries at different prices) are distinct events, so the
+  // default id carries a per-(sku,date) sequence rather than collapsing them on a
+  // `${sku}-${date}` collision — the same fix already applied to deposits/remits.
+  const explicitId = String(input.id ?? "").trim();
+  let id = explicitId;
+  if (!id) {
+    const priorSameDay = (await ctx.backend.inventory().listMovements(String(ctx.tenant), sku))
+      .filter((m) => m.date === date && m.kind === "RECEIPT").length;
+    id = `${sku}-${date}#${priorSameDay}`;
+  }
   const command: PostCommand = {
     tenantId: ctx.tenant,
     idempotencyKey: asIdempotencyKey(`stock-in:${id}`),
@@ -615,8 +831,33 @@ export async function issueStock(
   if (!cost) throw new InventoryError(`unknown account code ${costAccountCode}`);
   if (!inventory) throw new InventoryError(`unknown account code ${item.inventoryAccountCode}`);
 
-  const id = String(input.id ?? "").trim() || `${sku}-${date}-out`;
-  // Value the issue first so the entry and the shelf agree exactly.
+  // As with receipts: an explicit id is idempotent; without one, two genuine
+  // same-day issues of the same SKU (two trips to the truck for one job) are
+  // distinct events and each gets its own per-(sku,date) sequence rather than
+  // colliding on `${sku}-${date}-out`.
+  const explicitIssueId = String(input.id ?? "").trim();
+  let id = explicitIssueId;
+  if (!id) {
+    const priorSameDay = (await ctx.backend.inventory().listMovements(String(ctx.tenant), sku))
+      .filter((m) => m.date === date && m.kind === "ISSUE").length;
+    id = `${sku}-${date}-out#${priorSameDay}`;
+  }
+  // Replay short-circuit: if this exact issue already posted, return its stored
+  // result without re-posting or re-valuing. This matters under FIFO because the
+  // cost layers have already been consumed, so a fresh valuation would differ
+  // from the original and clash with the idempotent journal entry.
+  const seenMv = await ctx.backend.inventory().getMovement(String(ctx.tenant), `mv:${id}`);
+  if (seenMv) {
+    return {
+      item: await requireStockItem(ctx, sku),
+      entryId: seenMv.entryId,
+      valueMinor: (-BigInt(seenMv.valueMinor)).toString(),
+    };
+  }
+  // Value the issue first so the entry and the shelf agree exactly. The value
+  // must match what applyIssue will compute, so it is method-aware: FIFO walks
+  // the oldest layers (without consuming them yet — applyIssue does that), and
+  // moving average takes the blended unit cost.
   const preview = await requireStockItem(ctx, sku);
   const onHand = BigInt(preview.quantityMilli);
   if (quantity > onHand) {
@@ -624,9 +865,14 @@ export async function issueStock(
       `${sku}: ${quantity} thousandths issued against ${onHand} on hand — count it before you cost it`,
     );
   }
-  const value = quantity === onHand
-    ? BigInt(preview.valueMinor)
-    : mulDiv(quantity, BigInt(preview.unitCostMinor), MILLI);
+  let value: bigint;
+  if (quantity === onHand) {
+    value = BigInt(preview.valueMinor);
+  } else if (await costingMethod(ctx) === "FIFO") {
+    value = await previewFifoCost(ctx, sku, quantity);
+  } else {
+    value = mulDiv(quantity, BigInt(preview.unitCostMinor), MILLI);
+  }
   if (value === 0n) throw new InventoryError(`${sku} has no value on hand to issue`);
 
   const dimensions = jobId

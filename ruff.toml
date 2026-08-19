@@ -1,0 +1,29 @@
+# Ruff configuration for the RGNR8 Python packages.
+#
+# The ruleset is chosen to catch real defects and keep imports tidy, not to
+# reformat a codebase whose house style already uses longer, readable lines.
+# pyflakes (F) and bugbear (B) are the bug-catchers; isort (I) keeps imports
+# ordered. Line length is set generously to match the existing style rather than
+# churn every file.
+
+line-length = 110
+target-version = "py311"
+
+extend-exclude = ["**/__pycache__", "**/.mypy_cache", "build", "dist"]
+
+# Import sorting (isort / I) is deliberately NOT enabled: a few modules order
+# their imports on purpose (e.g. binding a name last so it resolves to the right
+# object), and reshuffling them breaks behaviour. The rules kept are the ones
+# that catch real defects.
+[lint]
+select = ["F", "B", "E711", "E712", "E713", "E714"]
+# Ignore the bugbear/style rules that fight this codebase's deliberate, reviewed
+# patterns rather than flagging defects: B008 (call in default arg), B905 (opt-in
+# zip strictness), B017/B904 (broad-except and raise-without-from, used
+# intentionally in a few places), and E402 (a couple of modules import lazily on
+# purpose). Everything in pyflakes (F) and the rest of bugbear stays on.
+ignore = ["B008", "B905", "B017", "B904", "E402"]
+
+[lint.per-file-ignores]
+# Tests deliberately import fixtures for side effects and re-bind names.
+"**/tests/**" = ["F811", "B011", "B023"]

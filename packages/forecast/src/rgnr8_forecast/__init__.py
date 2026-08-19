@@ -6,6 +6,16 @@ dated inflows/outflows; every projected number traces to its source.
 
 from __future__ import annotations
 
+from .backtest import (
+    BacktestCase,
+    BacktestReport,
+    BreachScore,
+    HorizonStat,
+    WeekObservation,
+    case_from_forecast,
+    render_backtest_text,
+    run_backtest,
+)
 from .dates import Frequency, Recurrence, WeekBucket, add_months, week_buckets
 from .enums import (
     Category,
@@ -16,6 +26,7 @@ from .enums import (
     Scenario,
 )
 from .flow import CashFlow
+from .io import CONTRACT_VERSION, dumps, from_dto, loads, to_dto
 from .models import (
     Bill,
     CashPosition,
@@ -42,17 +53,6 @@ from .reproducibility import ForecastVersion, fingerprint
 from .resolve import ResolvedFlows, resolve
 from .result import ForecastResult, run_forecast
 from .scenarios import ScenarioComparison, run_all_scenarios
-from .io import CONTRACT_VERSION, dumps, from_dto, loads, to_dto
-from .backtest import (
-    BacktestCase,
-    BacktestReport,
-    BreachScore,
-    HorizonStat,
-    WeekObservation,
-    case_from_forecast,
-    render_backtest_text,
-    run_backtest,
-)
 
 __version__ = "0.1.0"
 

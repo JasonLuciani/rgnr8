@@ -141,6 +141,30 @@ test("a mangled net income breaks the balance-sheet assertion", async () => {
   assert.throws(() => assertBalanceSheetBalances(wrong), /does not balance/);
 });
 
+test("folding in beginning retained earnings keeps a mid-period sheet balanced", async () => {
+  // The as-of (cumulative) trial balance carries revenue/expense earned before
+  // the reporting window; the *period* income statement does not. Passing only
+  // the period net income leaves the sheet short by the prior earnings — unless
+  // beginning retained earnings is folded in. This is the unit-level guard for
+  // the mid-year balance-sheet fix.
+  const endTb = fromKernelTrialBalance(await ledgerFrom([...opening, ...activity]));
+  const cumulativeNetIncome = incomeStatement(endTb).netIncome;  // all earnings through `to`
+
+  // Split it: pretend half the net income was earned before the window opened.
+  const periodNi = Money.fromMinorUnits(cumulativeNetIncome.minorUnits / 2n, USD);
+  const beginningRetained = cumulativeNetIncome.minus(periodNi);
+
+  // Without beginning retained earnings the sheet is out of balance...
+  assert.equal(balanceSheet(endTb, periodNi).balanced, false);
+  // ...and folding it in makes it foot to exactly zero.
+  const bs = balanceSheet(endTb, periodNi, beginningRetained);
+  assert.equal(bs.balanced, true);
+  assert.doesNotThrow(() => assertBalanceSheetBalances(bs));
+  // total equity carries booked equity + prior retained + current period NI
+  assert.equal(bs.equity.equals(
+    balanceSheet(endTb, cumulativeNetIncome).equity), true);
+});
+
 test("cash flow net change equals the cash-account delta between two periods", async () => {
   const tbStart = fromKernelTrialBalance(await ledgerFrom(opening));
   const tbEnd = fromKernelTrialBalance(await ledgerFrom([...opening, ...activity]));

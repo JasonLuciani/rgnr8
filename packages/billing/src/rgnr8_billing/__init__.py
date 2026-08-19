@@ -9,10 +9,18 @@ per-tenant in `rgnr8_web.rbac`; here we bill and gate features by plan.
 from __future__ import annotations
 
 from .accounts import Account, AccountStatus
-from .plans import PLANS, Feature, Plan, Tier, plan_for
+from .checkout import (
+    CheckoutCompleted,
+    CheckoutProvider,
+    CheckoutSession,
+    FakeCheckoutProvider,
+    StripeCheckoutProvider,
+    verify_hmac_sha256,
+)
 from .entitlements import Entitlements
-from .usage import UsageEvent, UsageKind, UsageSummary
 from .invoice import Invoice, InvoiceLine, build_invoice
+from .plan_changes import PlanChange, PlanChangeKind, classify_change
+from .plans import PLANS, Feature, Plan, Tier, plan_for
 from .provider import (
     BillingPortalProvider,
     BillingProvider,
@@ -23,18 +31,10 @@ from .provider import (
     StripeBillingPortalProvider,
     StripeBillingProvider,
 )
-from .store import AccountStore, InMemoryAccountStore, SqlAccountStore
-from .plan_changes import PlanChange, PlanChangeKind, classify_change
 from .service import BillingError, BillingService, EntitlementError
-from .checkout import (
-    CheckoutCompleted,
-    CheckoutProvider,
-    CheckoutSession,
-    FakeCheckoutProvider,
-    StripeCheckoutProvider,
-    verify_hmac_sha256,
-)
 from .signup import SelfServeSignup
+from .store import AccountStore, InMemoryAccountStore, SqlAccountStore
+from .usage import UsageEvent, UsageKind, UsageSummary
 
 __version__ = "0.1.0"
 

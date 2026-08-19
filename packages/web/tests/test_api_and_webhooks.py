@@ -22,7 +22,6 @@ from rgnr8_web import (
     WebApp,
     WebhookDispatcher,
     WebhookEndpoint,
-    build_openapi,
     close_sealed_event,
     sign_webhook,
 )

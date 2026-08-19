@@ -339,6 +339,41 @@ test("a deposit is a liability, not income", async () => {
   assert.equal(after["4100"] ?? 0n, 0n, "no revenue — nothing has been built yet");
 });
 
+test("two real deposits of the same amount on the same day both land", async () => {
+  const s = await ready();
+  // a morning deposit and an afternoon top-up: same job, same day, same amount.
+  // These are two events, not one retried request, so both must post.
+  const first = await call(s, "POST", "/t/acme/jobs/harper/deposits", {
+    date: "2026-05-15", amount_minor: "500000",
+  });
+  const second = await call(s, "POST", "/t/acme/jobs/harper/deposits", {
+    date: "2026-05-15", amount_minor: "500000",
+  });
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  assert.equal(second.status, 201, JSON.stringify(second.body));
+  assert.notEqual(
+    (obj(first) as Row)["entry_id"], (obj(second) as Row)["entry_id"],
+    "each deposit is its own entry",
+  );
+  const after = await balances(s);
+  assert.equal(after["1000"], 1000000n, "both deposits reached the bank");
+  assert.equal(after["2400"], -1000000n, "…and both are held as a liability");
+});
+
+test("a retried deposit carrying the same id posts only once", async () => {
+  const s = await ready();
+  const once = await call(s, "POST", "/t/acme/jobs/harper/deposits", {
+    id: "dep-wire-8841", date: "2026-05-15", amount_minor: "500000",
+  });
+  const retry = await call(s, "POST", "/t/acme/jobs/harper/deposits", {
+    id: "dep-wire-8841", date: "2026-05-15", amount_minor: "500000",
+  });
+  assert.equal((obj(once) as Row)["entry_id"], (obj(retry) as Row)["entry_id"],
+    "the same id is the same event");
+  const after = await balances(s);
+  assert.equal(after["1000"], 500000n, "the retry did not double the deposit");
+});
+
 test("applying a deposit closes the invoice and clears the liability", async () => {
   const s = await ready();
   await call(s, "POST", "/t/acme/jobs/harper/deposits", {

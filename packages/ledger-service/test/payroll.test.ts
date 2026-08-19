@@ -182,6 +182,38 @@ test("voiding reverses the entry rather than deleting it", async () => {
   assert.equal((await call(s, "POST", "/t/acme/payroll/runs/PR-2026-08-15/void", {})).status, 400);
 });
 
+test("re-running a voided pay date actually re-posts the expense", async () => {
+  // The trap: a voided run keeps its id, so a corrected re-run once shared the
+  // original's idempotency key — the engine handed back the already-reversed
+  // entry and posted nothing, silently dropping a real payroll while the status
+  // read POSTED. The revision must make the re-run a distinct event.
+  const s = await ready();
+  await call(s, "POST", "/t/acme/payroll/runs", RUN);
+  await call(s, "POST", "/t/acme/payroll/runs/PR-2026-08-15/post", {});
+  await call(s, "POST", "/t/acme/payroll/runs/PR-2026-08-15/void", {});
+  assert.equal(await balance(s, "6200"), 0n, "voided: nets to zero");
+
+  // re-enter the same pay date, corrected (Ada's gross was really 6,000)
+  const corrected = {
+    ...RUN,
+    lines: [
+      { employee_id: "ada", gross_minor: "600000", employee_taxes_minor: "110000", deductions_minor: "20000" },
+      { employee_id: "jo", gross_minor: "300000", employee_taxes_minor: "60000" },
+    ],
+  };
+  assert.equal((await call(s, "POST", "/t/acme/payroll/runs", corrected)).status, 201);
+  const reposted = await call(s, "POST", "/t/acme/payroll/runs/PR-2026-08-15/post", {});
+  assert.equal(reposted.status, 200, JSON.stringify(reposted.body));
+  assert.equal(await balance(s, "6200"), 900000n, "the corrected wages are really in the books");
+  assert.equal((obj(await call(s, "GET", "/t/acme/payroll/runs/PR-2026-08-15"))["run"] as Row)["status"], "POSTED");
+
+  // and it can be voided again without a key collision
+  assert.equal(
+    (await call(s, "POST", "/t/acme/payroll/runs/PR-2026-08-15/void", {})).status, 200,
+  );
+  assert.equal(await balance(s, "6200"), 0n);
+});
+
 // --- what is still owed ------------------------------------------------------
 
 test("liabilities say what is owed before the deposit is due", async () => {
@@ -221,6 +253,41 @@ test("remitting clears the liability and moves the cash", async () => {
   assert.equal(obj(rest)["remaining_minor"], "0");
   assert.equal(await balance(s, "2300"), 0n);
   assert.equal(obj(await call(s, "GET", "/t/acme/trial-balance"))["in_balance"], true);
+});
+
+test("two equal remittances on the same day both post — the second is not swallowed", async () => {
+  const s = await ready();
+  await call(s, "POST", "/t/acme/payroll/runs", RUN);
+  await call(s, "POST", "/t/acme/payroll/runs/PR-2026-08-15/post", {});
+
+  // two separate $500 deposits to the same agency the same day: distinct events.
+  const a = await call(s, "POST", "/t/acme/payroll/remit", {
+    date: "2026-08-18", amount_minor: "50000",
+  });
+  const b = await call(s, "POST", "/t/acme/payroll/remit", {
+    date: "2026-08-18", amount_minor: "50000",
+  });
+  assert.equal(a.status, 200, JSON.stringify(a.body));
+  assert.equal(b.status, 200, JSON.stringify(b.body));
+  assert.notEqual(obj(a)["entry_id"], obj(b)["entry_id"], "each remittance is its own entry");
+  // 251200 owed − two 50000 payments = 151200 left, and the bank moved twice.
+  assert.equal(-(await balance(s, "2300")), 151200n, "both payments relieved the liability");
+  assert.equal(await balance(s, "1000"), -710000n, "both payments left the bank");
+  assert.equal(obj(await call(s, "GET", "/t/acme/trial-balance"))["in_balance"], true);
+});
+
+test("a retried remittance carrying the same id posts only once", async () => {
+  const s = await ready();
+  await call(s, "POST", "/t/acme/payroll/runs", RUN);
+  await call(s, "POST", "/t/acme/payroll/runs/PR-2026-08-15/post", {});
+  const once = await call(s, "POST", "/t/acme/payroll/remit", {
+    id: "eftps-556677", date: "2026-08-18", amount_minor: "50000",
+  });
+  const retry = await call(s, "POST", "/t/acme/payroll/remit", {
+    id: "eftps-556677", date: "2026-08-18", amount_minor: "50000",
+  });
+  assert.equal(obj(once)["entry_id"], obj(retry)["entry_id"], "the same id is the same event");
+  assert.equal(-(await balance(s, "2300")), 201200n, "the retry did not pay twice");
 });
 
 test("remitting more than is owed is refused", async () => {

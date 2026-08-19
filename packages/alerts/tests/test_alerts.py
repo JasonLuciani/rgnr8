@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from rgnr8_forecast import ForecastResult, Money
-
+from factory import build_forecast
 from rgnr8_alerts import (
     Alert,
     AlertDispatcher,
@@ -18,8 +17,7 @@ from rgnr8_alerts import (
     TroughWorsened,
     evaluate,
 )
-
-from factory import build_forecast
+from rgnr8_forecast import ForecastResult, Money
 
 
 def _breach_forecast() -> ForecastResult:

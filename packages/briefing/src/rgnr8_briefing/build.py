@@ -7,15 +7,15 @@ simple and tunable — a controller should review the WATCH band before launch.
 
 from __future__ import annotations
 
-from rgnr8_forecast import Category, CashFlow, Direction, ForecastResult, Money
+from rgnr8_forecast import CashFlow, Category, Direction, ForecastResult, Money
 
 from .models import (
     Driver,
     Evidence,
     Fact,
     StatusLevel,
-    WeeklyBriefing,
     WeekGlance,
+    WeeklyBriefing,
 )
 
 # WATCH when the trough cushion is thinner than this share of the floor.

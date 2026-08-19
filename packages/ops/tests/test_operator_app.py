@@ -11,15 +11,15 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from rgnr8_forecast import Money
 from rgnr8_billing import (
     BillingService,
     FakeBillingProvider,
     InMemoryAccountStore,
     Tier,
 )
-from rgnr8_web import InMemoryAuditLog, InMemoryUserDirectory, Request, Role
+from rgnr8_forecast import Money
 from rgnr8_ops import Fleet, OperatorApp, PlatformAdmin
+from rgnr8_web import InMemoryAuditLog, InMemoryUserDirectory, Request, Role
 
 SECRET = "operator-secret"
 NOW = datetime(2025, 10, 9, 12, 0, tzinfo=timezone.utc)
@@ -384,7 +384,9 @@ def _auth_app():
     """An OperatorApp with a real credential service, plus a helper to register a
     verified staff credential."""
     from rgnr8_web import (
-        AuthService, InMemoryCredentialStore, InMemoryVerificationTokenStore,
+        AuthService,
+        InMemoryCredentialStore,
+        InMemoryVerificationTokenStore,
     )
     billing = BillingService(InMemoryAccountStore(), FakeBillingProvider(), clock=lambda: NOW_EPOCH)
     fleet = Fleet(jwt_secret=SECRET, clock=lambda: NOW_EPOCH)

@@ -77,7 +77,7 @@ function daysBetween(a: string, b: string): number {
  * the first thing the owner sees.
  */
 export async function matchCandidates(
-  ctx: InboxContext,
+  _ctx: InboxContext,
   txn: FeedTxnRecord,
   docs: readonly DocRecord[],
   feed: readonly FeedTxnRecord[],

@@ -13,7 +13,6 @@ from rgnr8_obs import (
     MetricsRegistry,
     StructuredLogger,
 )
-
 from rgnr8_web import (
     ObservedApp,
     RateLimiter,

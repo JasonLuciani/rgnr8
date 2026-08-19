@@ -15,7 +15,8 @@ from dataclasses import dataclass
 from html import escape
 
 from rgnr8_forecast import ForecastResult, Money, brand_bar
-from rgnr8_forecast.brand import POSITIVE, RISK, WATCH, format_money as _fmt
+from rgnr8_forecast.brand import POSITIVE, RISK, WATCH
+from rgnr8_forecast.brand import format_money as _fmt
 
 from .answer import SUGGESTED, Answer, Question, answer
 from .build import build_briefing

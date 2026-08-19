@@ -31,6 +31,7 @@ class AuditSink(Protocol):
                account_id: str = "", target: str = "", detail: str = "") -> AuditEvent: ...
     def events(self, *, tenant_id: str | None = None, account_id: str | None = None,
                actor: str | None = None) -> list[AuditEvent]: ...
+    def purge_older_than(self, tenant_id: str, before_at: int) -> int: ...
 
 
 class InMemoryAuditLog:
@@ -54,6 +55,16 @@ class InMemoryAuditLog:
         if actor is not None:
             out = [e for e in out if e.actor == actor]
         return list(out)
+
+    def purge_older_than(self, tenant_id: str, before_at: int) -> int:
+        """Retention enforcement: drop this tenant's audit rows stamped before
+        `before_at` (epoch seconds). Distinct from editing — this is a policy-
+        driven, whole-row deletion of aged records, not a change to any of them.
+        Returns the number removed."""
+        keep = [e for e in self._events if not (e.tenant_id == tenant_id and e.at < before_at)]
+        removed = len(self._events) - len(keep)
+        self._events = keep
+        return removed
 
 
 class _DbApiCursor(Protocol):
@@ -131,3 +142,20 @@ class SqlAuditLog:
         return [AuditEvent(int(str(r[0])), str(r[1]), str(r[2]), int(str(r[3])),
                            tenant_id=str(r[4]), account_id=str(r[5]), target=str(r[6]),
                            detail=str(r[7])) for r in rows]
+
+    def purge_older_than(self, tenant_id: str, before_at: int) -> int:
+        """Retention enforcement: delete this tenant's audit rows stamped before
+        `before_at`. A policy-driven removal of aged records (not an edit).
+        Returns the number of rows removed."""
+        p = self._ph
+        cur = self._conn.cursor()
+        try:
+            cur.execute(
+                f"DELETE FROM {self._t} WHERE tenant_id={p} AND at<{p}",
+                (tenant_id, before_at),
+            )
+            removed = getattr(cur, "rowcount", -1)
+        finally:
+            cur.close()
+        self._conn.commit()
+        return int(removed) if isinstance(removed, int) and removed >= 0 else 0

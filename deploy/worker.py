@@ -35,12 +35,28 @@ def main() -> int:
     if not settings.is_production_db:
         print("[worker] no database configured — nothing to deliver")
         return 0
-    conn, _dialect, _ph = open_connection(settings.database_url)
+    conn, _dialect, ph = open_connection(settings.database_url)
     fleet = load_fleet(settings, conn)
     now = datetime.now(timezone.utc)
     outcomes = fleet.delivery_runtime(_deliverer(settings)).tick(now)  # type: ignore[arg-type]
     fired = sum(1 for o in outcomes if o.fired)
     print(f"[worker] tick at {now.isoformat()}: {fired} briefing(s) delivered of {len(outcomes)} subscription(s)")
+
+    # Drive the durable outbound-webhook outbox: deliver everything due, backing
+    # off failures and dead-lettering the exhausted. Idempotent per delivery.
+    from rgnr8_web import (
+        DurableWebhookDispatcher,
+        SqlWebhookEndpointStore,
+        SqlWebhookOutbox,
+        UrllibHttpClient,
+    )
+
+    endpoints = SqlWebhookEndpointStore(conn, placeholder=ph)
+    outbox = SqlWebhookOutbox(conn, placeholder=ph)
+    dispatcher = DurableWebhookDispatcher(outbox, endpoints, UrllibHttpClient())
+    summary = dispatcher.deliver_due(limit=500)
+    print(f"[worker] webhooks: considered={summary.considered} delivered={summary.delivered} "
+          f"retried={summary.retried} dead={summary.dead}")
     return 0
 
 

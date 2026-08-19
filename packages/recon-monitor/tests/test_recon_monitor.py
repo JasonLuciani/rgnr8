@@ -9,7 +9,6 @@ from __future__ import annotations
 from datetime import date
 
 from rgnr8_forecast import Money
-
 from rgnr8_recon_monitor import (
     Divergence,
     Severity,

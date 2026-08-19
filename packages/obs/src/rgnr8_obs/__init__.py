@@ -18,11 +18,11 @@ was emitted. Secret-named fields are redacted through one shared rule
 
 from __future__ import annotations
 
-from .redact import (
-    DEFAULT_SECRET_PATTERNS,
-    REDACTED,
-    is_secret_key,
-    redact_fields,
+from .errors import (
+    CapturedError,
+    ErrorReporter,
+    InMemoryErrorReporter,
+    SentryErrorReporter,
 )
 from .logging import (
     InMemoryLogSink,
@@ -40,11 +40,11 @@ from .metrics import (
     Tags,
     Timer,
 )
-from .errors import (
-    CapturedError,
-    ErrorReporter,
-    InMemoryErrorReporter,
-    SentryErrorReporter,
+from .redact import (
+    DEFAULT_SECRET_PATTERNS,
+    REDACTED,
+    is_secret_key,
+    redact_fields,
 )
 
 __version__ = "0.1.0"

@@ -20,7 +20,7 @@ import urllib.parse
 from dataclasses import dataclass
 from typing import Mapping
 
-from .oauth import HttpClient, JSON_CONTENT_TYPE, QboOAuthError
+from .oauth import JSON_CONTENT_TYPE, HttpClient, QboOAuthError
 
 # The Accounting API minor version we pin (stable field shapes).
 MINOR_VERSION = "65"

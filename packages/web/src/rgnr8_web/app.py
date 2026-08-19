@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextvars
 import dataclasses
 import json
+import secrets
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -18,6 +19,23 @@ from datetime import date, datetime, timezone
 from html import escape
 from urllib.parse import parse_qs, urlsplit
 
+from rgnr8_ar import ARReport, ChaseItem, CollectionNudge, ar_report, chase_list, draft_nudge
+from rgnr8_billing import Account, UsageSummary
+from rgnr8_briefing import (
+    WeeklyBriefing,
+    ask,
+    build_briefing,
+    render_text,
+    render_today_html,
+    validate_briefing,
+)
+from rgnr8_categorize import (
+    CategorizedTxn,
+    Categorizer,
+    LearnedModel,
+    RuleSet,
+    Txn,
+)
 from rgnr8_forecast import (
     CustomerHistory,
     ForecastConfig,
@@ -27,6 +45,33 @@ from rgnr8_forecast import (
     run_forecast,
 )
 from rgnr8_forecast.brand import format_money
+from rgnr8_qbo import QboConnectService
+from rgnr8_reports import (
+    BASELINE_REPORTS,
+    DataContext,
+    InMemorySavedReportStore,
+    ReportSpec,
+    ReportSpecError,
+    SavedReportStore,
+    build_report,
+    render_csv,
+    to_json,
+)
+from rgnr8_reports import (
+    Transaction as ReportTransaction,
+)
+from rgnr8_reports import (
+    render as render_report,
+)
+from rgnr8_reports import (
+    render_html as render_report_html,
+)
+from rgnr8_reports import (
+    render_pdf as render_report_pdf,
+)
+from rgnr8_reports import (
+    render_xlsx as render_report_xlsx,
+)
 from rgnr8_scenario import (
     DelayCustomerPayment,
     OneTimeFlow,
@@ -40,94 +85,44 @@ from rgnr8_scenario import (
     take_loan,
 )
 from rgnr8_scenario.adjustments import Adjustment
-from rgnr8_ar import ARReport, ChaseItem, CollectionNudge, ar_report, chase_list, draft_nudge
-from rgnr8_categorize import (
-    CategorizedTxn,
-    Categorizer,
-    LearnedModel,
-    RuleSet,
-    Txn,
-)
-from rgnr8_briefing import (
-    WeeklyBriefing,
-    ask,
-    build_briefing,
-    render_text,
-    render_today_html,
-    validate_briefing,
-)
-from rgnr8_billing import Account, UsageSummary
-from rgnr8_reports import (
-    BASELINE_REPORTS,
-    DataContext,
-    InMemorySavedReportStore,
-    ReportSpec,
-    ReportSpecError,
-    SavedReportStore,
-    Transaction as ReportTransaction,
-    build_report,
-    render as render_report,
-    render_csv,
-    render_html as render_report_html,
-    render_pdf as render_report_pdf,
-    render_xlsx as render_report_xlsx,
-    to_json,
-)
-from rgnr8_qbo import QboConnectService, QboStatus
-from .qbo_sync import QboSyncSummary, build_inputs_from_qbo
-from .qbo_ledger import LedgerSyncSummary, sync_qbo_to_ledger
-from .ledger_forecast import LedgerFacts, forecast_from_ledger, provenance_split
-from .multipart import MultipartError, parse_multipart
-from .attachment_screens import render_attachments, render_attachments_unavailable
-from .ten99_screens import render_ten99, render_ten99_unavailable
-from .recurring_screens import (
-    render_recurring, render_recurring_unavailable, render_run_result,
-)
-from .job_screens import render_job, render_jobs, render_jobs_unavailable
-from .inventory_screens import render_inventory, render_inventory_unavailable
-from .wip_screens import render_wip, render_wip_unavailable
-from .consolidation_screens import (
-    render_consolidation, render_consolidation_unavailable, render_groups,
-)
-from .workorder_screens import (
-    render_work_order, render_work_orders, render_work_orders_unavailable,
-)
-from .order_screens import (
-    render_orders_unavailable, render_purchase_order, render_purchase_orders,
-    render_sales_order, render_sales_orders,
-)
-from .estimate_screens import (
-    render_estimate, render_estimates, render_estimates_unavailable,
-    render_pipeline, render_pipeline_unavailable,
-)
 
-from .store import InMemoryTenantStore, TenantDef, TenantState, TenantStore
-from .financial_package import (
-    FinancialPackageReader,
-    PackageIntegrityError,
-    render_package_html,
-)
-from .auth import Authenticator, JwtError, StaticTokenAuthenticator, sign_jwt, verify_jwt
 from .apikeys import ApiKeyService
+from .arap_screens import render_aging as render_arap_aging
+from .arap_screens import render_documents
+from .attachment_screens import render_attachments, render_attachments_unavailable
 from .audit import AuditSink
-from .credentials import AuthError, AuthService, CredentialStore
-from .openapi import build_openapi
-from .owner_reports import render_owner_report
-from .ledger_client import LedgerClient
-from .arap_screens import render_aging as render_arap_aging, render_documents
-from .reconcile_screens import (
-    render_import_result, render_pick_account, render_reconcile,
+from .auth import Authenticator, JwtError, StaticTokenAuthenticator, sign_jwt, verify_jwt
+from .books_screens import (
+    render_books_home,
+    render_books_statements,
+    render_chart_of_accounts,
+    render_register,
 )
-from .reporting_screens import render_budget, render_general_ledger
+from .books_screens import (
+    unavailable as render_books_unavailable,
+)
+from .consolidation_screens import (
+    render_consolidation,
+    render_consolidation_unavailable,
+    render_groups,
+)
+from .credentials import AuthError, AuthService, CredentialStore
 from .dimension_screens import (
     render_dimension_report,
     render_dimensions,
     render_dimensions_unavailable,
 )
-from .payroll_screens import (
-    render_payroll_home,
-    render_payroll_run,
-    render_payroll_unavailable,
+from .estimate_screens import (
+    render_estimate,
+    render_estimates,
+    render_estimates_unavailable,
+    render_pipeline,
+    render_pipeline_unavailable,
+)
+from .financial_package import (
+    FinancialPackageReader,
+    PackageIntegrityError,
+    render_package_html,
 )
 from .inbox_screens import (
     render_actioned,
@@ -135,14 +130,41 @@ from .inbox_screens import (
     render_inbox,
     render_rules,
 )
-from .books_screens import (
-    render_books_home,
-    render_books_statements,
-    render_chart_of_accounts,
-    render_register,
-    unavailable as render_books_unavailable,
+from .integration_screens import render_integrations, render_integrations_unavailable
+from .inventory_screens import render_inventory, render_inventory_unavailable
+from .job_screens import render_job, render_jobs, render_jobs_unavailable
+from .ledger_client import LedgerClient
+from .ledger_forecast import LedgerFacts, forecast_from_ledger, provenance_split
+from .multipart import MultipartError, parse_multipart
+from .openapi import build_openapi
+from .order_screens import (
+    render_orders_unavailable,
+    render_purchase_order,
+    render_purchase_orders,
+    render_sales_order,
+    render_sales_orders,
 )
+from .owner_reports import render_owner_report
+from .payroll_screens import (
+    render_payroll_home,
+    render_payroll_run,
+    render_payroll_unavailable,
+)
+from .qbo_ledger import LedgerSyncSummary, sync_qbo_to_ledger
+from .qbo_sync import QboSyncSummary, build_inputs_from_qbo
 from .rbac import AccessPolicy, Permission, Role, User, UserDirectory
+from .reconcile_screens import (
+    render_import_result,
+    render_pick_account,
+    render_reconcile,
+)
+from .recurring_screens import (
+    render_recurring,
+    render_recurring_unavailable,
+    render_run_result,
+)
+from .reporting_screens import render_budget, render_general_ledger
+from .settings_screens import render_settings, render_settings_unavailable
 from .shell import (
     render_app_home,
     render_audit_log,
@@ -150,7 +172,31 @@ from .shell import (
     render_shell,
     render_users_admin,
 )
-from .transactions import BankTransaction, render_transactions
+from .store import InMemoryTenantStore, TenantDef, TenantState, TenantStore
+from .ten99_screens import render_ten99, render_ten99_unavailable
+from .webhook_outbox import DurableWebhookDispatcher, WebhookOutbox
+from .webhooks_out import (
+    EVENTS,
+    HttpResponse,
+    PlatformEvent,
+    WebhookEndpoint,
+    WebhookEndpointStore,
+    validate_target,
+)
+from .wip_screens import render_wip, render_wip_unavailable
+from .workorder_screens import (
+    render_work_order,
+    render_work_orders,
+    render_work_orders_unavailable,
+)
+
+
+class _NoHttp:
+    """A never-called HTTP client, for dispatcher operations (replay) that only
+    touch the outbox and make no request."""
+
+    def post_json(self, url: str, body: str, headers: dict[str, str]) -> HttpResponse:
+        raise RuntimeError("no HTTP client is wired for this operation")
 from .screens import (
     CloseBoard,
     default_close_board,
@@ -162,6 +208,7 @@ from .screens import (
     render_reports_list,
     render_scenario_body,
 )
+from .transactions import BankTransaction, render_transactions
 
 
 @dataclass(frozen=True, slots=True)
@@ -282,6 +329,13 @@ def _provenance_note(facts: "LedgerFacts", split: "dict[str, int]") -> str:
     )
 
 
+# Only ASCII 0-9 count as digits here. Python's str.isdigit() also returns True
+# for Arabic-Indic, Devanagari and superscript digits — int() then parses some of
+# them to a surprising value and raises on others, so a field that looks blank to
+# a naive filter could still carry a number. Money and rates accept ASCII only.
+_ASCII_DIGITS = frozenset("0123456789")
+
+
 def _percent_to_ppm(raw: str) -> int:
     """"8.25" -> 82500. Exact: a tax rate never passes through a float."""
     text = raw.strip().rstrip("%").strip()
@@ -290,7 +344,7 @@ def _percent_to_ppm(raw: str) -> int:
     negative = text.startswith("-")
     if negative:
         raise ValueError("a tax rate cannot be negative")
-    if not all(c.isdigit() or c == "." for c in text) or text.count(".") > 1:
+    if not all(c in _ASCII_DIGITS or c == "." for c in text) or text.count(".") > 1:
         raise ValueError(f"not a valid tax rate: {raw!r}")
     whole, _, frac = text.partition(".")
     if len(frac) > 4:
@@ -306,7 +360,7 @@ def _quantity_to_milli(raw: str) -> int:
         return 1000
     if text.startswith("-"):
         raise ValueError("a quantity cannot be negative")
-    if not all(c.isdigit() or c == "." for c in text) or text.count(".") > 1:
+    if not all(c in _ASCII_DIGITS or c == "." for c in text) or text.count(".") > 1:
         raise ValueError(f"not a valid quantity: {raw!r}")
     whole, _, frac = text.partition(".")
     if len(frac) > 3:
@@ -373,7 +427,13 @@ class WebApp:
         saved_reports: SavedReportStore | None = None,
         report_clock: "Callable[[], datetime] | None" = None,
         qbo: QboConnectService | None = None,
+        webhooks: "WebhookEndpointStore | None" = None,
+        webhook_outbox: "WebhookOutbox | None" = None,
     ) -> None:
+        # Outbound webhooks: a per-tenant endpoint store and a durable outbox. When
+        # absent, the integrations surface reports "not configured" rather than 404.
+        self._webhooks = webhooks
+        self._webhook_outbox = webhook_outbox
         # QuickBooks Online connect service (OAuth acquisition + token store).
         # When absent, the connect surface reports "not configured" rather than 404.
         self._qbo = qbo
@@ -833,6 +893,44 @@ class WebApp:
             return self._require(subject, token_tenant, parts[1], P.MANAGE_USERS,
                                  lambda t: self._team_page(subject, t))
 
+        # /t/<tenant>/settings  -> per-account admin options (view/save)
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "settings":
+            if req.method == "POST":
+                return self._require(subject, token_tenant, parts[1], P.MANAGE_SETTINGS,
+                                     lambda t: self._settings_save(subject, t, req.body))
+            return self._require(subject, token_tenant, parts[1], P.MANAGE_SETTINGS,
+                                 lambda t: self._settings_page(subject, t, req.query))
+
+        # /t/<tenant>/erase  -> UI right-to-erase (settings screen posts here)
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "erase" and req.method == "POST":
+            return self._require(subject, token_tenant, parts[1], P.ERASE_DATA,
+                                 lambda t: self._erase_ui(subject, t))
+
+        # /t/<tenant>/retention  -> UI retention sweep (settings screen posts here)
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "retention" and req.method == "POST":
+            return self._require(subject, token_tenant, parts[1], P.MANAGE_DATA_RETENTION,
+                                 lambda t: self._retention_ui(subject, t))
+
+        # /t/<tenant>/integrations  -> outbound webhook endpoints (view / add)
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "integrations":
+            if req.method == "POST":
+                return self._require(subject, token_tenant, parts[1], P.MANAGE_INTEGRATIONS,
+                                     lambda t: self._integration_add(subject, t, req.body))
+            return self._require(subject, token_tenant, parts[1], P.MANAGE_INTEGRATIONS,
+                                 lambda t: self._integrations_page(subject, t, req.query))
+        # /t/<tenant>/integrations/<id>/delete
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "integrations"
+                and parts[4] == "delete" and req.method == "POST"):
+            endpoint_id = parts[3]
+            return self._require(subject, token_tenant, parts[1], P.MANAGE_INTEGRATIONS,
+                                 lambda t: self._integration_delete(subject, t, endpoint_id))
+        # /t/<tenant>/integrations/deliveries/<id>/replay
+        if (len(parts) == 6 and parts[0] == "t" and parts[2] == "integrations"
+                and parts[3] == "deliveries" and parts[5] == "replay" and req.method == "POST"):
+            delivery_id = parts[4]
+            return self._require(subject, token_tenant, parts[1], P.MANAGE_INTEGRATIONS,
+                                 lambda t: self._integration_replay(subject, t, delivery_id))
+
         # /t/<tenant>/transactions  -> the bank register (shell page)
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "transactions":
             return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
@@ -1031,7 +1129,7 @@ class WebApp:
             return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
                                  lambda t: self._opportunity_save(subject, t, req.body))
         if (len(parts) == 5 and parts[0] == "t" and parts[2] == "opportunities"
-                and parts[4] in ("win", "lose") and req.method == "POST"):
+                and parts[4] in ("win", "lose", "reopen") and req.method == "POST"):
             opportunity_id, outcome = parts[3], parts[4]
             return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
                                  lambda t: self._opportunity_close(
@@ -1389,11 +1487,18 @@ class WebApp:
             # owner-only among tenant roles).
             if resource == "export" and req.method == "GET":
                 return self._require(subject, token_tenant, tenant, P.MANAGE_USERS, self._export)
-            # owner-gated GDPR/CCPA right-to-delete — the export's twin. POST or
-            # DELETE both erase; idempotent.
+            # GDPR/CCPA right-to-delete — the export's twin. Gated by the
+            # dedicated ERASE_DATA permission (owner-only by default): erasure is
+            # irreversible, so it is a stronger right than viewing or exporting.
+            # POST or DELETE both erase; idempotent.
             if resource == "erase" and req.method in ("POST", "DELETE"):
-                return self._require(subject, token_tenant, tenant, P.MANAGE_USERS,
+                return self._require(subject, token_tenant, tenant, P.ERASE_DATA,
                                      lambda t: self._erase(subject, t))
+            # run the data-retention sweep now (purge audit rows past the horizon
+            # configured in account settings). Gated by MANAGE_DATA_RETENTION.
+            if resource == "retention" and req.method == "POST":
+                return self._require(subject, token_tenant, tenant, P.MANAGE_DATA_RETENTION,
+                                     lambda t: self._run_retention(subject, t))
             # owner-gated audit-log viewer (JSON), most-recent-first, optional ?actor=
             if resource == "audit" and req.method == "GET":
                 return self._require(subject, token_tenant, tenant, P.MANAGE_USERS,
@@ -1752,7 +1857,7 @@ class WebApp:
         neg = text.startswith("-")
         if neg:
             text = text[1:]
-        if not text or not all(c.isdigit() or c == "." for c in text) or text.count(".") > 1:
+        if not text or not all(c in _ASCII_DIGITS or c == "." for c in text) or text.count(".") > 1:
             raise ValueError(f"not a valid amount: {raw!r}")
         whole, _, frac = text.partition(".")
         if len(frac) > 2:
@@ -2368,6 +2473,22 @@ class WebApp:
     ) -> Response:
         if self._ledger is None:
             return self._shell(subject, t, "reports", render_consolidation_unavailable())
+        # Re-check membership at read time, not just at creation: a user removed
+        # from a member business after the group was built must lose sight of it.
+        group = self._ledger.entity_group(t.tenant_id, group_id)
+        if group.ok:
+            body = group.body.get("group")
+            member_ids = [
+                str(m.get("tenant_id"))
+                for m in (body.get("members", []) if isinstance(body, dict) else [])
+                if isinstance(m, dict)
+            ]
+            forbidden = self._unauthorized_members(subject, member_ids)
+            if forbidden:
+                return self._shell(subject, t, "reports", render_consolidation_unavailable(
+                    "This group names businesses you are not a member of: "
+                    f"{', '.join(forbidden)}."
+                ))
         through = query.get("through", "").strip()
         res = self._ledger.consolidation_report(
             t.tenant_id, group_id, through=through,
@@ -2383,15 +2504,37 @@ class WebApp:
             message=query.get("done", ""), error=query.get("err", ""),
         ))
 
+    def _unauthorized_members(self, subject: str, member_ids: "list[str]") -> "list[str]":
+        """Which of these tenants the caller is NOT entitled to consolidate.
+
+        Consolidation is the one place the service reads across tenants, and the
+        service trusts its single caller (this web app) to have checked. So the
+        authorization boundary lives here: a group may only name entities the
+        signed-in user is actually a member of. Without this a tenant admin who
+        knows another company's slug — which appears in every URL — could read
+        that company's entire trial balance. With RBAC off (dev/test) there are
+        no cross-tenant users, so nothing is unauthorized.
+        """
+        if self._policy is None:
+            return []
+        return [
+            m for m in member_ids
+            if not self._policy.can(subject, m, Permission.VIEW_PACKAGE)
+        ]
+
     def _group_save(self, subject: str, t: _Tenant, body: str) -> Response:
         back = f"/t/{t.tenant_id}/consolidation"
         if self._ledger is None:
             return _redirect(f"{back}?err=No+ledger+service+configured")
         data = self._form_or_json(body)
-        members = [
-            {"tenant_id": m.strip()}
-            for m in str(data.get("members", "")).split(",") if m.strip()
-        ]
+        member_ids = [m.strip() for m in str(data.get("members", "")).split(",") if m.strip()]
+        forbidden = self._unauthorized_members(subject, member_ids)
+        if forbidden:
+            return _redirect(f"{back}?err=" + _qs_escape(
+                "You can only consolidate businesses you belong to. "
+                f"Not a member of: {', '.join(forbidden)}"
+            ))
+        members = [{"tenant_id": m} for m in member_ids]
         res = self._ledger.save_entity_group(t.tenant_id, {
             "name": str(data.get("name", "")).strip(),
             "members": members,
@@ -3045,6 +3188,8 @@ class WebApp:
         request: dict[str, object] = {}
         if outcome == "lose":
             request["reason"] = str(data.get("reason", "")).strip()
+        if outcome == "reopen" and str(data.get("stage", "")).strip():
+            request["stage"] = str(data.get("stage", "")).strip()
         if str(data.get("job_id", "")).strip():
             request["job_id"] = str(data.get("job_id", "")).strip()
         res = self._ledger.close_opportunity(t.tenant_id, opportunity_id, outcome, request)
@@ -3053,7 +3198,11 @@ class WebApp:
         if self._audit is not None:
             self._audit.record(subject, f"opportunity.{outcome}", self._session_clock(),
                                tenant_id=t.tenant_id, target=opportunity_id)
-        note = "Won — nothing is booked until the job is billed" if outcome == "win" else "Closed"
+        note = {
+            "win": "Won — nothing is booked until the job is billed",
+            "lose": "Closed",
+            "reopen": "Reopened — back in the pipeline",
+        }.get(outcome, "Closed")
         return _redirect(f"{back}?done={_qs_escape(note)}")
 
     def _jobs_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
@@ -3456,10 +3605,10 @@ class WebApp:
     def _dimensions_of(self, data: "Mapping[str, object]", suffix: str = "") -> "dict[str, str]":
         """Collect dim_<key> fields off a form into a dimensions object."""
         out: dict[str, str] = {}
-        for field, raw in data.items():
-            if not field.startswith("dim_"):
+        for form_key, raw in data.items():
+            if not form_key.startswith("dim_"):
                 continue
-            name = field[len("dim_"):]
+            name = form_key[len("dim_"):]
             if suffix:
                 if not name.endswith(suffix):
                     continue
@@ -3877,6 +4026,63 @@ class WebApp:
         body = render_users_admin(t.tenant_id, members)
         return _html(200, render_shell(tenant=t.tenant_id, display_name=t.name, role=role,
                                        permissions=perms, active="team", body_html=body, subject=subject))
+
+    def _settings_page(
+        self, subject: str, t: _Tenant, query: "dict[str, str]",
+    ) -> Response:
+        perms, role = self._perms_role(subject, t.tenant_id)
+        can_settings = self._policy is None or Permission.MANAGE_SETTINGS in perms
+        can_retention = self._policy is None or Permission.MANAGE_DATA_RETENTION in perms
+        can_erase = self._policy is None or Permission.ERASE_DATA in perms
+        if self._ledger is None:
+            body = render_settings_unavailable("No ledger service is configured.")
+        else:
+            res = self._ledger.settings(t.tenant_id)
+            if not res.ok:
+                body = render_settings_unavailable(res.error())
+            else:
+                raw = res.body.get("settings", {})
+                current = raw if isinstance(raw, dict) else {}
+                body = render_settings(
+                    t.tenant_id, current,
+                    can_manage_settings=can_settings,
+                    can_manage_retention=can_retention,
+                    can_erase=can_erase,
+                    done=query.get("done", ""),
+                    error=query.get("err", ""),
+                )
+        return _html(200, render_shell(tenant=t.tenant_id, display_name=t.name, role=role,
+                                       permissions=perms, active="settings", body_html=body,
+                                       subject=subject))
+
+    def _settings_save(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/settings"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        patch: dict[str, object] = {}
+        for key in ("inventory_costing_method", "base_currency", "multi_currency_enabled"):
+            if str(data.get(key, "")).strip():
+                patch[key] = str(data.get(key, "")).strip()
+        # Retention fields are separately gated: only accept them from a caller who
+        # holds MANAGE_DATA_RETENTION, so the settings screen cannot be used to
+        # change retention without that specific right.
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        may_retention = self._policy is None or Permission.MANAGE_DATA_RETENTION in perms
+        for key in ("retention_audit_days", "retention_soft_delete_days"):
+            if str(data.get(key, "")).strip():
+                if not may_retention:
+                    return _redirect(f"{back}?err=Changing+retention+needs+the+Manage+data+retention+permission")
+                patch[key] = str(data.get(key, "")).strip()
+        if not patch:
+            return _redirect(f"{back}?done=Nothing+to+change")
+        res = self._ledger.save_settings(t.tenant_id, patch)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if self._audit is not None:
+            self._audit.record(subject, "settings.saved", self._session_clock(),
+                               tenant_id=t.tenant_id, target=",".join(sorted(patch.keys())))
+        return _redirect(f"{back}?done=Settings+saved")
 
     def _transactions_page(self, subject: str, t: _Tenant) -> Response:
         """The bank register.
@@ -4420,7 +4626,21 @@ class WebApp:
         t.state.decisions.append({"id": len(t.state.decisions) + 1, "kind": "close",
                                   "label": f"Sealed {board.period}"})
         self._store.save(t.tenant_id, t.state)
+        # Fan the event out to any registered webhook endpoints, durably.
+        self._emit_event(t.tenant_id, "close.sealed", {"period": board.period})
         return _json(200, {"period": board.period, "sealed": True})
+
+    def _emit_event(self, tenant_id: str, event_type: str, data: "dict[str, object]") -> int:
+        """Enqueue a platform event to the durable webhook outbox for delivery on
+        the next sweep. A no-op when webhooks aren't configured. The event id is
+        stable (tenant + type + a monotonic clock) so re-emission never duplicates."""
+        if self._webhooks is None or self._webhook_outbox is None:
+            return 0
+        at = self._session_clock()
+        event = PlatformEvent(f"{tenant_id}:{event_type}:{at}", event_type, tenant_id, at, data)
+        disp = DurableWebhookDispatcher(self._webhook_outbox, self._webhooks,
+                                        _NoHttp(), clock=self._session_clock)
+        return disp.enqueue(event)
 
     # --- handlers ------------------------------------------------------------
     def _today_html(self, t: _Tenant) -> Response:
@@ -4646,6 +4866,128 @@ class WebApp:
                                tenant_id=t.tenant_id, target=t.tenant_id,
                                detail=json.dumps(summary, sort_keys=True))
         return _json(200, {"tenant": t.tenant_id, "erased": summary})
+
+    def _erase_ui(self, subject: str, t: _Tenant) -> Response:
+        """The settings-screen right-to-erase button. Runs the same erasure as
+        the API twin, then redirects back to settings with a summary."""
+        resp = self._erase(subject, t)
+        try:
+            body = json.loads(resp.body) if isinstance(resp.body, str) else {}
+            cleared = body.get("erased", {})
+            n = cleared.get("transactions", 0) if isinstance(cleared, dict) else 0
+            note = f"Data erased ({n} transactions and owner state cleared)"
+        except (json.JSONDecodeError, AttributeError):
+            note = "Data erased"
+        return _redirect(f"/t/{t.tenant_id}/settings?done={_qs_escape(note)}")
+
+    def _run_retention(self, subject: str, t: _Tenant) -> Response:
+        """Enforce the account's data-retention policy now: purge audit-log rows
+        older than the configured horizon. 0 days means keep forever (a no-op).
+        Reads the horizon from the account's ledger-service settings."""
+        audit_days = 0
+        if self._ledger is not None:
+            res = self._ledger.settings(t.tenant_id)
+            settings_obj = res.body.get("settings") if res.ok else None
+            if isinstance(settings_obj, dict):
+                raw = settings_obj.get("retention_audit_days", 0)
+                audit_days = int(raw) if isinstance(raw, (int, str)) and str(raw).isdigit() else 0
+        purged = 0
+        if audit_days > 0 and self._audit is not None:
+            cutoff = self._session_clock() - audit_days * 86400
+            purged = self._audit.purge_older_than(t.tenant_id, cutoff)
+        if self._audit is not None:
+            self._audit.record(subject, "retention.swept", self._session_clock(),
+                               tenant_id=t.tenant_id, target=str(purged))
+        return _json(200, {"tenant": t.tenant_id, "audit_days": audit_days, "purged": purged})
+
+    def _retention_ui(self, subject: str, t: _Tenant) -> Response:
+        """The settings-screen retention-sweep button: run the sweep, redirect back."""
+        resp = self._run_retention(subject, t)
+        purged = 0
+        try:
+            body = json.loads(resp.body) if isinstance(resp.body, str) else {}
+            purged = int(body.get("purged", 0))
+        except (json.JSONDecodeError, ValueError, TypeError):
+            purged = 0
+        note = f"Retention sweep complete — {purged} audit entr{'y' if purged == 1 else 'ies'} purged"
+        return _redirect(f"/t/{t.tenant_id}/settings?done={_qs_escape(note)}")
+
+    # --- outbound webhooks (integrations) -----------------------------------
+    def _integrations_page(
+        self, subject: str, t: _Tenant, query: "dict[str, str]",
+    ) -> Response:
+        perms, role = self._perms_role(subject, t.tenant_id)
+        if self._webhooks is None:
+            body = render_integrations_unavailable()
+        else:
+            endpoints = self._webhooks.for_tenant(t.tenant_id)
+            deliveries = (self._webhook_outbox.for_tenant(t.tenant_id)
+                          if self._webhook_outbox is not None else [])
+            body = render_integrations(
+                t.tenant_id, endpoints, deliveries[-25:],
+                new_secret=query.get("secret", ""),
+                done=query.get("done", ""), error=query.get("err", ""),
+            )
+        return _html(200, render_shell(tenant=t.tenant_id, display_name=t.name, role=role,
+                                       permissions=perms, active="integrations", body_html=body,
+                                       subject=subject))
+
+    def _integration_add(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/integrations"
+        if self._webhooks is None:
+            return _redirect(f"{back}?err=Webhooks+not+configured")
+        data = self._form_or_json(body)
+        endpoint_id = str(data.get("id", "")).strip()
+        url = str(data.get("url", "")).strip()
+        if not endpoint_id or not url:
+            return _redirect(f"{back}?err=An+endpoint+needs+an+id+and+an+https+URL")
+        # SSRF/scheme guard up front — refuse a non-public or non-https URL before saving.
+        blocked = validate_target(url)
+        if blocked is not None:
+            return _redirect(f"{back}?err={_qs_escape(blocked)}")
+        events_raw = data.get("events", [])
+        events: tuple[str, ...]
+        if isinstance(events_raw, str):
+            events = (events_raw,) if events_raw else EVENTS
+        elif isinstance(events_raw, (list, tuple)):
+            events = tuple(str(e) for e in events_raw) or EVENTS
+        else:
+            events = EVENTS
+        # A fresh signing secret, shown to the admin exactly once.
+        secret = secrets.token_urlsafe(32)
+        self._webhooks.save(WebhookEndpoint(endpoint_id, t.tenant_id, url, secret, events, True))
+        if self._audit is not None:
+            self._audit.record(subject, "integration.endpoint.saved", self._session_clock(),
+                               tenant_id=t.tenant_id, target=endpoint_id)
+        return _redirect(f"{back}?secret={_qs_escape(secret)}&done={_qs_escape('Endpoint '+endpoint_id+' added')}")
+
+    def _integration_delete(self, subject: str, t: _Tenant, endpoint_id: str) -> Response:
+        back = f"/t/{t.tenant_id}/integrations"
+        if self._webhooks is None:
+            return _redirect(f"{back}?err=Webhooks+not+configured")
+        ep = self._webhooks.get(endpoint_id)
+        if ep is None or ep.tenant_id != t.tenant_id:
+            return _redirect(f"{back}?err=Unknown+endpoint")
+        self._webhooks.delete(endpoint_id)
+        if self._audit is not None:
+            self._audit.record(subject, "integration.endpoint.deleted", self._session_clock(),
+                               tenant_id=t.tenant_id, target=endpoint_id)
+        return _redirect(f"{back}?done={_qs_escape('Endpoint '+endpoint_id+' removed')}")
+
+    def _integration_replay(self, subject: str, t: _Tenant, delivery_id: str) -> Response:
+        back = f"/t/{t.tenant_id}/integrations"
+        if self._webhooks is None or self._webhook_outbox is None:
+            return _redirect(f"{back}?err=Webhooks+not+configured")
+        row = self._webhook_outbox.get(delivery_id)
+        if row is None or row.tenant_id != t.tenant_id:
+            return _redirect(f"{back}?err=Unknown+delivery")
+        disp = DurableWebhookDispatcher(self._webhook_outbox, self._webhooks,
+                                        _NoHttp(), clock=self._session_clock)
+        disp.replay(delivery_id)
+        if self._audit is not None:
+            self._audit.record(subject, "integration.delivery.replayed", self._session_clock(),
+                               tenant_id=t.tenant_id, target=delivery_id)
+        return _redirect(f"{back}?done={_qs_escape('Delivery re-queued for the next sweep')}")
 
     # --- audit-log viewer (who-did-what) ------------------------------------
     def _audit_json(self, t: _Tenant, actor: str | None) -> Response:

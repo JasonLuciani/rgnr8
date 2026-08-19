@@ -77,6 +77,83 @@ test("receiving stock puts units on the shelf and money on the balance sheet", a
   assert.equal((await balances(s))["1300"], 480000n);
 });
 
+test("a replayed receipt carrying the same id does not double the shelf or break the tie-out", async () => {
+  // The ledger post is idempotent on the receipt id; the shelf update must be
+  // too, or a retry that carries the same id moves units and value twice against
+  // a single journal entry and the valuation silently stops tying out. The id
+  // is what makes it a retry rather than a genuinely new receipt.
+  const s = await ready();
+  const first = await call(s, "POST", "/t/acme/inventory/receipts", {
+    id: "grn-5501", sku: "PLY-34", date: "2026-06-01",
+    quantity_milli: "100000", unit_cost_minor: "4800",
+  });
+  assert.equal(first.status, 201);
+  const replay = await call(s, "POST", "/t/acme/inventory/receipts", {
+    id: "grn-5501", sku: "PLY-34", date: "2026-06-01",
+    quantity_milli: "100000", unit_cost_minor: "4800",
+  });
+  assert.equal(replay.status, 201);
+
+  const i = await item(s);
+  assert.equal(i["quantity_milli"], "100000", "one receipt, not two");
+  assert.equal(i["value_minor"], "480000");
+  assert.equal((await balances(s))["1300"], 480000n);
+  const v = obj(await call(s, "GET", "/t/acme/inventory"));
+  assert.equal((v["totals"] as Row)["ties_out"], true, "shelf and ledger still agree");
+});
+
+test("two real supply-house trips for one SKU on the same day both land", async () => {
+  // Same SKU, same day, same amount — but two genuine deliveries, not a retry.
+  // Neither may be swallowed, and the shelf must still tie to the ledger.
+  const s = await ready();
+  assert.equal((await receive(s, "100000", "4800")).status, 201);
+  assert.equal((await receive(s, "100000", "4800")).status, 201);
+  const i = await item(s);
+  assert.equal(i["quantity_milli"], "200000", "both deliveries are on the shelf");
+  assert.equal(i["value_minor"], "960000");
+  assert.equal((await balances(s))["1300"], 960000n);
+  assert.equal((obj(await call(s, "GET", "/t/acme/inventory"))["totals"] as Row)["ties_out"], true);
+});
+
+test("a second same-day delivery at a different price is accepted and moves the average", async () => {
+  // Previously this hard-failed on an idempotency-key payload clash.
+  const s = await ready();
+  assert.equal((await receive(s, "100000", "4800")).status, 201);
+  const second = await receive(s, "100000", "5200");   // same day, new price
+  assert.equal(second.status, 201, JSON.stringify(second.body));
+  const i = await item(s);
+  assert.equal(i["quantity_milli"], "200000");
+  assert.equal(i["value_minor"], "1000000");
+  assert.equal(i["unit_cost_minor"], "5000", "weighted average of 48 and 52");
+});
+
+test("a replayed issue carrying the same id does not relieve the shelf twice", async () => {
+  const s = await ready();
+  await receive(s, "100000", "4800");
+  const issue = () => call(s, "POST", "/t/acme/inventory/issues", {
+    id: "iss-3301", sku: "PLY-34", date: "2026-07-01", quantity_milli: "40000", job_id: "harper",
+  });
+  assert.equal((await issue()).status, 201);
+  assert.equal((await issue()).status, 201, "retry of the same issue, same id");
+  const i = await item(s);
+  assert.equal(i["quantity_milli"], "60000", "40 issued once, not 80");
+  assert.equal(i["value_minor"], "288000");
+  assert.equal((obj(await call(s, "GET", "/t/acme/inventory"))["totals"] as Row)["ties_out"], true);
+});
+
+test("two genuine same-day issues of one SKU both relieve the shelf", async () => {
+  const s = await ready();
+  await receive(s, "100000", "4800");
+  const issue = (qty: string) => call(s, "POST", "/t/acme/inventory/issues", {
+    sku: "PLY-34", date: "2026-07-01", quantity_milli: qty, job_id: "harper",
+  });
+  assert.equal((await issue("30000")).status, 201);
+  assert.equal((await issue("20000")).status, 201);
+  const i = await item(s);
+  assert.equal(i["quantity_milli"], "50000", "both issues came off the shelf (100 − 30 − 20)");
+  assert.equal((obj(await call(s, "GET", "/t/acme/inventory"))["totals"] as Row)["ties_out"], true);
+});
+
 test("a second delivery at a different price moves the average", async () => {
   const s = await ready();
   await receive(s, "100000", "4800");

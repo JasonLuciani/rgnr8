@@ -1,8 +1,8 @@
 from datetime import date, timedelta
 
 from rgnr8_forecast import (
-    Category,
     CashFlow,
+    Category,
     Confidence,
     Direction,
     ForecastConfig,

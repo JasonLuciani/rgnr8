@@ -6,7 +6,7 @@ its presented credential (JWT or `rgk_` API key) grants — nothing more.
 
 from __future__ import annotations
 
-from .server import McpServer, Tool, TOOLS
+from .server import TOOLS, McpServer, Tool
 
 __version__ = "0.1.0"
 

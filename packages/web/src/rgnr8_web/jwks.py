@@ -28,7 +28,7 @@ from collections.abc import Callable, Mapping, Sequence
 from hashlib import sha256
 from typing import Protocol
 
-from .auth import JwtError, _bearer, _b64url_decode
+from .auth import JwtError, _b64url_decode, _bearer
 
 # DER prefix of DigestInfo(SHA-256) for PKCS#1 v1.5 EMSA.
 _SHA256_DIGESTINFO = bytes.fromhex("3031300d060960864801650304020105000420")

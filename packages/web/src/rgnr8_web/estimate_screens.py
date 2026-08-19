@@ -402,9 +402,14 @@ def render_pipeline(
 
 
 def _actions(tenant: str, opportunity: Mapping[str, object]) -> str:
-    if str(opportunity.get("stage")) in ("WON", "LOST"):
-        return ""
     base = f"/t/{_esc(tenant)}/opportunities/{_esc(opportunity.get('id'))}"
+    if str(opportunity.get("stage")) in ("WON", "LOST"):
+        # A close is sticky in both directions — the only way back into the
+        # pipeline is a deliberate, logged reopen, never an in-place stage edit.
+        return (
+            f'<form method="post" action="{base}/reopen" style="display:inline">'
+            '<button type="submit">Reopen</button></form>'
+        )
     return (
         f'<form method="post" action="{base}/win" style="display:inline">'
         '<button type="submit">Won</button></form> '

@@ -10,8 +10,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from rgnr8_forecast import Money
-from rgnr8_web import Request, verify_jwt
 from rgnr8_ops import Fleet, build_ops_report
+from rgnr8_web import Request, verify_jwt
 
 SECRET = "onboard-secret"
 NOW_EPOCH = 1_760_000_000

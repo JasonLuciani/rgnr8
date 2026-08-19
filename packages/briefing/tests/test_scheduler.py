@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+from factory import healthy_forecast
 from rgnr8_briefing import (
     FakeEmailTransport,
     ProviderDeliverer,
@@ -13,7 +14,6 @@ from rgnr8_briefing import (
     next_fire,
     run_due,
 )
-from factory import healthy_forecast
 
 MT = ZoneInfo("America/Denver")
 # Monday 08:00 local

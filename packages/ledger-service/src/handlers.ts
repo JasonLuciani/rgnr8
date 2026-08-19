@@ -1,3 +1,5 @@
+import { createHash, timingSafeEqual } from "node:crypto";
+import { SettingsError, mergeSettings, settingsJson } from "./settings.js";
 import {
   AccountSubtype,
   AccountType,
@@ -64,7 +66,7 @@ import {
   type InboxContext,
 } from "./inbox.js";
 import type { FeedStatus } from "./feed.js";
-import { Ten99Error, ten99Report, type Ten99Context } from "./ten99.js";
+import { Ten99Error, ten99Report, } from "./ten99.js";
 import {
   RecurringError,
   dueOccurrences,
@@ -207,6 +209,7 @@ import {
   events as crmEvents,
   leadJson,
   loseOpportunity,
+  reopenOpportunity,
   opportunityJson,
   pipeline,
   recordEvent,
@@ -272,6 +275,21 @@ const created = (body: unknown): ServiceResponse => ({ status: 201, body });
 const bad = (error: string): ServiceResponse => ({ status: 400, body: { error } });
 const notFound = (error: string): ServiceResponse => ({ status: 404, body: { error } });
 const conflict = (error: string): ServiceResponse => ({ status: 409, body: { error } });
+
+/**
+ * Compare a presented bearer token to the configured one in constant time.
+ *
+ * A plain `===` short-circuits on the first differing byte, so response time
+ * leaks how long a prefix an attacker has guessed — enough, over many requests,
+ * to recover the token byte by byte. Hashing both sides to a fixed-width digest
+ * first makes the comparison both length-independent and timing-safe.
+ */
+function timingSafeTokenEqual(presented: string, expected: string): boolean {
+  if (!presented) return false;
+  const a = createHash("sha256").update(presented).digest();
+  const b = createHash("sha256").update(expected).digest();
+  return timingSafeEqual(a, b);
+}
 
 function parseJson(body: string): Record<string, unknown> | null {
   if (!body.trim()) return {};
@@ -369,11 +387,17 @@ export class LedgerService {
     const parts = req.path.split("/").filter(Boolean);
 
     if (req.path === "/health") return ok({ status: "ok" });
+    if (req.path === "/ready") {
+      const ready = await this.backend.ping();
+      return ready
+        ? ok({ status: "ready" })
+        : { status: 503, body: { status: "unavailable", error: "backend not reachable" } };
+    }
 
     if (this.opts.authToken) {
       const auth = req.headers["authorization"] ?? "";
       const presented = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
-      if (presented !== this.opts.authToken) {
+      if (!timingSafeTokenEqual(presented, this.opts.authToken)) {
         return { status: 401, body: { error: "unauthorized" } };
       }
     }
@@ -383,6 +407,34 @@ export class LedgerService {
     const rest = parts.slice(2);
 
     try {
+      // --- per-account settings -------------------------------------------
+      if (rest[0] === "settings" && rest.length === 1) {
+        const store = this.backend.settings();
+        if (req.method === "GET") {
+          return ok({ tenant, settings: settingsJson(await store.get(String(tenant)) ) });
+        }
+        if (req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const current = await store.get(String(tenant));
+          const next = mergeSettings(current, data);
+          // Switching the inventory costing method mid-stream would strand the
+          // existing on-hand value (moving average keeps no lots; FIFO keeps no
+          // blended figure), so it is only allowed when nothing is on the shelf.
+          if (next.inventoryCostingMethod !== current.inventoryCostingMethod) {
+            const onHand = (await this.backend.inventory().listItems(String(tenant)))
+              .filter((i) => BigInt(i.quantityMilli) !== 0n);
+            if (onHand.length > 0) {
+              return bad(
+                `cannot change the inventory costing method while ${onHand.length} item(s) `
+                + "have stock on hand — issue or write off the remaining quantity first",
+              );
+            }
+          }
+          await store.save(String(tenant), next);
+          return ok({ tenant, settings: settingsJson(next) });
+        }
+      }
       if (rest[0] === "accounts" && rest.length === 1) {
         if (req.method === "GET") return await this.listAccounts(tenant);
         if (req.method === "POST") return await this.createAccount(tenant, req.body);
@@ -625,6 +677,15 @@ export class LedgerService {
           if (!data) return bad("invalid JSON body");
           return ok({
             tenant, opportunity: opportunityJson(await loseOpportunity(ctx, rest[1]!, data)),
+          });
+        }
+        if (rest.length === 3 && rest[2] === "reopen" && req.method === "POST") {
+          const data = parseJson(req.body) ?? {};
+          return ok({
+            tenant,
+            opportunity: opportunityJson(
+              await reopenOpportunity(ctx, rest[1]!, str(data["stage"]).trim() || undefined),
+            ),
           });
         }
       }
@@ -1405,6 +1466,7 @@ export class LedgerService {
       if (err instanceof InventoryError) return bad(err.message);
       if (err instanceof CrmError) return bad(err.message);
       if (err instanceof ConsolidationServiceError) return bad(err.message);
+      if (err instanceof SettingsError) return bad(err.message);
       return bad(err instanceof Error ? err.message : String(err));
     }
     return notFound("not found");
@@ -1654,7 +1716,10 @@ export class LedgerService {
     );
 
     const income = incomeStatement(periodTb);
-    const bs = balanceSheet(endTb, income.netIncome);
+    // Equity as-of `to` must carry earnings retained before the window opened,
+    // or a mid-year balance sheet is out of balance by prior net income.
+    const beginningRetained = incomeStatement(startTb).netIncome;
+    const bs = balanceSheet(endTb, income.netIncome, beginningRetained);
     const cf = cashFlow(startTb, endTb, income.netIncome, subtypeCashFlowClassifier(chart));
 
     return ok(

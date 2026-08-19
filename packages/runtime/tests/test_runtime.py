@@ -1,9 +1,9 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from factory import inputs, tenant_source, usd
 from rgnr8_briefing import RecordingDeliverer, Schedule, Subscription
 from rgnr8_runtime import DeliveryRuntime, InMemorySubscriptionStore, InMemoryTenantSource
-from factory import tenant_source, inputs, usd
 
 MT = ZoneInfo("America/Denver")
 MON_8 = Schedule(weekday=0, hour=8, minute=0, timezone="America/Denver")

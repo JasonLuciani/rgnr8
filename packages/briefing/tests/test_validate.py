@@ -1,9 +1,9 @@
 import dataclasses
 
-from rgnr8_forecast import Money
+from factory import breach_forecast, healthy_forecast
 from rgnr8_briefing import build_briefing, validate_briefing
 from rgnr8_briefing.models import Evidence, Fact
-from factory import breach_forecast, healthy_forecast
+from rgnr8_forecast import Money
 
 
 def test_a_freshly_built_briefing_has_no_violations() -> None:

@@ -168,6 +168,61 @@ test("a closed opportunity cannot be edited back open by accident", async () => 
   assert.match(String(obj(r)["error"]), /reopen it explicitly/);
 });
 
+test("a won deal cannot be flipped straight to lost — it must be reopened first", async () => {
+  const s = await withOpportunity();
+  await call(s, "POST", "/t/acme/opportunities/OPP-1/win", {});
+  const flip = await call(s, "POST", "/t/acme/opportunities/OPP-1/lose", { reason: "changed mind" });
+  assert.equal(flip.status, 400, JSON.stringify(flip.body));
+  assert.match(String(obj(flip)["error"]), /reopen it before marking it lost/);
+
+  // and a lost deal cannot be flipped straight to won
+  const s2 = await withOpportunity();
+  await call(s2, "POST", "/t/acme/opportunities/OPP-1/lose", { reason: "Price" });
+  const won = await call(s2, "POST", "/t/acme/opportunities/OPP-1/win", {});
+  assert.equal(won.status, 400, JSON.stringify(won.body));
+  assert.match(String(obj(won)["error"]), /reopen it before marking it won/);
+});
+
+test("reopening a closed deal puts it back in the pipeline and clears the close", async () => {
+  const s = await withOpportunity();
+  // win onto a real job so the WON row carries a job link we can watch get cleared
+  await call(s, "POST", "/t/acme/jobs", {
+    id: "harper", customer_id: "harper-residence", name: "Harper kitchen",
+    billing_method: "PROGRESS", contract_minor: "5000000",
+  });
+  await call(s, "POST", "/t/acme/opportunities/OPP-1/win", { job_id: "harper" });
+
+  const reopened = await call(s, "POST", "/t/acme/opportunities/OPP-1/reopen", {});
+  assert.equal(reopened.status, 200, JSON.stringify(reopened.body));
+  const o = obj(reopened)["opportunity"] as Row;
+  assert.equal(o["stage"], "NEGOTIATION");
+  assert.equal(o["probability_ppm"], 750_000);
+  assert.equal(o["job_id"], "", "a live deal must not still point at finished work");
+
+  // now that it is open again, it can be closed either way
+  const lost = await call(s, "POST", "/t/acme/opportunities/OPP-1/lose", { reason: "Timing" });
+  assert.equal(lost.status, 200, JSON.stringify(lost.body));
+
+  // reopen back onto a caller-named open stage; the reopen is on the feed
+  const back = await call(s, "POST", "/t/acme/opportunities/OPP-1/reopen", { stage: "QUALIFIED" });
+  assert.equal((obj(back)["opportunity"] as Row)["stage"], "QUALIFIED");
+  const feed = obj(await call(s, "GET", "/t/acme/events")) as Row;
+  const kinds = (feed["events"] as Row[]).map((e) => e["kind"]);
+  assert.ok(kinds.includes("opportunity.reopened"), "the reopen must be visible on the feed");
+});
+
+test("an open deal cannot be reopened, and a deal cannot be reopened onto a closed stage", async () => {
+  const s = await withOpportunity();
+  const openReopen = await call(s, "POST", "/t/acme/opportunities/OPP-1/reopen", {});
+  assert.equal(openReopen.status, 400, JSON.stringify(openReopen.body));
+  assert.match(String(obj(openReopen)["error"]), /already open/);
+
+  await call(s, "POST", "/t/acme/opportunities/OPP-1/lose", { reason: "Price" });
+  const toWon = await call(s, "POST", "/t/acme/opportunities/OPP-1/reopen", { stage: "WON" });
+  assert.equal(toWon.status, 400, JSON.stringify(toWon.body));
+  assert.match(String(obj(toWon)["error"]), /open stage/);
+});
+
 test("an opportunity has to belong to somebody", async () => {
   const s = await ready();
   const r = await call(s, "POST", "/t/acme/opportunities", {

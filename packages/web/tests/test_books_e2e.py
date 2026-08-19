@@ -25,11 +25,17 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 from rgnr8_forecast import CashPosition, ForecastConfig, ForecastInputs, Money
 from rgnr8_web import (
-    InMemoryUserDirectory, JwtAuthenticator, LedgerClient, Request, Role, User,
-    UrllibTransport, WebApp, sign_jwt,
+    InMemoryUserDirectory,
+    JwtAuthenticator,
+    LedgerClient,
+    Request,
+    Role,
+    UrllibTransport,
+    User,
+    WebApp,
+    sign_jwt,
 )
 
 SECRET = "e2e-secret"
@@ -630,17 +636,21 @@ def test_sales_tax_credits_and_refunds_against_the_real_service(ledger_service: 
     assert signed["4100"] == -100000, "revenue is the NET"
     assert -signed["2200"] == 8250, "the tax is a liability, not income"
 
-    # over-billed by $250 — credit it, don't edit the invoice
+    # over-billed by $250 — credit it, don't edit the invoice. On a taxed
+    # invoice the credit reverses net AND tax proportionally: of $250, the tax
+    # share (250 * 8250/108250 = $19.05) comes off Sales Tax Payable, not revenue.
     _req(app, "taxco", "/t/taxco/invoices/INV-1/credits", "POST",
          "amount=250.00&date=2026-08-05&memo=Overbilled")
     signed = _signed(base, "taxco")
     assert signed["1200"] == 83250
-    assert signed["4100"] == -75000, "revenue came back down"
+    assert signed["4100"] == -76905, "only the NET share of the credit reversed revenue"
+    assert -signed["2200"] == 6345, "the tax share came back off the liability, not revenue"
     inv = _service_get(base, "/t/taxco/invoices/INV-1")["document"]
     assert inv["total_minor"] == "108250", "the invoice still says what it said"
     assert inv["open_minor"] == "83250"
 
-    # they pay the rest, then cancel — the money physically goes back
+    # they pay the rest, then cancel — the money physically goes back. The refund
+    # likewise returns the tax share ($300 * 8250/108250 = $22.86) off the liability.
     _req(app, "taxco", "/t/taxco/invoices/INV-1/payments", "POST",
          "amount=832.50&date=2026-08-12")
     assert _signed(base, "taxco")["1000"] == 83250
@@ -649,7 +659,8 @@ def test_sales_tax_credits_and_refunds_against_the_real_service(ledger_service: 
     assert "Refunded%20300.00" in str(refunded.headers.get("Location", ""))
     signed = _signed(base, "taxco")
     assert signed["1000"] == 53250, "cash left the bank"
-    assert signed["4100"] == -45000, "and the revenue went with it"
+    assert signed["4100"] == -49191, "only the NET share of the refund reversed revenue"
+    assert -signed["2200"] == 4059, "and the tax share came back off the liability"
 
     tb = _service_get(base, "/t/taxco/trial-balance")
     assert tb["in_balance"] is True

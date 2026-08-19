@@ -14,8 +14,8 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 
-from rgnr8_forecast import Money
 from rgnr8_billing import Account, BillingService, Tier
+from rgnr8_forecast import Money
 from rgnr8_web import AuditSink, Role, User, UserDirectory
 
 from .fleet import BetaTenant, Fleet

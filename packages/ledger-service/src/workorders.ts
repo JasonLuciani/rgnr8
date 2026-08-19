@@ -633,6 +633,25 @@ export async function addEntry(
   if (existing?.invoiceId) {
     throw new WorkOrderError(`entry ${id} has been invoiced — reverse the invoice to change it`);
   }
+  // Once an entry has posted its allocation to the ledger, its cost-bearing
+  // fields are frozen. Re-POSTing with a different quantity/cost/code would
+  // overwrite the record but post no correcting entry, so the work-order
+  // roll-up and the T&M bill would silently drift from the ledger (and over- or
+  // under-bill the customer). An identical re-POST is a harmless retry; a
+  // different one must go through a reversal.
+  if (existing?.entryId) {
+    const changed =
+      existing.quantityMilli !== quantityMilli.toString()
+      || existing.unitCostMinor !== unitCost.toString()
+      || existing.costCode !== costCode
+      || existing.costAccountCode !== costAccountCode
+      || existing.kind !== kind;
+    if (changed) {
+      throw new WorkOrderError(
+        `entry ${id} has already posted to the books — reverse entry ${existing.entryId} and add a new one rather than editing it`,
+      );
+    }
+  }
 
   const extendedCost = mulDiv(quantityMilli, unitCost, MILLI);
   let entryId = existing?.entryId ?? "";

@@ -1,22 +1,19 @@
 from datetime import date
 
+from factory import AS_OF, history, usd
 from rgnr8_forecast import (
     CashPosition,
     Category,
-    CustomerHistory,
     Direction,
     ForecastConfig,
     ForecastInputs,
     Frequency,
     Invoice,
-    Money,
     PayrollSchedule,
     Recurrence,
     RecurringItem,
-    Scenario,
     run_forecast,
 )
-from factory import AS_OF, history, usd
 
 
 def _healthy_inputs() -> ForecastInputs:

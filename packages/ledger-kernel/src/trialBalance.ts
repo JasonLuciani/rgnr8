@@ -50,6 +50,13 @@ async function netByAccount(
   tenant: TenantId,
   window?: DateWindow,
 ): Promise<Map<AccountId, bigint>> {
+  // Prefer the store's own aggregation (SUM ... GROUP BY, pushed into the
+  // database) when it offers one, so a large journal is never streamed into
+  // memory just to be summed. The in-memory reference store omits it, so this
+  // list-based path stays the canonical definition the pushdown must match.
+  if (store.netByAccount) {
+    return store.netByAccount(tenant, window);
+  }
   const net = new Map<AccountId, bigint>();
   for (const entry of await store.list(tenant)) {
     if (!inWindow(entry.entryDate, window)) continue;

@@ -1,5 +1,6 @@
 from datetime import date
 
+from factory import AS_OF, usd
 from rgnr8_forecast import (
     Bill,
     CashPosition,
@@ -12,7 +13,6 @@ from rgnr8_forecast import (
     Frequency,
     Invoice,
     InvoiceStatus,
-    Money,
     OneTimeItem,
     PayrollSchedule,
     PipelineOpportunity,
@@ -24,7 +24,6 @@ from rgnr8_forecast import (
     upside_assumptions,
 )
 from rgnr8_forecast.resolve import resolve
-from factory import AS_OF, usd
 
 
 def _opening() -> CashPosition:

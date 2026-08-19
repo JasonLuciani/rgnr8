@@ -1,0 +1,76 @@
+name: CI
+
+# The full battery on every push and PR: lint, typecheck, build, and test both
+# the TypeScript and Python sides — including the real-PostgreSQL suite against a
+# service container, so the row-level-security and durability tests that only run
+# on a real engine are enforced, not just the in-memory fakes.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typescript:
+    name: TypeScript (build, lint, test)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: rgnr8
+          POSTGRES_PASSWORD: rgnr8
+          POSTGRES_DB: rgnr8_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U rgnr8"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install
+      - name: Lint (Biome)
+        run: npx biome lint packages/*/src packages/*/test
+      - name: Build all packages
+        run: npm run build --workspaces --if-present
+      - name: Test all packages (in-memory)
+        run: npm run test --workspaces --if-present
+      - name: Real-PostgreSQL integration suite
+        env:
+          RGNR8_TEST_DATABASE_URL: postgres://rgnr8:rgnr8@localhost:5432/rgnr8_test
+        run: node --import tsx --test packages/ledger-service/test/postgres.test.ts
+
+  python:
+    name: Python (ruff, mypy, pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install tools
+        run: python -m pip install --upgrade pytest mypy ruff cryptography
+      - name: Lint (ruff)
+        run: ruff check packages/*/src packages/*/tests
+      - name: Type-check (mypy)
+        run: |
+          (cd packages/web && python -m mypy src)
+          (cd packages/ops && python -m mypy src)
+          (cd packages/qbo && python -m mypy src)
+      - name: Test every Python package
+        run: |
+          set -e
+          for pkg in web ops qbo forecast briefing scenario ar categorize reports \
+                     recon-monitor billing obs analytics runtime alerts mcp; do
+            d="packages/$pkg"
+            if [ -d "$d/tests" ]; then
+              echo "== $pkg =="
+              (cd "$d" && python -m pytest -q)
+            fi
+          done

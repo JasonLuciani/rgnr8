@@ -12,7 +12,9 @@ into a float — `Money.from_minor` keeps it exact on the Python side.
 
 from __future__ import annotations
 
+import http.client
 import json
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -68,6 +70,68 @@ class UrllibTransport:
             return LedgerResponse(exc.code, _parse(raw))
         except urllib.error.URLError as exc:
             return LedgerResponse(503, {"error": f"ledger service unreachable: {exc.reason}"})
+
+
+class PooledHttpTransport:
+    """Production transport that reuses keep-alive connections.
+
+    ``UrllibTransport`` opens (and tears down) a fresh TCP — and, over TLS, a
+    fresh handshake — on every call, which is the single biggest avoidable cost
+    on a chatty screen that makes a dozen ledger reads to render. This keeps one
+    persistent HTTP/1.1 keep-alive connection **per thread** (WSGI servers are
+    multi-threaded, and ``http.client`` connections are not thread-safe, so a
+    thread-local is both the correct and the fast answer) and reuses it. On any
+    connection-level error it transparently drops the socket and retries once on
+    a fresh one, so a server that closed an idle keep-alive never surfaces as an
+    error to the caller.
+    """
+
+    def __init__(self, base_url: str, *, timeout: float = 10.0) -> None:
+        parsed = urllib.parse.urlsplit(base_url)
+        self._scheme = parsed.scheme or "http"
+        self._host = parsed.hostname or "localhost"
+        self._port = parsed.port or (443 if self._scheme == "https" else 80)
+        self._prefix = parsed.path.rstrip("/")
+        self._timeout = timeout
+        self._local = threading.local()
+
+    def _connection(self) -> http.client.HTTPConnection:
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            if self._scheme == "https":
+                conn = http.client.HTTPSConnection(self._host, self._port, timeout=self._timeout)
+            else:
+                conn = http.client.HTTPConnection(self._host, self._port, timeout=self._timeout)
+            self._local.conn = conn
+        return conn
+
+    def _drop(self) -> None:
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            try:
+                conn.close()
+            finally:
+                self._local.conn = None
+
+    def request(
+        self, method: str, path: str, body: str, headers: Mapping[str, str]
+    ) -> LedgerResponse:
+        url = f"{self._prefix}{path}"
+        payload = body.encode("utf-8") if body else None
+        # One transparent retry: a keep-alive the server has since closed raises
+        # on the reused socket, and the fix is simply a fresh connection.
+        for attempt in (1, 2):
+            conn = self._connection()
+            try:
+                conn.request(method, url, body=payload, headers=dict(headers))
+                resp = conn.getresponse()
+                raw = resp.read().decode("utf-8")
+                return LedgerResponse(resp.status, _parse(raw))
+            except (http.client.HTTPException, ConnectionError, OSError) as exc:
+                self._drop()
+                if attempt == 2:
+                    return LedgerResponse(503, {"error": f"ledger service unreachable: {exc}"})
+        return LedgerResponse(503, {"error": "ledger service unreachable"})  # unreachable
 
 
 def _parse(raw: str) -> dict[str, object]:
@@ -791,6 +855,12 @@ class LedgerClient:
 
     def crm_events(self, tenant: str, *, since: int = 0) -> LedgerResponse:
         return self._call("GET", f"/t/{tenant}/events?since={since}")
+
+    def settings(self, tenant: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/settings")
+
+    def save_settings(self, tenant: str, patch: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/settings", dict(patch))
 
     def entity_groups(self, tenant: str) -> LedgerResponse:
         return self._call("GET", f"/t/{tenant}/consolidation/groups")

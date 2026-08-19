@@ -18,13 +18,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from html import escape
 
-from rgnr8_forecast import ForecastResult, Money
-from rgnr8_forecast.brand import format_money as _money  # the one shared money formatter
-from rgnr8_briefing import Question, WeeklyBriefing, answer, build_briefing
-from rgnr8_briefing.answer import SUGGESTED
-from rgnr8_briefing.today import _cash_chart, _chart_points  # shared 13-week chart
 from rgnr8_ar import ARReport, ChaseItem, CollectionNudge
 from rgnr8_ar.aging import BUCKET_ORDER, AgingBucket
+from rgnr8_briefing import Question, answer, build_briefing
+from rgnr8_briefing.answer import SUGGESTED
+from rgnr8_briefing.today import _cash_chart, _chart_points  # shared 13-week chart
+from rgnr8_forecast import ForecastResult, Money
+from rgnr8_forecast.brand import format_money as _money  # the one shared money formatter
 from rgnr8_reports import ReportSpec
 
 _STATUS = {

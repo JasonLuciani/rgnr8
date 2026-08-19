@@ -26,6 +26,7 @@ from .events import (
     EventName,
     ProductEvent,
 )
+from .funnel import funnel_report
 from .tracker import (
     EventSink,
     EventTracker,
@@ -33,7 +34,6 @@ from .tracker import (
     HttpEventSink,
     InMemoryEventSink,
 )
-from .funnel import funnel_report
 
 __version__ = "0.1.0"
 

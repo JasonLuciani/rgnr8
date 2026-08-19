@@ -5,5 +5,14 @@
   "description": "RGNR8 Financial OS — monorepo",
   "workspaces": [
     "packages/*"
-  ]
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint:ts": "biome lint packages/*/src packages/*/test",
+    "lint:ts:fix": "biome lint --write packages/*/src packages/*/test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "1.9.4"
+  }
 }

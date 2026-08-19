@@ -27,10 +27,9 @@ from rgnr8_forecast import (
     RecurringItem,
     run_forecast,
 )
-
 from rgnr8_scenario import (
-    ScaleRecurring,
     ScalePayroll,
+    ScaleRecurring,
     Scenario,
     ScenarioDiff,
     SetMinimumCash,

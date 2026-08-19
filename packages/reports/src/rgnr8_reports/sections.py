@@ -24,11 +24,11 @@ from __future__ import annotations
 
 from typing import Callable, Mapping, Sequence
 
-from rgnr8_forecast import Money
-from rgnr8_forecast.brand import format_money
-from rgnr8_briefing import build_briefing
 from rgnr8_ar import AgingBucket, ar_report, chase_list
 from rgnr8_billing import build_invoice, plan_for
+from rgnr8_briefing import build_briefing
+from rgnr8_forecast import Money
+from rgnr8_forecast.brand import format_money
 from rgnr8_recon_monitor import check
 from rgnr8_scenario import run_scenario
 
@@ -91,7 +91,7 @@ def _fs_lines(o: object) -> list[tuple[str, int]]:
 
 def _sparkline(values: Sequence[int], *, width: int = 320, height: int = 48) -> str:
     """A self-contained inline-SVG sparkline of ``values`` (no external URLs)."""
-    from rgnr8_forecast.brand import SAGE, LINE
+    from rgnr8_forecast.brand import LINE, SAGE
 
     n = len(values)
     if n == 0:

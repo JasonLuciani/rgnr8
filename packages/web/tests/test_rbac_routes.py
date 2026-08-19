@@ -83,6 +83,34 @@ def test_owner_invites_a_member_and_sets_role() -> None:
     assert _get(app, "/api/acme/users", "book@acme.com").status == 403
 
 
+def test_settings_screen_is_gated_by_manage_settings() -> None:
+    app = _app()
+    # the owner can open the account settings screen; a viewer is forbidden
+    assert _get(app, "/t/acme/settings", "u-owner").status == 200
+    assert _get(app, "/t/acme/settings", "u-view").status == 403
+    # and a viewer cannot POST changes either
+    assert _get(app, "/t/acme/settings", "u-view", "POST",
+                "inventory_costing_method=FIFO").status == 403
+
+
+def test_a_controller_can_reach_settings_but_a_bookkeeper_cannot() -> None:
+    app = _app()
+    app._users.upsert_user(User("u-ctrl", "ctrl@acme.com", "Controller"))  # type: ignore[union-attr]
+    app._users.set_membership("u-ctrl", "acme", Role.CONTROLLER)  # type: ignore[union-attr]
+    app._users.upsert_user(User("u-book2", "book2@acme.com", "Bookkeeper"))  # type: ignore[union-attr]
+    app._users.set_membership("u-book2", "acme", Role.BOOKKEEPER)  # type: ignore[union-attr]
+    assert _get(app, "/t/acme/settings", "u-ctrl").status == 200
+    assert _get(app, "/t/acme/settings", "u-book2").status == 403
+
+
+def test_integrations_screen_is_gated_by_manage_integrations() -> None:
+    app = _app()
+    assert _get(app, "/t/acme/integrations", "u-owner").status == 200
+    assert _get(app, "/t/acme/integrations", "u-view").status == 403
+    assert _get(app, "/t/acme/integrations", "u-view", "POST",
+                "id=x&url=https://e.com/h").status == 403
+
+
 def test_unknown_and_platform_roles_are_rejected() -> None:
     app = _app()
     assert _get(app, "/api/acme/users", "u-owner", "POST",

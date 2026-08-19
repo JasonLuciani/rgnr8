@@ -1,6 +1,7 @@
 import {
   Money,
   computeTrialBalance,
+  asAccountId,
   type Currency,
   type TenantId,
   asTenantId,
@@ -12,9 +13,11 @@ import {
   financialStatementsJson,
   fromKernelTrialBalance,
   incomeStatement,
+  makeTrialBalance,
   subtypeCashFlowClassifier,
   type EliminationLine,
   type TrialBalance,
+  type TrialBalanceEntry,
 } from "@rgnr8/financial-statements";
 import type { Pool, Queryable } from "@rgnr8/ledger-postgres";
 import type { LedgerBackend } from "./backend.js";
@@ -61,7 +64,21 @@ export interface GroupMember {
   readonly label: string;
   /** Share of the entity the group owns, in parts per million. Reported only. */
   readonly ownershipPpm: number;
+  /** The currency this entity keeps its books in. Empty = the group base. */
+  readonly currency?: string;
+  /** Current FX rate to the group base, ×1e6 (e.g. EUR→USD 1.08 = "1080000").
+   *  Empty when the entity already reports in the base currency. */
+  readonly rateMicro?: string;
+  /** Historical rate for equity accounts, ×1e6. Defaults to the current rate;
+   *  when it differs, the gap is the cumulative translation adjustment. */
+  readonly equityRateMicro?: string;
 }
+
+/** The FX rate scale: rates are stored as integers × 1e6. */
+const RATE_MICRO = 1_000_000n;
+/** Where the cumulative translation adjustment lands on the consolidated sheet. */
+const CTA_CODE = "3990";
+const CTA_NAME = "Cumulative translation adjustment";
 
 export interface GroupRecord {
   readonly id: string;
@@ -161,8 +178,15 @@ CREATE TABLE IF NOT EXISTS entity_group_member (
   member_tenant_id text NOT NULL,
   label            text NOT NULL DEFAULT '',
   ownership_ppm    integer NOT NULL DEFAULT 1000000,
+  currency         text NOT NULL DEFAULT '',
+  rate_micro       text NOT NULL DEFAULT '',
+  equity_rate_micro text NOT NULL DEFAULT '',
   CONSTRAINT entity_group_member_pk PRIMARY KEY (tenant_id, group_id, member_tenant_id)
 );
+-- Members written before multi-currency had no currency/rate columns.
+ALTER TABLE entity_group_member ADD COLUMN IF NOT EXISTS currency          text NOT NULL DEFAULT '';
+ALTER TABLE entity_group_member ADD COLUMN IF NOT EXISTS rate_micro        text NOT NULL DEFAULT '';
+ALTER TABLE entity_group_member ADD COLUMN IF NOT EXISTS equity_rate_micro text NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS elimination_entry (
   tenant_id   text NOT NULL,
@@ -214,7 +238,8 @@ export class PgConsolidationStore implements ConsolidationStore {
     db: Queryable, tenant: string, groupId: string,
   ): Promise<GroupMember[]> {
     const res = await db.query(
-      `SELECT member_tenant_id, label, ownership_ppm FROM entity_group_member
+      `SELECT member_tenant_id, label, ownership_ppm, currency, rate_micro, equity_rate_micro
+       FROM entity_group_member
        WHERE tenant_id=$1 AND group_id=$2 ORDER BY member_tenant_id`,
       [tenant, groupId],
     );
@@ -222,6 +247,9 @@ export class PgConsolidationStore implements ConsolidationStore {
       tenantId: String(r["member_tenant_id"]),
       label: String(r["label"] ?? ""),
       ownershipPpm: Number(r["ownership_ppm"] ?? 1_000_000),
+      currency: String(r["currency"] ?? ""),
+      rateMicro: String(r["rate_micro"] ?? ""),
+      equityRateMicro: String(r["equity_rate_micro"] ?? ""),
     }));
   }
 
@@ -277,8 +305,12 @@ export class PgConsolidationStore implements ConsolidationStore {
       for (const m of group.members) {
         await db.query(
           `INSERT INTO entity_group_member (tenant_id, group_id, member_tenant_id,
-             label, ownership_ppm) VALUES ($1,$2,$3,$4,$5)`,
-          [tenant, group.id, m.tenantId, m.label, m.ownershipPpm],
+             label, ownership_ppm, currency, rate_micro, equity_rate_micro)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [
+            tenant, group.id, m.tenantId, m.label, m.ownershipPpm,
+            m.currency ?? "", m.rateMicro ?? "", m.equityRateMicro ?? "",
+          ],
         );
       }
     });
@@ -372,7 +404,26 @@ export interface GroupInput {
     readonly tenant_id?: string;
     readonly label?: string;
     readonly ownership_ppm?: number;
+    /** The currency this entity keeps its books in (empty = the group base). */
+    readonly currency?: string;
+    /** Current FX rate to the group base as a decimal (e.g. "1.08"). */
+    readonly rate?: string | number;
+    /** Historical rate for equity (defaults to the current rate). */
+    readonly equity_rate?: string | number;
   }>;
+}
+
+/** Parse an FX rate ("1.08") into integer micro-units (1_080_000). Empty → "". */
+function rateToMicro(raw: string | number | undefined, label: string): string {
+  const text = String(raw ?? "").trim();
+  if (!text) return "";
+  if (!/^\d+(\.\d{1,6})?$/.test(text)) {
+    throw new ConsolidationServiceError(`${label} must be a positive rate with up to 6 decimals`);
+  }
+  const [whole = "0", frac = ""] = text.split(".");
+  const micro = BigInt(whole) * RATE_MICRO + BigInt(frac.padEnd(6, "0"));
+  if (micro <= 0n) throw new ConsolidationServiceError(`${label} must be greater than zero`);
+  return micro.toString();
 }
 
 export async function saveGroup(
@@ -397,7 +448,13 @@ export async function saveGroup(
     if (!Number.isInteger(ownershipPpm) || ownershipPpm < 0 || ownershipPpm > 1_000_000) {
       throw new ConsolidationServiceError("ownership must be between 0 and 100%");
     }
-    members.push({ tenantId, label: String(m.label ?? "").trim() || tenantId, ownershipPpm });
+    const currency = String(m.currency ?? "").trim().toUpperCase();
+    const rateMicro = rateToMicro(m.rate, `translation rate for ${tenantId}`);
+    const equityRateMicro = rateToMicro(m.equity_rate, `equity rate for ${tenantId}`);
+    members.push({
+      tenantId, label: String(m.label ?? "").trim() || tenantId, ownershipPpm,
+      currency, rateMicro, equityRateMicro,
+    });
   }
   if (members.length < 2) {
     throw new ConsolidationServiceError(
@@ -479,9 +536,51 @@ interface EntityBalances {
   readonly tb: TrialBalance;
 }
 
+/** Round a signed value by an FX rate (×1e6), half-away-from-zero. */
+function translateAmount(signedMinor: bigint, rateMicro: bigint): bigint {
+  const neg = signedMinor < 0n;
+  const abs = neg ? -signedMinor : signedMinor;
+  const scaled = abs * rateMicro + RATE_MICRO / 2n;
+  const rounded = scaled / RATE_MICRO;
+  return neg ? -rounded : rounded;
+}
+
+/**
+ * Translate one entity's trial balance into the group's base currency.
+ *
+ * Assets, liabilities, revenue and expense translate at the current rate; equity
+ * translates at its historical rate. When those rates differ the translated books
+ * no longer foot, and the gap — the cumulative translation adjustment — is booked
+ * to a translation-adjustment equity line so the entity's contribution balances.
+ * With a single rate (or none) this is an exact scalar multiply and the CTA is
+ * zero, so a same-currency group behaves exactly as before.
+ */
+function translateEntity(tb: TrialBalance, member: GroupMember, currency: Currency): TrialBalance {
+  const rate = BigInt(member.rateMicro || RATE_MICRO.toString());
+  const equityRate = BigInt(member.equityRateMicro || member.rateMicro || RATE_MICRO.toString());
+  const entries: TrialBalanceEntry[] = tb.entries.map((e) => {
+    const r = e.accountClass === "equity" ? equityRate : rate;
+    return { ...e, signed: Money.fromMinorUnits(translateAmount(e.signed.minorUnits, r), currency) };
+  });
+  const residual = entries.reduce((acc, e) => acc + e.signed.minorUnits, 0n);
+  if (residual !== 0n) {
+    // Book the plug to equity as the CTA so the translated books foot exactly.
+    entries.push({
+      accountId: asAccountId(`__cta__:${member.tenantId}`),
+      code: CTA_CODE,
+      name: CTA_NAME,
+      accountClass: "equity",
+      signed: Money.fromMinorUnits(-residual, currency),
+    });
+  }
+  return makeTrialBalance(currency, entries);
+}
+
 async function entityBalances(
   ctx: ConsolidationContext, group: GroupRecord, window: { from?: string; to?: string },
 ): Promise<EntityBalances[]> {
+  const settings = await ctx.backend.settings().get(String(ctx.tenant));
+  const base = settings.baseCurrency || ctx.currency.code;
   const out: EntityBalances[] = [];
   for (const member of group.members) {
     const tenant = asTenantId(member.tenantId);
@@ -494,7 +593,27 @@ async function entityBalances(
     const kernel = await computeTrialBalance(
       ctx.backend.store(tenant), tenant, chart, ctx.currency, window,
     );
-    out.push({ member, tb: fromKernelTrialBalance(kernel) });
+    let tb = fromKernelTrialBalance(kernel);
+    const memberCurrency = (member.currency ?? "").trim().toUpperCase();
+    if (memberCurrency && memberCurrency !== base) {
+      // A member keeps its books in another currency: it must be translated, and
+      // that requires the option to be on and a rate to be configured — never a
+      // silent combination of mismatched currencies.
+      if (!settings.multiCurrencyEnabled) {
+        throw new ConsolidationServiceError(
+          `${member.tenantId} reports in ${memberCurrency} but multi-currency consolidation `
+          + "is off — enable it in settings to translate to the group base",
+        );
+      }
+      if (!member.rateMicro) {
+        throw new ConsolidationServiceError(
+          `${member.tenantId} reports in ${memberCurrency} but no translation rate to ${base} `
+          + "is configured for it",
+        );
+      }
+      tb = translateEntity(tb, member, ctx.currency);
+    }
+    out.push({ member, tb });
   }
   return out;
 }
@@ -768,7 +887,10 @@ export async function consolidatedStatements(
 
   const chart = await ctx.backend.chart(asTenantId(group.members[0]!.tenantId));
   const income = incomeStatement(period);
-  const bs = balanceSheet(end, income.netIncome);
+  // Consolidated equity as-of `to` carries the group's prior retained earnings,
+  // or a mid-year consolidated balance sheet is out of balance by them.
+  const beginningRetained = incomeStatement(start).netIncome;
+  const bs = balanceSheet(end, income.netIncome, beginningRetained);
   const cf = cashFlow(start, end, income.netIncome, subtypeCashFlowClassifier(chart));
 
   return {
@@ -812,6 +934,9 @@ export function groupJson(g: GroupRecord): Record<string, unknown> {
     intercompany_codes: g.intercompanyCodes,
     members: g.members.map((m) => ({
       tenant_id: m.tenantId, label: m.label, ownership_ppm: m.ownershipPpm,
+      ...(m.currency ? { currency: m.currency } : {}),
+      ...(m.rateMicro ? { rate_micro: m.rateMicro } : {}),
+      ...(m.equityRateMicro ? { equity_rate_micro: m.equityRateMicro } : {}),
     })),
   };
 }

@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from factory import at_risk_tenant, steady_tenant
 from rgnr8_forecast import Money
 from rgnr8_ops import (
     Fleet,
@@ -11,7 +12,6 @@ from rgnr8_ops import (
     SqlFleetStore,
     build_ops_report,
 )
-from factory import steady_tenant, at_risk_tenant
 
 SECRET = "persist-secret"
 NOW_EPOCH = 1_760_000_000

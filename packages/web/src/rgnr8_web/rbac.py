@@ -38,6 +38,10 @@ class Permission(str, Enum):
     # administration
     MANAGE_SUBSCRIPTIONS = "manage_subscriptions"  # briefing recipients
     MANAGE_USERS = "manage_users"       # invite / change roles within the business
+    MANAGE_SETTINGS = "manage_settings"  # per-account options (inventory costing, multi-currency, …)
+    MANAGE_INTEGRATIONS = "manage_integrations"  # outbound webhook endpoints/secrets/subscriptions
+    MANAGE_DATA_RETENTION = "manage_data_retention"  # set audit/soft-delete retention horizons
+    ERASE_DATA = "erase_data"           # exercise GDPR/CCPA right-to-erase (irreversible)
     # platform (RGNR8 staff)
     VIEW_FLEET = "view_fleet"
     ONBOARD_TENANT = "onboard_tenant"
@@ -78,6 +82,12 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
         Permission.MANAGE_CONNECTORS,
         Permission.MANAGE_SUBSCRIPTIONS,
         Permission.MANAGE_USERS,
+        # account administration — the owner holds all of it, including the
+        # irreversible right-to-erase.
+        Permission.MANAGE_SETTINGS,
+        Permission.MANAGE_INTEGRATIONS,
+        Permission.MANAGE_DATA_RETENTION,
+        Permission.ERASE_DATA,
     },
     Role.CONTROLLER: _VIEW
     | {
@@ -88,6 +98,11 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
         Permission.MANAGE_CLOSE,
         Permission.PUBLISH_CLOSE,
         Permission.MANAGE_SUBSCRIPTIONS,
+        # a controller can configure the account and its integrations, but
+        # erasing a client's data is reserved to the owner.
+        Permission.MANAGE_SETTINGS,
+        Permission.MANAGE_INTEGRATIONS,
+        Permission.MANAGE_DATA_RETENTION,
     },
     # the bookkeeper lives in the bank feed: categorize + reconcile, run the
     # close, but can't seal the package or manage users.

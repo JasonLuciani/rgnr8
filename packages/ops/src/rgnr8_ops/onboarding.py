@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-
 # Slugs + human labels — MUST match ledger-kernel's BusinessCategory enum values.
 BUSINESS_CATEGORIES: tuple[tuple[str, str], ...] = (
     ("SERVICE_GENERAL", "General Service Business"),
@@ -98,13 +97,16 @@ def qbo_trial_balance_to_source_accounts(
         subtype = subtype_for_account_type(account_type)
         if subtype is None:
             raise OnboardingError(f"account {code}: unmappable account type {account_type!r}")
-        def _as_int(v: object, field: str) -> int:
+        # Bind the loop's `code` as a default so the closure captures this row's
+        # value, not whatever `code` is at call time (it is called in-iteration,
+        # so this is a correctness clarification rather than a live bug).
+        def _as_int(v: object, field: str, code: str = code) -> int:
             if isinstance(v, bool) or not isinstance(v, (int, str)):
                 raise OnboardingError(f"account {code} has non-integer {field}")
             try:
                 return int(v)
             except ValueError:
-                raise OnboardingError(f"account {code} has non-integer {field}")
+                raise OnboardingError(f"account {code} has non-integer {field}") from None
 
         debit = _as_int(r.get("debit_minor", 0), "debit_minor")
         credit = _as_int(r.get("credit_minor", 0), "credit_minor")

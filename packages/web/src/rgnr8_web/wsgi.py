@@ -137,10 +137,22 @@ def wsgi_app(
                 return _finish(limited, start_response)
         try:
             resp: Response = dispatch.handle(request)
-        except Exception:
-            # Catch-all: never leak a stack trace or unhandled error to a client.
-            # (Details should go to the error reporter / logs, not the response.)
-            resp = Response(500, '{"error":"internal server error"}')
+        except Exception as exc:
+            # Catch-all: never leak a stack trace or unhandled error to a client,
+            # but never silently drop it either — capture it to the error reporter
+            # (when one is wired) and hand the client the stable reference id so a
+            # support request can be tied to the captured event. The ObservedApp
+            # path already captures; this covers the base, un-hardened adapter.
+            ref = ""
+            if errors is not None:
+                try:
+                    ref = errors.capture(exc, context={"path": request.path,
+                                                       "method": request.method})
+                except Exception:
+                    ref = ""
+            body = ('{"error":"internal server error","ref":"' + ref + '"}'
+                    if ref else '{"error":"internal server error"}')
+            resp = Response(500, body)
         return _finish(resp, start_response)
 
     return application

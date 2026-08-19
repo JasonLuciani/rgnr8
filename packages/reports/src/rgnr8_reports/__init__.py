@@ -30,7 +30,17 @@ minor units throughout, dataclasses are frozen, and the package type-checks unde
 
 from __future__ import annotations
 
+from .builder import (
+    InMemorySavedReportStore,
+    ReportSpecError,
+    SavedReportStore,
+    SqlSavedReportStore,
+    build_report,
+    spec_from_dict,
+    spec_to_dict,
+)
 from .context import DataContext, ReconFigures, Transaction
+from .library import BASELINE_REPORTS, baseline
 from .model import (
     Block,
     Chart,
@@ -42,27 +52,17 @@ from .model import (
     SectionSpec,
     Table,
 )
-from .sections import REGISTRY, known_kinds
+from .pdf import render_pdf
 
 # Import the ``render`` submodule's functions before the engine's ``render``
 # function, so that ``rgnr8_reports.render`` resolves to the engine entrypoint
 # (importing the submodule binds its name on the package; the engine import wins
-# by coming last).
+# by coming last). This ordering is deliberate — do not let isort reshuffle it.
 from .render import render_csv, render_html, to_dict, to_json
-from .pdf import render_pdf
-from .xlsx import render_xlsx
-from .library import BASELINE_REPORTS, baseline
-from .builder import (
-    InMemorySavedReportStore,
-    ReportSpecError,
-    SavedReportStore,
-    SqlSavedReportStore,
-    build_report,
-    spec_from_dict,
-    spec_to_dict,
-)
-from .engine import Clock, render
+from .engine import Clock, render  # noqa: E402  (must bind ``render`` last)
 from .schedule import (
+    VALID_FORMATS,
+    CallableReportSink,
     ContextBuilder,
     InMemoryReportScheduleStore,
     RecordingReportSink,
@@ -72,15 +72,15 @@ from .schedule import (
     ReportSchedule,
     ReportScheduleStore,
     ReportSink,
-    CallableReportSink,
     SpecResolver,
     SqlReportScheduleStore,
-    VALID_FORMATS,
     render_in_format,
     run_due_reports,
     schedule_from_dict,
     schedule_to_dict,
 )
+from .sections import REGISTRY, known_kinds
+from .xlsx import render_xlsx
 
 __version__ = "0.1.0"
 

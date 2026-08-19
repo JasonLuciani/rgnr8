@@ -31,8 +31,8 @@ from rgnr8_briefing import Schedule, is_due, most_recent_fire
 from .context import DataContext
 from .engine import render
 from .model import Report, ReportSpec
-from .render import render_csv, render_html, to_json
 from .pdf import render_pdf
+from .render import render_csv, render_html, to_json
 from .xlsx import render_xlsx
 
 # The delivery formats a schedule can request, each bound to its renderer. HTML,

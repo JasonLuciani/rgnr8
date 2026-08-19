@@ -10,15 +10,34 @@ from datetime import date
 from typing import Any
 
 from rgnr8_forecast import (
-    Bill, CashPosition, Category, Confidence, Direction, ForecastConfig,
-    ForecastInputs, Invoice, Money, OneTimeItem, PipelineOpportunity, Provenance,
+    Bill,
+    CashPosition,
+    Category,
+    Confidence,
+    Direction,
+    ForecastConfig,
+    ForecastInputs,
+    Invoice,
+    Money,
+    OneTimeItem,
+    PipelineOpportunity,
 )
 from rgnr8_web import (
-    InMemoryUserDirectory, JwtAuthenticator, LedgerClient, LedgerResponse,
-    Request, Role, User, WebApp, sign_jwt,
+    InMemoryUserDirectory,
+    JwtAuthenticator,
+    LedgerClient,
+    LedgerResponse,
+    Request,
+    Role,
+    User,
+    WebApp,
+    sign_jwt,
 )
 from rgnr8_web.ledger_forecast import (
-    forecast_from_ledger, merge_forecast_inputs, provenance_split, read_ledger_facts,
+    forecast_from_ledger,
+    merge_forecast_inputs,
+    provenance_split,
+    read_ledger_facts,
 )
 
 SECRET = "hybrid-secret"

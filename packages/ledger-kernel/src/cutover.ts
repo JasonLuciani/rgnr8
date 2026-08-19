@@ -11,7 +11,6 @@ import {
   type PostCommand,
   type PostedEntry,
   type Provenance,
-  type TenantId,
 } from "./types.js";
 
 /**

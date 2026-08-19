@@ -1,5 +1,6 @@
 import json
 
+from factory import breach_forecast, healthy_forecast
 from rgnr8_briefing import (
     Channel,
     FakeHttpClient,
@@ -10,7 +11,6 @@ from rgnr8_briefing import (
     build_briefing,
     build_envelope,
 )
-from factory import breach_forecast, healthy_forecast
 
 
 def _email(http: FakeHttpClient) -> HttpEmailTransport:

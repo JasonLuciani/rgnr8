@@ -12,8 +12,16 @@ from typing import Any
 
 from rgnr8_forecast import CashPosition, ForecastConfig, ForecastInputs, Money
 from rgnr8_web import (
-    InMemoryAuditLog, InMemoryUserDirectory, JwtAuthenticator, LedgerClient,
-    LedgerResponse, Request, Role, User, WebApp, sign_jwt,
+    InMemoryAuditLog,
+    InMemoryUserDirectory,
+    JwtAuthenticator,
+    LedgerClient,
+    LedgerResponse,
+    Request,
+    Role,
+    User,
+    WebApp,
+    sign_jwt,
 )
 
 SECRET = "ten99-secret"

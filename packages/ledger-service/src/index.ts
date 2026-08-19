@@ -302,6 +302,7 @@ export {
   type InventoryStore,
   type ItemRecord,
   type MovementRecord,
+  type LotRecord,
   type InventoryContext,
 } from "./inventory.js";
 export {
@@ -343,5 +344,18 @@ export {
   type ConsolidationContext,
 } from "./consolidation.js";
 export { ten99Report, Ten99Error, type Ten99Context, type Ten99Json } from "./ten99.js";
+export {
+  InMemorySettingsStore,
+  PgSettingsStore,
+  SETTINGS_DDL,
+  SettingsError,
+  defaultSettings,
+  mergeSettings,
+  settingsJson,
+  INVENTORY_COSTING_METHODS,
+  type SettingsStore,
+  type AccountSettings,
+  type InventoryCostingMethod,
+} from "./settings.js";
 export { rlsDdl, appRoleDdl, superuserWarning, TENANT_TABLES } from "./security.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";

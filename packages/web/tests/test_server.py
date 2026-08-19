@@ -1,10 +1,10 @@
 import json
 import threading
-import urllib.request
 import urllib.error
+import urllib.request
 
-from rgnr8_web import serve
 from factory import app_with_two_tenants
+from rgnr8_web import serve
 
 
 def _request(port: int, path: str, token: str | None = None, method: str = "GET", body: str | None = None):

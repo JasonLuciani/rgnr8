@@ -16,11 +16,11 @@ import json
 from dataclasses import dataclass, replace
 from typing import Protocol
 
-from rgnr8_forecast import ForecastConfig, Money, from_dto, to_dto
 from rgnr8_briefing import Schedule
+from rgnr8_forecast import ForecastConfig, Money, from_dto, to_dto
 from rgnr8_runtime.subscriptions import DbApiConnection
 
-from .fleet import BetaTenant, default_schedule
+from .fleet import BetaTenant
 
 
 @dataclass(frozen=True, slots=True)

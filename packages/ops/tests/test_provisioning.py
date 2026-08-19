@@ -1,9 +1,9 @@
 """The composed signup→checkout→provisioning→metering growth seam."""
 
+from factory import steady_tenant
 from rgnr8_analytics import EventName, EventTracker, InMemoryEventSink
 from rgnr8_billing import Tier
 from rgnr8_ops import Fleet, build_provisioning
-from factory import steady_tenant
 
 SECRET = "prov-secret"
 

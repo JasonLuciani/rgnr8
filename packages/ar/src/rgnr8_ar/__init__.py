@@ -30,7 +30,6 @@ from .aging import (
     days_overdue,
     summarize_aging,
 )
-from .report import ARReport, OpenInvoice, ar_report
 from .chase import (
     NEUTRAL_RISK_WEIGHT,
     ChaseItem,
@@ -39,6 +38,7 @@ from .chase import (
     typical_days_late,
 )
 from .nudge import CollectionNudge, NudgeTone, draft_nudge, tone_for
+from .report import ARReport, OpenInvoice, ar_report
 
 __version__ = "0.1.0"
 

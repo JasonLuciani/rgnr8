@@ -49,15 +49,26 @@ async function seededBooks(s: LedgerService, tenant = "acme"): Promise<void> {
   });
 }
 
-test("health needs no auth; everything else does", async () => {
+test("health and readiness need no auth; everything else does", async () => {
   const s = svc();
   const h = await s.handle({ method: "GET", path: "/health", query: {}, body: "", headers: {} });
   assert.equal(h.status, 200);
+  const ready = await s.handle({ method: "GET", path: "/ready", query: {}, body: "", headers: {} });
+  assert.equal(ready.status, 200);
+  assert.equal((ready.body as Record<string, unknown>)["status"], "ready");
   const unauthed = await s.handle({
     method: "GET", path: "/t/acme/accounts", query: {}, body: "", headers: {},
   });
   assert.equal(unauthed.status, 401);
   assert.equal((await call(s, "GET", "/t/acme/accounts", "", {}, "wrong")).status, 401);
+  // the constant-time compare is length-independent: a prefix of the real token
+  // and a token longer than it are both rejected, not just an equal-length miss.
+  assert.equal((await call(s, "GET", "/t/acme/accounts", "", {}, "svc-secre")).status, 401);
+  assert.equal((await call(s, "GET", "/t/acme/accounts", "", {}, "svc-secret-plus")).status, 401);
+  assert.equal((await call(s, "GET", "/t/acme/accounts", "", {}, "")).status, 401);
+  // and the correct token still gets in
+  await call(s, "POST", "/t/acme/accounts/seed", { category: "PROFESSIONAL_SERVICES" });
+  assert.equal((await call(s, "GET", "/t/acme/accounts")).status, 200);
 });
 
 test("seeding a chart gives a real chart of accounts", async () => {
@@ -182,6 +193,39 @@ test("statements are computed from the tenant's own posted books", async () => {
   const bs = st["balance_sheet"] as Record<string, unknown>;
   assert.equal(bs["balanced"], true);
   assert.equal(bs["total_assets"], 300000); // cash: 5000 in - 2000 rent
+});
+
+test("a mid-year balance sheet balances — prior-period earnings are in equity", async () => {
+  // The trap: revenue/expense earned before the reporting window is never swept
+  // into retained earnings (a period lock posts nothing), so a balance sheet for
+  // any month after the first used to be out of balance by the accumulated prior
+  // net income. Equity as-of the close date has to carry it.
+  const s = svc();
+  await call(s, "POST", "/t/acme/accounts/seed", { category: "SERVICE_GENERAL" });
+  await call(s, "POST", "/t/acme/entries", {
+    date: "2026-07-10", memo: "July sale",
+    lines: [
+      { code: "1000", side: "DEBIT", amount_minor: "100000" },
+      { code: "4000", side: "CREDIT", amount_minor: "100000" },
+    ],
+  });
+  await call(s, "POST", "/t/acme/entries", {
+    date: "2026-08-10", memo: "August sale",
+    lines: [
+      { code: "1000", side: "DEBIT", amount_minor: "50000" },
+      { code: "4000", side: "CREDIT", amount_minor: "50000" },
+    ],
+  });
+
+  // August-only statements: the income statement is the month; the balance sheet
+  // is as-of Aug 31 and must still balance.
+  const st = obj(await call(s, "GET", "/t/acme/statements", "", { from: "2026-08-01", to: "2026-08-31" }));
+  const income = st["income_statement"] as Record<string, unknown>;
+  assert.equal(income["net_income"], 50000, "the income statement is the period, not cumulative");
+  const bs = st["balance_sheet"] as Record<string, unknown>;
+  assert.equal(bs["balanced"], true, "the sheet balances despite July's earnings");
+  assert.equal(bs["total_assets"], 150000, "cash from both months");
+  assert.equal(bs["total_equity"], 150000, "equity carries July's retained earnings plus August's income");
 });
 
 test("an account register shows the running balance", async () => {

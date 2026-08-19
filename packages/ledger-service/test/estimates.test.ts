@@ -242,7 +242,7 @@ test("accepting creates the job and seeds its budget from the cost lines", async
   assert.equal(budget[0]!["revised_cost_minor"], "260000", "revised starts at the bid");
 });
 
-test("accepting onto an existing job leaves the job alone but still budgets", async () => {
+test("accepting onto an existing job budgets it and raises the contract", async () => {
   const s = await ready();
   await call(s, "POST", "/t/acme/jobs", {
     id: "existing", customer_id: "harper", name: "Existing job",
@@ -254,8 +254,93 @@ test("accepting onto an existing job leaves the job alone but still budgets", as
   });
   assert.equal(obj(accepted)["job_created"], false);
   const job = obj(await call(s, "GET", "/t/acme/jobs/existing"));
-  assert.equal((job["job"] as Row)["contract_minor"], "0", "untouched");
+  assert.equal((job["job"] as Row)["contract_minor"], "2382000",
+    "the estimate raised the contract");
   assert.equal((job["budget"] as Row[]).length, 2);
+});
+
+test("a change-order estimate merges into the budget instead of wiping it", async () => {
+  // The trap: accepting a second estimate that touches only some cost codes
+  // used to DELETE-all-then-insert, destroying the original bid for every code
+  // it didn't mention. A change order must add to what it touches and leave the
+  // rest of the baseline exactly where it was.
+  const s = await ready();
+  await make(s);   // EST-1: LAB 260,000 + MAT 1,800,000
+  const first = await call(s, "POST", "/t/acme/estimates/EST-1/accept", {
+    job_name: "Harper kitchen",
+  });
+  const jobId = String(obj(first)["job_id"]);
+  const before = obj(await call(s, "GET", `/t/acme/jobs/${jobId}`))["budget"] as Row[];
+  assert.deepEqual(
+    before.map((b) => [b["cost_code"], b["budget_cost_minor"]]),
+    [["LAB", "260000"], ["MAT", "1800000"]],
+  );
+
+  // a change order: more framing labor only
+  await call(s, "POST", "/t/acme/estimates", {
+    id: "CO-1", customer_id: "harper", date: "2026-06-01", memo: "Extra framing",
+    lines: [{
+      description: "Extra framing", cost_code: "LAB", quantity_milli: "100000",
+      unit_cost_minor: "6500", markup_ppm: 200_000, account_code: "4100",
+    }],
+  });
+  await call(s, "POST", "/t/acme/estimates/CO-1/accept", { job_id: jobId });
+
+  const after = obj(await call(s, "GET", `/t/acme/jobs/${jobId}`));
+  const budget = new Map(
+    (after["budget"] as Row[]).map((b) => [String(b["cost_code"]), b]),
+  );
+  assert.equal(budget.get("MAT")!["budget_cost_minor"], "1800000",
+    "the cabinets budget survived the change order");
+  assert.equal(budget.get("LAB")!["budget_cost_minor"], "910000",
+    "framing grew by the change-order cost, it did not vanish");
+  assert.equal((after["job"] as Row)["contract_minor"], "3162000",
+    "and the contract rose by the change order's price");
+});
+
+test("re-accepting a restated revision applies the delta, never doubling the original", async () => {
+  // The trap: accept an estimate, then make a change order by REVISING it (which
+  // copies every line forward). Re-accepting that restated revision used to add
+  // the whole thing again — doubling the contract that multiplies percent-complete
+  // revenue, and doubling the budget baseline. The re-accept must net to the new
+  // scope, not the sum of every restatement.
+  const s = await ready();
+  await make(s);   // EST-1: LAB 260,000 + MAT 1,800,000, price 2,382,000
+  const first = await call(s, "POST", "/t/acme/estimates/EST-1/accept", { job_name: "Harper kitchen" });
+  const jobId = String(obj(first)["job_id"]);
+  assert.equal((obj(await call(s, "GET", `/t/acme/jobs/${jobId}`))["job"] as Row)["contract_minor"],
+    "2382000");
+
+  // a no-op restatement (empty body copies both lines identically) must not move a thing
+  await call(s, "POST", "/t/acme/estimates/EST-1/revise", {});
+  await call(s, "POST", "/t/acme/estimates/EST-1-r2/accept", { job_id: jobId });
+  let job = obj(await call(s, "GET", `/t/acme/jobs/${jobId}`));
+  assert.equal((job["job"] as Row)["contract_minor"], "2382000",
+    "an identical restatement leaves the contract exactly where it was");
+  let budget = new Map((job["budget"] as Row[]).map((b) => [String(b["cost_code"]), b]));
+  assert.equal(budget.get("LAB")!["budget_cost_minor"], "260000", "LAB not doubled");
+  assert.equal(budget.get("MAT")!["budget_cost_minor"], "1800000", "MAT not doubled");
+
+  // now a real change order, expressed the natural way — restate everything AND
+  // add a subcontract line. Only the new SUB scope may reach the job.
+  await call(s, "POST", "/t/acme/estimates/EST-1-r2/revise", {
+    lines: [
+      { description: "Framing labor", cost_code: "LAB", quantity_milli: "40000",
+        unit_cost_minor: "6500", markup_ppm: 200_000, account_code: "4100" },
+      { description: "Cabinets", cost_code: "MAT", quantity_milli: "1000",
+        unit_cost_minor: "1800000", markup_ppm: 150_000, account_code: "4100" },
+      { description: "Countertop install", cost_code: "SUB", quantity_milli: "1000",
+        unit_cost_minor: "500000", markup_ppm: 200_000, account_code: "4100" },
+    ],
+  });
+  await call(s, "POST", "/t/acme/estimates/EST-1-r3/accept", { job_id: jobId });
+  job = obj(await call(s, "GET", `/t/acme/jobs/${jobId}`));
+  assert.equal((job["job"] as Row)["contract_minor"], "2982000",
+    "contract rose by only the SUB price (600,000), not by the whole restated total");
+  budget = new Map((job["budget"] as Row[]).map((b) => [String(b["cost_code"]), b]));
+  assert.equal(budget.get("LAB")!["budget_cost_minor"], "260000", "LAB stayed put");
+  assert.equal(budget.get("MAT")!["budget_cost_minor"], "1800000", "MAT stayed put");
+  assert.equal(budget.get("SUB")!["budget_cost_minor"], "500000", "only the new SUB scope was added");
 });
 
 test("an expired estimate is refused unless accepted with eyes open", async () => {

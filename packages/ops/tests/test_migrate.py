@@ -3,11 +3,10 @@
 import sqlite3
 
 import pytest
-
 from rgnr8_ops import (
+    PYTHON_MIGRATIONS,
     Migration,
     MigrationDriftError,
-    PYTHON_MIGRATIONS,
     run_migrations,
     with_tenant,
 )

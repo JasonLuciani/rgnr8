@@ -11,13 +11,12 @@ from typing import Mapping
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-
 from rgnr8_qbo import (
     ConnectionStore,
     HttpResponse,
     InMemoryConnectionStore,
-    QboConnectService,
     QboConnection,
+    QboConnectService,
     QboEnvironment,
     QboOAuthConfig,
     QboOAuthError,
@@ -290,6 +289,88 @@ def test_sql_connection_store_roundtrip() -> None:
         assert len(store.list_all()) == 1
         store.delete("acme")
         assert store.get("acme") is None
+    finally:
+        conn.close()
+
+
+def _sample_conn() -> QboConnection:
+    return QboConnection(
+        tenant_id="acme", realm_id="R1", access_token="super-secret-access",
+        refresh_token="super-secret-refresh",
+        access_expires_at=T0 + timedelta(hours=1),
+        refresh_expires_at=T0 + timedelta(days=100),
+        status=QboStatus.CONNECTED, connected_at=T0,
+    )
+
+
+def test_tokens_are_encrypted_at_rest_and_decrypt_on_read() -> None:
+    from cryptography.fernet import Fernet
+    from rgnr8_qbo import FernetCipher, is_encrypted
+
+    key = Fernet.generate_key().decode()
+    conn = sqlite3.connect(":memory:")
+    try:
+        store = SqlConnectionStore(conn, cipher=FernetCipher(key))
+        store.create_schema()
+        store.save(_sample_conn())
+
+        # the raw column must NOT contain the plaintext tokens
+        raw = conn.execute("SELECT conn_json FROM rgnr8_qbo_connection").fetchone()[0]
+        assert "super-secret-access" not in raw
+        assert "super-secret-refresh" not in raw
+        blob = json.loads(raw)
+        assert is_encrypted(blob["access_token"]) and is_encrypted(blob["refresh_token"])
+
+        # but a reader with the key gets the real tokens back
+        got = store.get("acme")
+        assert got is not None
+        assert got.access_token == "super-secret-access"
+        assert got.refresh_token == "super-secret-refresh"
+    finally:
+        conn.close()
+
+
+def test_a_keyless_process_cannot_read_encrypted_tokens() -> None:
+    from cryptography.fernet import Fernet
+    from rgnr8_qbo import FernetCipher, NullCipher, SecretCipherError
+
+    key = Fernet.generate_key().decode()
+    conn = sqlite3.connect(":memory:")
+    try:
+        SqlConnectionStore(conn, cipher=FernetCipher(key)).create_schema()
+        SqlConnectionStore(conn, cipher=FernetCipher(key)).save(_sample_conn())
+        # a store with no key (NullCipher) must FAIL CLOSED, not return ciphertext
+        keyless = SqlConnectionStore(conn, cipher=NullCipher())
+        with pytest.raises(SecretCipherError):
+            keyless.get("acme")
+        # and a wrong key is refused too
+        other = SqlConnectionStore(conn, cipher=FernetCipher(Fernet.generate_key().decode()))
+        with pytest.raises(SecretCipherError):
+            other.get("acme")
+    finally:
+        conn.close()
+
+
+def test_plaintext_rows_migrate_to_encrypted_on_reencrypt() -> None:
+    from cryptography.fernet import Fernet
+    from rgnr8_qbo import FernetCipher, NullCipher, is_encrypted
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        # a row written before a key existed (plaintext)
+        SqlConnectionStore(conn, cipher=NullCipher()).create_schema()
+        SqlConnectionStore(conn, cipher=NullCipher()).save(_sample_conn())
+        raw = conn.execute("SELECT conn_json FROM rgnr8_qbo_connection").fetchone()[0]
+        assert "super-secret-access" in raw  # plaintext, as before the key
+
+        # once a key is configured, a FernetCipher reads the plaintext transparently
+        key = Fernet.generate_key().decode()
+        encrypted_store = SqlConnectionStore(conn, cipher=FernetCipher(key))
+        assert encrypted_store.get("acme") is not None  # transparent read
+        # and the one-shot migration re-encrypts every row
+        assert encrypted_store.reencrypt_all() == 1
+        blob = json.loads(conn.execute("SELECT conn_json FROM rgnr8_qbo_connection").fetchone()[0])
+        assert is_encrypted(blob["access_token"])
     finally:
         conn.close()
 

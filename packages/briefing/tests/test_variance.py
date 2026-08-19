@@ -1,6 +1,5 @@
-from rgnr8_forecast import Money
-from rgnr8_briefing import WeekActual, compute_variance, render_variance_text
 from factory import healthy_forecast
+from rgnr8_briefing import WeekActual, compute_variance, render_variance_text
 
 
 def _published():

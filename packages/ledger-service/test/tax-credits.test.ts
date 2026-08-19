@@ -312,3 +312,61 @@ test("credits and refunds respect a closed period", async () => {
   assert.equal((await call(s, "POST", "/t/acme/invoices/INV-1/credits",
     { date: "2026-08-10" })).status, 409);
 });
+
+// --- crediting / refunding a TAXED invoice reverses the tax, not just revenue --
+
+async function withTaxedInvoice(s: LedgerService, id = "INV-T"): Promise<void> {
+  // 100,000 net + 8.25% tax = 108,250 total; tax 8,250 sits on 2200.
+  await call(s, "POST", "/t/acme/invoices", {
+    id, party_id: "halcyon", date: "2026-08-01", tax_rate_ppm: 82_500,
+    lines: [{ description: "Taxable work", unit_amount_minor: "100000", account_code: "4100" }],
+  });
+}
+
+test("crediting a taxed invoice in full reverses the sales tax off the liability", async () => {
+  const s = await ready();
+  await withTaxedInvoice(s);
+  assert.equal(-(await balance(s, "2200")), 8250n, "tax was collected");
+
+  // full credit (defaults to the whole open balance, 108,250)
+  const r = await call(s, "POST", "/t/acme/invoices/INV-T/credits", { date: "2026-08-10" });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+
+  const d = await doc(s, "invoices", "INV-T");
+  assert.equal(d["open_minor"], "0");
+  assert.equal(d["status"], "PAID");
+  assert.equal(await balance(s, "4100"), 0n, "revenue is fully reversed — not left inflated by the tax");
+  assert.equal(await balance(s, "2200"), 0n, "the state is no longer owed tax on a cancelled sale");
+  assert.equal(await balance(s, "1200"), 0n, "AR is cleared");
+  assert.ok(await inBalance(s));
+});
+
+test("a partial credit on a taxed invoice splits net and tax proportionally", async () => {
+  const s = await ready();
+  await withTaxedInvoice(s);
+  // credit half the total (54,125): net 50,000 to revenue, tax 4,125 to 2200.
+  const r = await call(s, "POST", "/t/acme/invoices/INV-T/credits", {
+    date: "2026-08-10", amount_minor: "54125",
+  });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(await balance(s, "4100"), -50000n, "half the revenue reversed");
+  assert.equal(-(await balance(s, "2200")), 4125n, "half the tax reversed");
+  assert.equal(await balance(s, "1200"), 54125n, "AR down by exactly the credit");
+  assert.ok(await inBalance(s));
+});
+
+test("refunding a paid taxed invoice returns the tax off the liability too", async () => {
+  const s = await ready();
+  await withTaxedInvoice(s);
+  await call(s, "POST", "/t/acme/invoices/INV-T/payments", {
+    date: "2026-08-05", amount_minor: "108250",
+  });
+  assert.equal(await balance(s, "1000"), 108250n);
+
+  const r = await call(s, "POST", "/t/acme/invoices/INV-T/refunds", { date: "2026-08-12" });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(await balance(s, "1000"), 0n, "the full amount went back to the customer");
+  assert.equal(await balance(s, "4100"), 0n, "revenue reversed, not overstated by the tax");
+  assert.equal(await balance(s, "2200"), 0n, "the tax liability is cleared, not stranded");
+  assert.ok(await inBalance(s));
+});

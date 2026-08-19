@@ -197,6 +197,49 @@ export class PgLedgerStore implements LedgerStore {
     });
   }
 
+  /**
+   * Net debit position per account over an `entryDate` window, aggregated in the
+   * database. This is the pushdown that keeps a trial balance or statement from
+   * streaming a tenant's entire journal into memory: `SUM(...) GROUP BY account`
+   * against the numeric amount column, filtered by the entry date on the parent
+   * entry. Debit is positive, credit negative — identical to summing every line
+   * of `list()` in the same window, which the kernel's parity test asserts.
+   */
+  async netByAccount(
+    tenant: TenantId, window?: { from?: string; to?: string },
+  ): Promise<Map<AccountId, bigint>> {
+    return this.withTenant(tenant, async (q) => {
+      const params: unknown[] = [tenant];
+      const clauses: string[] = ["l.tenant_id = $1"];
+      if (window?.from !== undefined) {
+        params.push(window.from);
+        clauses.push(`e.entry_date >= $${params.length}`);
+      }
+      if (window?.to !== undefined) {
+        params.push(window.to);
+        clauses.push(`e.entry_date <= $${params.length}`);
+      }
+      const res = await q.query(
+        `SELECT l.account_id AS account_id,
+                SUM(CASE WHEN l.side = 'DEBIT' THEN l.amount_minor ELSE -l.amount_minor END) AS net
+           FROM journal_line l
+           JOIN journal_entry e
+             ON e.tenant_id = l.tenant_id AND e.sequence = l.entry_sequence
+          WHERE ${clauses.join(" AND ")}
+          GROUP BY l.account_id`,
+        params,
+      );
+      // Include every account with any line, even a net of zero — matching the
+      // in-memory reference, which keeps a touched-but-balanced account so it can
+      // still appear on the trial balance as a zero row.
+      const out = new Map<AccountId, bigint>();
+      for (const row of res.rows) {
+        out.set(String(row["account_id"]) as AccountId, BigInt(String(row["net"] ?? "0")));
+      }
+      return out;
+    });
+  }
+
   // --- internals ---------------------------------------------------------------
 
   /**

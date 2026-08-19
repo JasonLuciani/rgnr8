@@ -1,3 +1,4 @@
+from factory import breach_forecast, healthy_forecast
 from rgnr8_briefing import (
     Channel,
     Priority,
@@ -7,7 +8,6 @@ from rgnr8_briefing import (
     build_envelope,
     compute_variance,
 )
-from factory import breach_forecast, healthy_forecast
 
 
 def test_stable_briefing_is_email_only_normal_priority() -> None:

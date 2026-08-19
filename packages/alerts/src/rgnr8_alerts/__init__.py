@@ -28,14 +28,6 @@ recurring one fires again. Delivery transport (email/push/webhook) binds a real
 from __future__ import annotations
 
 from .alert import Alert
-from .rules import (
-    AlertRule,
-    BalanceBelow,
-    FloorBreachWithinWeeks,
-    LargeOutflow,
-    Severity,
-    TroughWorsened,
-)
 from .engine import (
     AlertDispatcher,
     AlertSink,
@@ -45,6 +37,14 @@ from .engine import (
     InMemoryAlertSink,
     InMemoryAlertStateStore,
     evaluate,
+)
+from .rules import (
+    AlertRule,
+    BalanceBelow,
+    FloorBreachWithinWeeks,
+    LargeOutflow,
+    Severity,
+    TroughWorsened,
 )
 
 __version__ = "0.1.0"

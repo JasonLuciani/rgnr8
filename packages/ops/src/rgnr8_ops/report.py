@@ -12,9 +12,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from rgnr8_briefing import Subscription, build_briefing, most_recent_fire, next_fire
 from rgnr8_forecast import run_forecast
 from rgnr8_forecast.brand import POSITIVE, RG_BASE_CSS, RG_TOKENS_CSS, RISK, WATCH, brand_bar
-from rgnr8_briefing import Subscription, build_briefing, most_recent_fire, next_fire
 from rgnr8_recon_monitor import Severity as ReconSeverity
 
 from .fleet import Fleet

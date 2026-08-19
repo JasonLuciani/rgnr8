@@ -3,9 +3,9 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from factory import tenant_source
 from rgnr8_briefing import RecordingDeliverer, Schedule, Subscription
 from rgnr8_runtime import DeliveryRuntime, SqlSubscriptionStore, serve
-from factory import tenant_source
 
 MT = ZoneInfo("America/Denver")
 MON_8 = Schedule(weekday=0, hour=8, minute=0, timezone="America/Denver")

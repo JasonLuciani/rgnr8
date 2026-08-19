@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import dataclasses
-from dataclasses import dataclass, field
-from datetime import date
+from dataclasses import dataclass
 
-from .enums import Category, Confidence, Direction, PublicationStatus, Scenario
+from .enums import Category, Direction, PublicationStatus, Scenario
 from .flow import CashFlow
 from .models import (
     ForecastConfig,
@@ -16,7 +15,7 @@ from .models import (
     downside_assumptions,
     upside_assumptions,
 )
-from .money import Money, money_sum
+from .money import money_sum
 from .projection import Projection, compute_projection
 from .reproducibility import ForecastVersion, fingerprint
 from .resolve import resolve

@@ -1,5 +1,5 @@
-from rgnr8_briefing import build_briefing, render_html, render_text
 from factory import breach_forecast, healthy_forecast
+from rgnr8_briefing import build_briefing, render_html, render_text
 
 
 def test_text_render_contains_headline_and_badge() -> None:

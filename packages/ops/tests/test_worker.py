@@ -4,17 +4,17 @@ scheduler, each firing on its own cadence and idempotent on re-tick."""
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from factory import at_risk_tenant, steady_tenant
 from rgnr8_alerts import InMemoryAlertSink
 from rgnr8_briefing import RecordingDeliverer
 from rgnr8_ops import (
-    InMemoryJobRunStore,
     Fleet,
+    InMemoryJobRunStore,
     build_fleet_jobs,
     build_worker,
 )
 from rgnr8_ops.scheduler import InMemoryLeaseStore
 from rgnr8_reports import RecordingReportSink
-from factory import at_risk_tenant, steady_tenant
 
 SECRET = "worker-secret"
 NOW_EPOCH = 1_760_000_000

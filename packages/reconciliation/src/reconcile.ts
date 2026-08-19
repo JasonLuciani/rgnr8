@@ -1,4 +1,4 @@
-import { Money, sumMoney } from "@rgnr8/ledger-kernel";
+import { sumMoney } from "@rgnr8/ledger-kernel";
 import { matchItems } from "./match.js";
 import {
   DifferenceCategory,

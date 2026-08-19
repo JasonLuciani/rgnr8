@@ -5,6 +5,7 @@ alongside the briefing/alerts jobs."""
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from factory import at_risk_tenant, steady_tenant
 from rgnr8_briefing import Schedule
 from rgnr8_ops import (
     Dispatcher,
@@ -17,7 +18,6 @@ from rgnr8_reports import (
     RecordingReportSink,
     ReportSchedule,
 )
-from factory import at_risk_tenant, steady_tenant
 
 SECRET = "reports-secret"
 NOW_EPOCH = 1_760_000_000

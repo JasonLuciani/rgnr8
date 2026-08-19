@@ -1,5 +1,6 @@
 from datetime import date
 
+from factory import AS_OF, usd
 from rgnr8_forecast import (
     CashPosition,
     CustomerHistory,
@@ -10,7 +11,6 @@ from rgnr8_forecast import (
     Scenario,
     run_all_scenarios,
 )
-from factory import AS_OF, usd
 
 
 def _inputs() -> ForecastInputs:

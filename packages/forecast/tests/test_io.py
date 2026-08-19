@@ -1,5 +1,6 @@
 from datetime import date
 
+from factory import AS_OF, usd
 from rgnr8_forecast import (
     Bill,
     CashPosition,
@@ -25,7 +26,6 @@ from rgnr8_forecast import (
     run_forecast,
     to_dto,
 )
-from factory import AS_OF, usd
 
 
 def _rich_inputs() -> ForecastInputs:

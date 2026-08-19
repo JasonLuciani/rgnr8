@@ -38,7 +38,6 @@ from typing import Protocol
 
 from .audit import AuditSink
 
-
 # --- password hashing --------------------------------------------------------
 
 

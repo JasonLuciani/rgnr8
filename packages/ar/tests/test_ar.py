@@ -8,13 +8,6 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from rgnr8_forecast import (
-    CustomerHistory,
-    Invoice,
-    Money,
-    PaymentObservation,
-)
-
 from rgnr8_ar import (
     AgingBucket,
     ARReport,
@@ -25,6 +18,12 @@ from rgnr8_ar import (
     draft_nudge,
     summarize_aging,
     typical_days_late,
+)
+from rgnr8_forecast import (
+    CustomerHistory,
+    Invoice,
+    Money,
+    PaymentObservation,
 )
 
 AS_OF = date(2026, 8, 13)

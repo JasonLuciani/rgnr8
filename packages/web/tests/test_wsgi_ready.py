@@ -2,7 +2,7 @@
 
 import io
 
-from rgnr8_web import WebApp, Request, wsgi_app
+from rgnr8_web import Request, WebApp, wsgi_app
 
 
 def test_ready_reports_provisioning_without_auth() -> None:
@@ -69,3 +69,25 @@ def test_wsgi_passes_authorization_header_through() -> None:
     b"".join(application(env, start_response))  # type: ignore[arg-type]
     # unknown token → 401 (proves the header was parsed and handed to auth, not dropped)
     assert seen["status"].startswith("401")  # type: ignore[union-attr]
+
+
+def test_an_unhandled_error_is_captured_and_a_reference_id_returned() -> None:
+    # a WebApp whose dispatch raises; the base adapter must capture (not swallow)
+    # the exception to the error reporter and hand the client the reference id.
+    from rgnr8_obs import InMemoryErrorReporter
+
+    class _Boom(WebApp):
+        def handle(self, req: Request):  # type: ignore[override]
+            raise RuntimeError("kaboom")
+
+    reporter = InMemoryErrorReporter()
+    application = wsgi_app(_Boom(), errors=reporter)
+    captured: dict[str, object] = {}
+
+    def start_response(status: str, headers: list[tuple[str, str]]) -> None:
+        captured["status"] = status
+
+    body = b"".join(application(_environ("GET", "/api/acme/today"), start_response)).decode()  # type: ignore[arg-type]
+    assert captured["status"].startswith("500")  # type: ignore[union-attr]
+    assert len(reporter.captured) == 1, "the error was captured, not dropped"
+    assert reporter.captured[0].id in body, "the reference id is surfaced to the client"

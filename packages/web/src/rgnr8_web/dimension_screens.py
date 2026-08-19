@@ -19,7 +19,6 @@ from collections.abc import Mapping
 
 from .books_screens import _card, _esc, _num, _seq
 
-
 _ANY_VALUE = '<span class="muted">any value</span>'
 
 

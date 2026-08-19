@@ -21,7 +21,7 @@ from html import escape
 
 from rgnr8_forecast.brand import RG_BASE_CSS, RG_TOKENS_CSS, brand_bar
 
-from .model import Block, Chart, KpiRow, Narrative, Report, Table
+from .model import Block, KpiRow, Narrative, Report, Table
 
 
 # --- HTML --------------------------------------------------------------------

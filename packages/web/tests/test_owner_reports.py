@@ -1,13 +1,18 @@
 """Owner-facing rendering of the TS ledger report contracts (aging/budget/
 retained-earnings), surfaced under /t/<tenant>/reports/<id>."""
 
-import json
 from datetime import date
 
 from rgnr8_forecast import CashPosition, ForecastConfig, ForecastInputs, Money
 from rgnr8_web import (
-    InMemoryUserDirectory, JwtAuthenticator, Request, Role, User, WebApp, sign_jwt,
+    InMemoryUserDirectory,
+    JwtAuthenticator,
+    Request,
+    Role,
+    User,
+    WebApp,
     render_owner_report,
+    sign_jwt,
 )
 
 SECRET = "owner-reports-secret"

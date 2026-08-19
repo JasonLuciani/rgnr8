@@ -523,4 +523,126 @@ describe("real PostgreSQL", { skip: URL_ ? false : "set RGNR8_TEST_DATABASE_URL 
       await ownerPool.end();
     }
   });
+
+  test("PARITY: the SQL trial-balance pushdown equals summing the journal in memory", async () => {
+    // The Pg store aggregates net-by-account in SQL; that MUST equal what summing
+    // every posted line in the window would give. Post a realistic mix, then
+    // compare the pushdown to a hand sum of list().
+    const tenant = `parity_${`${Date.now()}`.slice(-8)}`;
+    const pool = new pg.Pool({ connectionString: URL_ });
+    try {
+      const backend = new PostgresBackend(pool as never);
+      await backend.migrate();
+      const svc = new LedgerService(backend, { now: () => NOW });
+      const call = (method: string, path: string, body: unknown = "", query: Record<string, string> = {}) =>
+        svc.handle({ method, path, query, body: typeof body === "string" ? body : JSON.stringify(body), headers: {} });
+
+      await call("POST", `/t/${tenant}/accounts/seed`, { category: "PROFESSIONAL_SERVICES" });
+      for (const [date, a, b, amt] of [
+        ["2026-06-05", "1000", "4000", "500000"],
+        ["2026-06-20", "6300", "1000", "120000"],
+        ["2026-07-02", "1000", "4000", "300000"],
+        ["2026-07-15", "6300", "1000", "90000"],
+      ] as const) {
+        await call("POST", `/t/${tenant}/entries`, {
+          date, memo: "x",
+          lines: [{ code: a, side: "DEBIT", amount_minor: amt }, { code: b, side: "CREDIT", amount_minor: amt }],
+        });
+      }
+
+      // hand-sum net-by-account from list(), windowed to June, as the reference
+      const store = backend.store(tenant as never);
+      const window = { from: "2026-06-01", to: "2026-06-30" };
+      const ref = new Map<string, bigint>();
+      for (const e of await store.list(tenant as never)) {
+        if (e.entryDate < window.from || e.entryDate > window.to) continue;
+        for (const l of e.lines) {
+          const d = l.side === "DEBIT" ? l.amount.minorUnits : -l.amount.minorUnits;
+          ref.set(String(l.accountId), (ref.get(String(l.accountId)) ?? 0n) + d);
+        }
+      }
+      // the SQL pushdown for the same window
+      const pushed = await store.netByAccount!(tenant as never, window);
+      assert.equal(pushed.size, ref.size, "same set of accounts");
+      for (const [id, net] of ref) {
+        assert.equal(pushed.get(id as never), net, `account ${id} nets the same both ways`);
+      }
+    } finally {
+      await pool.end();
+    }
+  });
+
+  test("CONCURRENCY: two deploys migrating at once are serialized, both succeed", async () => {
+    // Two service instances booting against the same database call migrate()
+    // simultaneously. The advisory lock must serialize them so neither errors on
+    // concurrent DDL, and the schema is usable afterward.
+    const poolA = new pg.Pool({ connectionString: URL_ });
+    const poolB = new pg.Pool({ connectionString: URL_ });
+    try {
+      const a = new PostgresBackend(poolA as never);
+      const b = new PostgresBackend(poolB as never);
+      const results = await Promise.allSettled([a.migrate(), b.migrate()]);
+      for (const r of results) {
+        assert.equal(r.status, "fulfilled", r.status === "rejected" ? String(r.reason) : "");
+      }
+      // and the schema works: a service can seed and read a chart
+      const tenant = `mig_${`${Date.now()}`.slice(-8)}`;
+      const svc = new LedgerService(a, { now: () => NOW });
+      const seeded = await svc.handle({
+        method: "POST", path: `/t/${tenant}/accounts/seed`,
+        query: {}, body: JSON.stringify({ category: "PROFESSIONAL_SERVICES" }), headers: {},
+      });
+      assert.equal(seeded.status, 201, JSON.stringify(seeded.body));
+    } finally {
+      await poolA.end();
+      await poolB.end();
+    }
+  });
+
+  test("CONCURRENCY: parallel CRM events for one tenant get distinct, contiguous sequences", async () => {
+    // The feed's sequence is COALESCE(MAX,0)+1. Without serialization, concurrent
+    // appends read the same MAX and collide on the primary key — one throws and its
+    // event is lost. A transaction-scoped advisory lock must make this race clean.
+    const tenant = `race_${`${Date.now()}`.slice(-8)}`;
+    const pool = new pg.Pool({ connectionString: URL_ });
+    const backend = new PostgresBackend(pool as never);
+    await backend.migrate();
+    const svc = new LedgerService(backend, { now: () => NOW });
+    const call = (
+      method: string, path: string, body: unknown = "",
+    ): Promise<{ status: number; body: unknown }> =>
+      svc.handle({
+        method, path, query: {},
+        body: typeof body === "string" ? body : JSON.stringify(body),
+        headers: {},
+      });
+    try {
+      await call("POST", `/t/${tenant}/accounts/seed`, { category: "PROFESSIONAL_SERVICES" });
+
+      // 25 leads created at once: 25 append-event writes racing on the same tenant.
+      const N = 25;
+      const results = await Promise.all(
+        Array.from({ length: N }, (_v, i) =>
+          call("POST", `/t/${tenant}/leads`, {
+            id: `L-${i}`, name: `Lead ${i}`, source: "Race",
+          })),
+      );
+      for (const r of results) assert.equal(r.status, 201, JSON.stringify(r.body));
+
+      const feed = (await svc.handle({
+        method: "GET", path: `/t/${tenant}/events`, query: { limit: "1000" },
+        body: "", headers: {},
+      })).body as Record<string, unknown>;
+      const seqs = (feed["events"] as Array<Record<string, unknown>>).map((e) => Number(e["sequence"]));
+      assert.equal(seqs.length, N, "every event survived — none lost to a PK collision");
+      assert.equal(new Set(seqs).size, N, "every sequence is distinct");
+      assert.deepEqual(
+        [...seqs].sort((a, b) => a - b),
+        Array.from({ length: N }, (_v, i) => i + 1),
+        "sequences are 1..N with no gaps",
+      );
+    } finally {
+      await pool.end();
+    }
+  });
 });

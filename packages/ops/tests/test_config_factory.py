@@ -3,9 +3,8 @@
 import sqlite3
 
 import pytest
-
+from factory import steady_tenant
 from rgnr8_forecast import Money
-from rgnr8_web import Request
 from rgnr8_ops import (
     ConfigError,
     Fleet,
@@ -16,7 +15,7 @@ from rgnr8_ops import (
     create_application,
     readiness,
 )
-from factory import steady_tenant
+from rgnr8_web import Request
 
 
 def test_settings_defaults_and_dev_warning() -> None:

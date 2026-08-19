@@ -26,10 +26,10 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
-
-from rgnr8_forecast.brand import FOREST, IVORY, INK, LINE, MUTED, RISK
+from rgnr8_forecast.brand import FOREST, INK, IVORY, LINE, MUTED, RISK
 
 from .model import KpiRow, Report, Table
+
 
 # --- brand styles (openpyxl wants ARGB hex, no leading '#') -------------------
 def _argb(hex_color: str) -> str:

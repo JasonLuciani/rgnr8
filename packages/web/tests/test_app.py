@@ -1,7 +1,7 @@
 import json
 
-from rgnr8_web import Request
 from factory import app_with_two_tenants
+from rgnr8_web import Request
 
 BRIGHT = {"authorization": "Bearer tok-bright"}
 

@@ -6,7 +6,6 @@ import {
   type Currency,
   type JournalLineInput,
   type PostCommand,
-  type PostedEntry,
   type Provenance,
   type TenantId,
 } from "@rgnr8/ledger-kernel";

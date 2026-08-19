@@ -8,6 +8,7 @@ client and checks the ops report + dashboard surface them alongside cash.
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from factory import at_risk_tenant, steady_tenant
 from rgnr8_ops import (
     CloseProgress,
     ConnectorHealth,
@@ -16,7 +17,6 @@ from rgnr8_ops import (
     build_ops_report,
     render_ops_html,
 )
-from factory import steady_tenant, at_risk_tenant
 
 SECRET = "status-secret"
 NOW_EPOCH = 1_760_000_000

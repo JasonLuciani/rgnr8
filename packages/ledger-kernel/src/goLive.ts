@@ -12,7 +12,6 @@ import {
   AccountType,
   AccountSubtype,
   accountTypeOfSubtype,
-  normalBalanceOf,
   type Account,
   type AccountId,
   type Provenance,

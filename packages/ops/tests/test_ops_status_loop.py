@@ -9,8 +9,8 @@ import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from rgnr8_ops import Fleet, TenantOpsStatus, build_ops_report
 from factory import steady_tenant
+from rgnr8_ops import Fleet, TenantOpsStatus, build_ops_report
 
 SECRET = "loop-secret"
 NOW_EPOCH = 1_760_000_000

@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta
 
+from factory import at_risk_tenant, steady_tenant
 from rgnr8_alerts import InMemoryAlertSink
 from rgnr8_ops import (
     Dispatcher,
@@ -10,7 +11,6 @@ from rgnr8_ops import (
     build_alerts_job,
     default_alert_rules,
 )
-from factory import at_risk_tenant, steady_tenant
 
 SECRET = "alerts-secret"
 NOW_EPOCH = 1_760_000_000.0

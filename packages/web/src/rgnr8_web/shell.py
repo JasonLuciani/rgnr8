@@ -15,7 +15,6 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from html import escape
 
-from rgnr8_forecast import brand_bar
 from rgnr8_forecast.brand import IVORY, RG_BASE_CSS, RG_TOKENS_CSS, mark_svg
 
 from .audit import AuditEvent
@@ -40,6 +39,8 @@ _NAV: list[tuple[str, str, Permission]] = [
     ("packages", "Package", Permission.VIEW_PACKAGE),
     ("connect", "Connect", Permission.MANAGE_CONNECTORS),
     ("team", "Team", Permission.MANAGE_USERS),
+    ("settings", "Settings", Permission.MANAGE_SETTINGS),
+    ("integrations", "Integrations", Permission.MANAGE_INTEGRATIONS),
     ("audit", "Audit", Permission.MANAGE_USERS),
 ]
 
@@ -185,7 +186,7 @@ def render_app_home(
         if latest_period
         else '<span class="muted">No published package yet</span>'
     )
-    hello = f"Welcome back" if role != Role.ACCOUNTANT else "Welcome"
+    hello = "Welcome back" if role != Role.ACCOUNTANT else "Welcome"
     return f"""<h1>{escape(hello)}</h1>
     <p class="sub">{escape(display_name)} · you're signed in as <strong>{role.value.capitalize() if role else '—'}</strong></p>
     <div class="card"><div style="display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap">

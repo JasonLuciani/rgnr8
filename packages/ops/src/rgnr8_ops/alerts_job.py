@@ -29,10 +29,9 @@ or, in one call::
 from __future__ import annotations
 
 import dataclasses
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 
-from rgnr8_forecast import Money, run_forecast
 from rgnr8_alerts import (
     Alert,
     AlertDispatcher,
@@ -45,6 +44,7 @@ from rgnr8_alerts import (
     InMemoryAlertStateStore,
     evaluate,
 )
+from rgnr8_forecast import Money, run_forecast
 
 from .fleet import Fleet
 

@@ -9,31 +9,6 @@ from __future__ import annotations
 
 from .answer import Answer, Question, answer, ask, route, suggested_questions
 from .build import build_briefing
-from .models import (
-    Driver,
-    Evidence,
-    Fact,
-    StatusLevel,
-    Violation,
-    WeekGlance,
-    WeeklyBriefing,
-)
-from .render import render_html, render_text
-from .today import render_today_html
-from .validate import (
-    check_driver,
-    check_fact,
-    resolve_field,
-    validate_briefing,
-    validate_facts,
-)
-from .variance import (
-    VarianceReport,
-    WeekActual,
-    WeekVariance,
-    compute_variance,
-    render_variance_text,
-)
 from .delivery import (
     Channel,
     DeepLink,
@@ -48,6 +23,23 @@ from .delivery import (
     default_schedule,
     subject_for,
 )
+from .http_providers import (
+    FakeHttpClient,
+    HttpClient,
+    HttpEmailTransport,
+    HttpPushTransport,
+    HttpResponse,
+    UrllibHttpClient,
+)
+from .models import (
+    Driver,
+    Evidence,
+    Fact,
+    StatusLevel,
+    Violation,
+    WeekGlance,
+    WeeklyBriefing,
+)
 from .providers import (
     EmailTransport,
     FakeEmailTransport,
@@ -57,14 +49,7 @@ from .providers import (
     SendResult,
     TransportError,
 )
-from .http_providers import (
-    FakeHttpClient,
-    HttpClient,
-    HttpEmailTransport,
-    HttpPushTransport,
-    HttpResponse,
-    UrllibHttpClient,
-)
+from .render import render_html, render_text
 from .scheduler import (
     DeliveryOutcome,
     Subscription,
@@ -72,6 +57,21 @@ from .scheduler import (
     most_recent_fire,
     next_fire,
     run_due,
+)
+from .today import render_today_html
+from .validate import (
+    check_driver,
+    check_fact,
+    resolve_field,
+    validate_briefing,
+    validate_facts,
+)
+from .variance import (
+    VarianceReport,
+    WeekActual,
+    WeekVariance,
+    compute_variance,
+    render_variance_text,
 )
 
 __version__ = "0.1.0"

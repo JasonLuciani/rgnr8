@@ -1,3 +1,4 @@
+from factory import breach_forecast, healthy_forecast
 from rgnr8_briefing import (
     Channel,
     FakeEmailTransport,
@@ -6,7 +7,6 @@ from rgnr8_briefing import (
     build_briefing,
     build_envelope,
 )
-from factory import breach_forecast, healthy_forecast
 
 
 def _normal_env():  # type: ignore[no-untyped-def]

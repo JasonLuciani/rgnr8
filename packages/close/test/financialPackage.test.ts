@@ -67,7 +67,7 @@ function cmd(key: string, date: string, lines: PostCommand["lines"]): PostComman
 // Build a small but complete set of books, then extract the package input.
 async function realInput(
   store: InMemoryLedgerStore,
-  engine: PostingEngine,
+  _engine: PostingEngine,
 ): Promise<FinancialPackageInput> {
   const tb = await computeTrialBalance(store, TENANT, COA, USD);
   const is = await computeIncomeStatement(store, TENANT, COA, "2026-08-01", AS_OF, USD);

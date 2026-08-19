@@ -23,7 +23,6 @@ import {
   agingFromOpenItems,
   agingReportJson,
   dueDateFromTerms,
-  invoiceToPostCommand,
   billToPostCommand,
   type AgingReportJson,
   type DocPostContext,
@@ -529,6 +528,9 @@ export interface CreditRequest {
   readonly account_code?: string;
   /** For a refund: the bank account the money goes back out of. */
   readonly bank_code?: string;
+  /** Where the tax portion reverses to. Defaults to Sales Tax Payable (2200) —
+   *  pass it only if the invoice collected tax to a non-default account. */
+  readonly sales_tax_code?: string;
   readonly accounts?: Partial<ControlAccounts>;
 }
 
@@ -549,6 +551,46 @@ function primaryAccountOf(doc: DocRecord, override: string | undefined): string 
   }
   if (!best) throw new ArApError(`${doc.kind} ${doc.id} has no lines to credit against`);
   return best.accountCode;
+}
+
+/**
+ * The lines a credit or refund reverses, split so that the sales tax a taxed
+ * invoice collected comes back off Sales Tax Payable — not off revenue.
+ *
+ * A taxed invoice posts net→revenue and tax→tax-payable, so its reversal has to
+ * unwind both. Reversing the whole amount against the revenue account would leave
+ * the tax liability standing (the business keeps owing the state tax on a sale it
+ * refunded) and overstate revenue by the tax. The tax share of the amount being
+ * credited is carved out to the tax-payable account; net is the residual, so the
+ * two lines always sum back to the exact amount.
+ */
+function reversalLines(
+  ctx: Ctx,
+  doc: DocRecord,
+  amount: bigint,
+  revenueAccountCode: string,
+  req: CreditRequest,
+  memo: string,
+): { accountId: AccountId; quantity: number; unitAmount: Money; description: string }[] {
+  const revenueId = idFor(ctx.chart, revenueAccountCode, `credit account ${revenueAccountCode}`);
+  const taxMinor = BigInt(doc.taxMinor ?? "0");
+  const total = BigInt(doc.totalMinor);
+  if (doc.kind !== "invoice" || taxMinor <= 0n || total <= 0n) {
+    return [{ accountId: revenueId, quantity: 1, unitAmount: Money.fromMinorUnits(amount, ctx.currency), description: memo }];
+  }
+  // Tax share of exactly this amount; net takes the remainder so they tie out.
+  const taxPortion = (amount * taxMinor) / total;
+  const netPortion = amount - taxPortion;
+  const taxCode = String(req.sales_tax_code ?? "").trim() || DEFAULT_SALES_TAX_CODE;
+  const taxId = idFor(ctx.chart, taxCode, "sales tax payable");
+  const lines: { accountId: AccountId; quantity: number; unitAmount: Money; description: string }[] = [];
+  if (netPortion > 0n) {
+    lines.push({ accountId: revenueId, quantity: 1, unitAmount: Money.fromMinorUnits(netPortion, ctx.currency), description: memo });
+  }
+  if (taxPortion > 0n) {
+    lines.push({ accountId: taxId, quantity: 1, unitAmount: Money.fromMinorUnits(taxPortion, ctx.currency), description: `${memo} — sales tax` });
+  }
+  return lines;
 }
 
 function creditAmountOf(req: CreditRequest, doc: DocRecord): bigint {
@@ -600,9 +642,7 @@ export async function issueCredit(
 
   const ctrl = controls(req.accounts);
   const accountCode = primaryAccountOf(doc, req.account_code);
-  const accountId = idFor(ctx.chart, accountCode, `credit account ${accountCode}`);
   const creditId = String(req.id ?? "").trim() || `CM-${docId}-${date}`;
-  const money = Money.fromMinorUnits(amount, ctx.currency);
   const memo = String(req.memo ?? "").trim() || `Credit against ${docId}`;
 
   const docCtx: DocPostContext = {
@@ -610,7 +650,8 @@ export async function issueCredit(
     currency: ctx.currency,
     provenance: provenanceFor(kind === "invoice" ? "credit-memo" : "vendor-credit", date, ctx.postedAt),
   };
-  const lines = [{ accountId, quantity: 1, unitAmount: money, description: memo }];
+  // A taxed invoice's credit reverses tax off Sales Tax Payable, not revenue.
+  const lines = reversalLines(ctx, doc, amount, accountCode, req, memo);
 
   const command =
     kind === "invoice"
@@ -678,21 +719,17 @@ export async function issueRefund(
   const ctrl = controls(req.accounts);
   const bankCode = String(req.bank_code ?? "").trim() || ctrl.bankCode;
   const accountCode = primaryAccountOf(doc, req.account_code);
-  const money = Money.fromMinorUnits(amount, ctx.currency);
   const memo = String(req.memo ?? "").trim() || `Refund of ${docId}`;
   const refundId = String(req.id ?? "").trim() || `RF-${docId}-${date}`;
 
+  // A refund of a taxed sale returns the tax off Sales Tax Payable too, so the
+  // business does not keep owing the state tax on money it has handed back.
   const command = refundReceiptToPostCommand(
     {
       id: refundId,
       customerId: doc.partyId,
       date,
-      lines: [{
-        accountId: idFor(ctx.chart, accountCode, `refund account ${accountCode}`),
-        quantity: 1,
-        unitAmount: money,
-        description: memo,
-      }],
+      lines: reversalLines(ctx, doc, amount, accountCode, req, memo),
       memo,
     },
     idFor(ctx.chart, bankCode, "bank"),

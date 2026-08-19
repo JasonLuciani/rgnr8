@@ -1,5 +1,5 @@
-from rgnr8_briefing import StatusLevel, build_briefing
 from factory import breach_forecast, healthy_forecast
+from rgnr8_briefing import StatusLevel, build_briefing
 
 
 def test_healthy_is_stable() -> None:

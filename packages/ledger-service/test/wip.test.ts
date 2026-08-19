@@ -168,6 +168,30 @@ test("running it twice cannot double the adjustment", async () => {
   assert.equal((await balances(s))["1250"], 2000000n, "still 20,000, not 40,000");
 });
 
+test("a late cost in the same month can be corrected by re-running WIP", async () => {
+  // The trap: a date-only idempotency key made a corrective re-run for the same
+  // period-end collide (same key, new payload → rejected), so the module's
+  // promised "a late cost simply corrects the difference" threw a 400 instead.
+  const s = await ready();
+  await spend(s, "2026-06-15", "2000000");      // 25% of the 8,000,000 estimate
+  await bill(s, "2026-06-20", "0");
+  const first = await call(s, "POST", "/t/acme/wip/post", { date: "2026-06-30" });
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.equal((await balances(s))["1250"], 2500000n, "earned 25% of the 10m contract");
+
+  // a late June cost lands after the first run
+  await spend(s, "2026-06-25", "2000000");      // now 50% complete
+  const correction = await call(s, "POST", "/t/acme/wip/post", { date: "2026-06-30" });
+  assert.equal(correction.status, 200, "it corrects, it does not throw");
+  assert.equal(obj(correction)["posted"], true);
+  assert.equal((await balances(s))["1250"], 5000000n, "now earned 50% of the contract");
+
+  // and a third identical run is a genuine no-op
+  const noop = await call(s, "POST", "/t/acme/wip/post", { date: "2026-06-30" });
+  assert.equal(obj(noop)["posted"], false);
+  assert.equal((await balances(s))["1250"], 5000000n, "unchanged");
+});
+
 test("the next month posts the delta, not a second accrual", async () => {
   const s = await ready();
   await spend(s, "2026-06-15", "4000000");

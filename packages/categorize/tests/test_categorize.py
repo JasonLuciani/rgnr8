@@ -7,8 +7,8 @@ and category assertion is exact.
 from __future__ import annotations
 
 from rgnr8_categorize import (
-    Categorizer,
     CategorizedTxn,
+    Categorizer,
     LearnedModel,
     Rule,
     RuleSet,

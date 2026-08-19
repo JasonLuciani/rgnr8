@@ -231,6 +231,25 @@ test("an allocated entry cannot be quietly deleted", async () => {
   assert.match(String(obj(r)["error"]), /reverse entry/);
 });
 
+test("a posted entry cannot be edited into a different quantity", async () => {
+  // The trap: re-POSTing a posted entry with a new quantity overwrote the
+  // record but posted no correcting journal entry, so the roll-up and the T&M
+  // bill drifted from the ledger and over-billed the customer.
+  const s = await ready();
+  await makeWO(s);
+  const posted = await time(s, { id: "WO-1-eX", quantity_milli: "8000" });
+  assert.equal(posted.status, 201);
+  const before = await balances(s);
+
+  const edit = await time(s, { id: "WO-1-eX", quantity_milli: "16000" });
+  assert.equal(edit.status, 400);
+  assert.match(String(obj(edit)["error"]), /reverse entry .* and add a new one/);
+  assert.deepEqual(await balances(s), before, "the ledger did not move");
+
+  // an identical re-POST is a harmless retry, not an error
+  assert.equal((await time(s, { id: "WO-1-eX", quantity_milli: "8000" })).status, 201);
+});
+
 test("an unposted entry can be removed", async () => {
   const s = await ready();
   await makeWO(s);

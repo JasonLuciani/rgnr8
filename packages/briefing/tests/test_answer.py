@@ -1,6 +1,6 @@
+from factory import breach_forecast, healthy_forecast
 from rgnr8_briefing import Question, answer, ask, route, suggested_questions
 from rgnr8_briefing.validate import validate_facts
-from factory import breach_forecast, healthy_forecast
 
 
 def test_every_supported_answer_is_backed_by_valid_facts() -> None:

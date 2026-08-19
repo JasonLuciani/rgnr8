@@ -18,22 +18,15 @@ fake and no real credentials.
 
 from __future__ import annotations
 
-from .oauth import (
-    ACCOUNTING_SCOPE,
-    AUTHORIZE_ENDPOINT,
-    HttpClient,
-    HttpResponse,
-    QboEnvironment,
-    QboOAuthConfig,
-    QboOAuthError,
-    QboTokens,
-    REVOKE_ENDPOINT,
-    TOKEN_ENDPOINT,
-    UrllibHttpClient,
-    authorize_url,
-    exchange_code,
-    refresh_tokens,
-    revoke,
+from .client import (
+    MINOR_VERSION,
+    QboAccount,
+    QboApiClient,
+    QboApiError,
+    QboBankTxn,
+    QboBill,
+    QboCompany,
+    QboInvoice,
 )
 from .connection import (
     ConnectionStore,
@@ -44,15 +37,30 @@ from .connection import (
     connection_from_dict,
     connection_to_dict,
 )
-from .client import (
-    MINOR_VERSION,
-    QboAccount,
-    QboApiClient,
-    QboApiError,
-    QboBill,
-    QboBankTxn,
-    QboCompany,
-    QboInvoice,
+from .oauth import (
+    ACCOUNTING_SCOPE,
+    AUTHORIZE_ENDPOINT,
+    REVOKE_ENDPOINT,
+    TOKEN_ENDPOINT,
+    HttpClient,
+    HttpResponse,
+    QboEnvironment,
+    QboOAuthConfig,
+    QboOAuthError,
+    QboTokens,
+    UrllibHttpClient,
+    authorize_url,
+    exchange_code,
+    refresh_tokens,
+    revoke,
+)
+from .secrets_cipher import (
+    FernetCipher,
+    NullCipher,
+    SecretCipher,
+    SecretCipherError,
+    cipher_from_env,
+    is_encrypted,
 )
 from .service import (
     DEFAULT_STATE_TTL,
@@ -88,6 +96,13 @@ __all__ = [
     "SqlConnectionStore",
     "connection_to_dict",
     "connection_from_dict",
+    # secrets at rest
+    "SecretCipher",
+    "SecretCipherError",
+    "NullCipher",
+    "FernetCipher",
+    "cipher_from_env",
+    "is_encrypted",
     # service
     "QboConnectService",
     "StateSigner",

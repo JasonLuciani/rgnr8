@@ -17,8 +17,16 @@ from typing import Any
 
 from rgnr8_forecast import CashPosition, ForecastConfig, ForecastInputs, Money
 from rgnr8_web import (
-    InMemoryAuditLog, InMemoryUserDirectory, JwtAuthenticator, LedgerClient,
-    LedgerResponse, Request, Role, User, WebApp, sign_jwt,
+    InMemoryAuditLog,
+    InMemoryUserDirectory,
+    JwtAuthenticator,
+    LedgerClient,
+    LedgerResponse,
+    Request,
+    Role,
+    User,
+    WebApp,
+    sign_jwt,
 )
 
 SECRET = "inv-secret"
@@ -131,6 +139,7 @@ DEFAULT_ROUTES: dict[str, tuple[int, dict[str, Any]]] = {
     "POST /t/acme/wip/post": (200, {"posted": True, "entry_id": "acme:22",
                                     "jobs": [], "reason": ""}),
     "GET /t/acme/consolidation/groups": (200, {"groups": [CONSOLIDATED["group"]]}),
+    "GET /t/acme/consolidation/groups/group": (200, {"group": CONSOLIDATED["group"]}),
     "GET /t/acme/consolidation/groups/group/report": (200, CONSOLIDATED),
     "POST /t/acme/consolidation/groups": (201, {"group": CONSOLIDATED["group"]}),
     "POST /t/acme/consolidation/groups/group/eliminations": (201, {"elimination": {}}),
@@ -159,6 +168,11 @@ def _app(
     users.set_membership("u-owner", "acme", Role.OWNER)
     users.upsert_user(User("u-view", "view@acme.com", "Viewer"))
     users.set_membership("u-view", "acme", Role.VIEWER)
+    # The Harper Holdings group consolidates "parent" and "sub"; the owner of the
+    # holding company is a member of both subsidiaries. Consolidation is only
+    # allowed across businesses the user actually belongs to.
+    for tenant in ("parent", "sub"):
+        users.set_membership("u-owner", tenant, Role.OWNER)
     audit = InMemoryAuditLog()
     app = WebApp(authenticator=JwtAuthenticator(SECRET, clock=lambda: NOW),
                  users=users, audit=audit)
@@ -362,6 +376,39 @@ def test_creating_a_group_sends_the_named_entities_only() -> None:
     assert sent["members"] == [{"tenant_id": "parent"}, {"tenant_id": "sub"}]
     assert sent["intercompany_codes"] == ["1900", "2900"]
     assert any(e.action == "consolidation.group" for e in audit.events(tenant_id="acme"))
+
+
+def test_a_group_cannot_name_a_business_the_user_does_not_belong_to() -> None:
+    """The consolidation feature is the one place the service reads across
+    tenants, and it trusts this app to have checked. A tenant admin who knows
+    another company's slug (it is in every URL) must not be able to consolidate
+    it — the group may only name businesses the user is a member of."""
+    app, transport, _a = _app()
+    r = _req(app, "/t/acme/consolidation", method="POST",
+             body="name=Loot&members=acme,+victimco")
+    assert r.status == 302
+    assert "only+consolidate+businesses+you+belong+to" in str(
+        r.headers.get("Location", "")
+    ).replace("%20", "+") or "you+belong+to" in str(r.headers.get("Location", ""))
+    # …and nothing reached the service: the cross-tenant read never starts
+    assert not [c for c in transport.calls if c[0] == "POST" and "/groups" in c[1]]
+
+
+def test_a_report_for_a_group_naming_a_forbidden_business_is_refused() -> None:
+    """Belt-and-suspenders: even if a group was built while the user still had
+    access, losing membership in a member business hides the whole report."""
+    routes = dict(DEFAULT_ROUTES)
+    routes["GET /t/acme/consolidation/groups/group"] = (200, {"group": {
+        **CONSOLIDATED["group"],
+        "members": [{"tenant_id": "acme", "label": "Acme", "ownership_ppm": 1000000},
+                    {"tenant_id": "stranger", "label": "Stranger", "ownership_ppm": 1000000}],
+    }})
+    app, transport, _a = _app(routes)
+    r = _req(app, "/t/acme/consolidation/group")
+    assert r.status == 200
+    assert "not a member of" in r.body
+    # the report itself was never fetched
+    assert not [c for c in transport.calls if c[1].endswith("/report")]
 
 
 def test_an_elimination_that_is_half_an_entry_is_refused_before_it_is_sent() -> None:

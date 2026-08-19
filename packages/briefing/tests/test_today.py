@@ -1,5 +1,5 @@
-from rgnr8_briefing import render_today_html
 from factory import breach_forecast, healthy_forecast
+from rgnr8_briefing import render_today_html
 
 
 def test_today_is_self_contained_html() -> None:

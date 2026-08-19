@@ -8,7 +8,7 @@ sequence numbers. Nothing renders unless it recomputes from the forecast (see
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from enum import Enum
 from typing import Literal

@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Mapping, Optional
 
+from rgnr8_billing import Account, UsageSummary
 from rgnr8_forecast import (
     CustomerHistory,
     ForecastConfig,
@@ -28,7 +29,6 @@ from rgnr8_forecast import (
     Invoice,
     Money,
 )
-from rgnr8_billing import Account, UsageSummary
 from rgnr8_scenario import Scenario as ScenarioAdjustments
 
 

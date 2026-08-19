@@ -49,10 +49,18 @@ import {
   InMemoryInventoryStore, PgInventoryStore, type InventoryStore,
 } from "./inventory.js";
 import { InMemoryCrmStore, PgCrmStore, type CrmStore } from "./crm.js";
+import { InMemorySettingsStore, PgSettingsStore, type SettingsStore } from "./settings.js";
 import {
   InMemoryConsolidationStore, PgConsolidationStore, type ConsolidationStore,
 } from "./consolidation.js";
 import { rlsDdl } from "./security.js";
+
+/**
+ * A fixed key for the Postgres advisory lock that serializes schema migration.
+ * Any bigint constant works; it only has to be the same in every deploy so they
+ * contend on the same lock. (0x52474e52 == "RGNR" in ASCII, for recognisability.)
+ */
+const RGNR8_MIGRATION_LOCK_KEY = 0x52474e52;
 
 /**
  * The storage seam the ledger service runs on.
@@ -109,8 +117,12 @@ export interface LedgerBackend {
   crm(): CrmStore;
   /** Entity groups and intercompany eliminations. */
   consolidation(): ConsolidationStore;
+  /** Per-account administrator settings (inventory costing, currency, retention). */
+  settings(): SettingsStore;
   /** Create/verify schema. Safe to run repeatedly. */
   migrate(): Promise<void>;
+  /** A readiness probe: true when the store is reachable (for /ready). */
+  ping(): Promise<boolean>;
 }
 
 /** In-memory backend — local dev and tests. Nothing survives a restart. */
@@ -132,6 +144,7 @@ export class InMemoryBackend implements LedgerBackend {
   private readonly inventoryStore = new InMemoryInventoryStore();
   private readonly crmStore = new InMemoryCrmStore();
   private readonly consolidationStore = new InMemoryConsolidationStore();
+  private readonly settingsStore = new InMemorySettingsStore();
   private readonly accounts = new Map<string, Map<string, Account>>();
   private readonly stores = new Map<string, InMemoryLedgerStore>();
   private readonly periodStores = new Map<string, InMemoryPeriodStore>();
@@ -246,6 +259,10 @@ export class InMemoryBackend implements LedgerBackend {
     return this.consolidationStore;
   }
 
+  settings(): SettingsStore {
+    return this.settingsStore;
+  }
+
   async migrate(): Promise<void> {
     await this.docs.migrate();
     await this.reconStore.migrate();
@@ -264,6 +281,11 @@ export class InMemoryBackend implements LedgerBackend {
     await this.inventoryStore.migrate();
     await this.crmStore.migrate();
     await this.consolidationStore.migrate();
+    await this.settingsStore.migrate();
+  }
+
+  ping(): Promise<boolean> {
+    return Promise.resolve(true); // in-memory is always reachable
   }
 }
 
@@ -293,6 +315,7 @@ export class PostgresBackend implements LedgerBackend {
   private readonly inventoryStore: PgInventoryStore;
   private readonly crmStore: PgCrmStore;
   private readonly consolidationStore: PgConsolidationStore;
+  private readonly settingsStore: PgSettingsStore;
 
   /**
    * @param pool     a connection pool.
@@ -327,9 +350,42 @@ export class PostgresBackend implements LedgerBackend {
     this.inventoryStore = new PgInventoryStore(pool);
     this.crmStore = new PgCrmStore(pool);
     this.consolidationStore = new PgConsolidationStore(pool);
+    this.settingsStore = new PgSettingsStore(pool);
   }
 
   async migrate(): Promise<void> {
+    // Serialize the whole migration behind a session-level advisory lock held on
+    // one dedicated connection, so two deploys running migrate() at once can't
+    // race on CREATE/ALTER. The DDL is already idempotent, but concurrent DDL on
+    // the same object can still deadlock or error; this makes exactly one process
+    // migrate at a time and the other wait, then no-op over the finished schema.
+    const lock = await this.pool.connect();
+    let held = false;
+    try {
+      // A fixed, arbitrary key namespaces this lock to RGNR8 schema migration.
+      // pg-mem (the in-memory test double) has no advisory locks; there is also
+      // no concurrency to guard there, so if acquisition isn't available we
+      // simply migrate without it. Real PostgreSQL always takes the lock.
+      try {
+        await lock.query("SELECT pg_advisory_lock($1)", [RGNR8_MIGRATION_LOCK_KEY]);
+        held = true;
+      } catch {
+        held = false;
+      }
+      await this.migrateAll();
+    } finally {
+      if (held) {
+        try {
+          await lock.query("SELECT pg_advisory_unlock($1)", [RGNR8_MIGRATION_LOCK_KEY]);
+        } catch {
+          /* the connection is being released anyway */
+        }
+      }
+      lock.release();
+    }
+  }
+
+  private async migrateAll(): Promise<void> {
     await this.ledger.migrate();
     await this.accounts.migrate();
     await this.docs.migrate();
@@ -349,6 +405,7 @@ export class PostgresBackend implements LedgerBackend {
     await this.inventoryStore.migrate();
     await this.crmStore.migrate();
     await this.consolidationStore.migrate();
+    await this.settingsStore.migrate();
     // Last, once every table exists: make the database itself enforce tenant
     // isolation, so a query that forgets its tenant filter returns nothing
     // rather than everything.
@@ -423,6 +480,19 @@ export class PostgresBackend implements LedgerBackend {
 
   consolidation(): ConsolidationStore {
     return this.consolidationStore;
+  }
+
+  settings(): SettingsStore {
+    return this.settingsStore;
+  }
+
+  async ping(): Promise<boolean> {
+    try {
+      await this.pool.query("SELECT 1");
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   chart(tenant: TenantId): Promise<ChartOfAccounts> {

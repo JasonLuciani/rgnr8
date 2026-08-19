@@ -72,6 +72,7 @@ export const TENANT_TABLES: readonly string[] = Object.freeze([
   "billing_milestone",
   "inventory_item",
   "inventory_movement",
+  "inventory_lot",
   "crm_lead",
   "crm_opportunity",
   "crm_event",
@@ -79,6 +80,8 @@ export const TENANT_TABLES: readonly string[] = Object.freeze([
   "entity_group_member",
   "elimination_entry",
   "elimination_line",
+  // per-account settings
+  "account_settings",
 ]);
 
 /**

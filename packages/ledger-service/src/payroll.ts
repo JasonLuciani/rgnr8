@@ -80,6 +80,14 @@ export interface PayrollRunRecord {
   readonly entryId: string;
   readonly bankCode: string;
   readonly lines: readonly PayrollLineRecord[];
+  /**
+   * Bumped every time the run is voided. It is woven into the posting
+   * idempotency key so that a corrected re-run after a void is a genuinely
+   * distinct event, and does not collide with the original key (which would
+   * make the engine hand back the already-reversed entry and post nothing —
+   * silently dropping a real payroll expense while the status reads POSTED).
+   */
+  readonly revision: number;
 }
 
 export interface PayrollStore {
@@ -158,8 +166,10 @@ CREATE TABLE IF NOT EXISTS payroll_run (
   memo                  text NOT NULL DEFAULT '',
   entry_id              text NOT NULL DEFAULT '',
   bank_code             text NOT NULL DEFAULT '',
+  revision              integer NOT NULL DEFAULT 0,
   CONSTRAINT payroll_run_pk PRIMARY KEY (tenant_id, id)
 );
+ALTER TABLE payroll_run ADD COLUMN IF NOT EXISTS revision integer NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS payroll_run_line (
   tenant_id            text NOT NULL,
@@ -258,6 +268,7 @@ export class PgPayrollStore implements PayrollStore {
       memo: String(r["memo"] ?? ""),
       entryId: String(r["entry_id"] ?? ""),
       bankCode: String(r["bank_code"] ?? ""),
+      revision: Number(r["revision"] ?? 0),
       lines,
     };
   }
@@ -290,14 +301,15 @@ export class PgPayrollStore implements PayrollStore {
     await this.tx(tenant, async (db) => {
       await db.query(
         `INSERT INTO payroll_run (tenant_id, id, run_date, status, employer_taxes_minor,
-           memo, entry_id, bank_code)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+           memo, entry_id, bank_code, revision)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
          ON CONFLICT (tenant_id, id) DO UPDATE SET
            run_date=EXCLUDED.run_date, status=EXCLUDED.status,
            employer_taxes_minor=EXCLUDED.employer_taxes_minor, memo=EXCLUDED.memo,
-           entry_id=EXCLUDED.entry_id, bank_code=EXCLUDED.bank_code`,
+           entry_id=EXCLUDED.entry_id, bank_code=EXCLUDED.bank_code,
+           revision=EXCLUDED.revision`,
         [tenant, run.id, run.date, run.status, run.employerTaxesMinor, run.memo,
-         run.entryId, run.bankCode],
+         run.entryId, run.bankCode, run.revision],
       );
       await db.query(
         "DELETE FROM payroll_run_line WHERE tenant_id=$1 AND run_id=$2", [tenant, run.id],
@@ -502,6 +514,9 @@ export async function createRun(
     entryId: "",
     bankCode: String(req.bank_code ?? "").trim() || DEFAULT_PAYROLL_CODES.bank,
     lines,
+    // Re-entering a run after it was voided keeps the bumped revision, so its
+    // fresh post cannot collide with the reversed original's idempotency key.
+    revision: existing?.revision ?? 0,
   };
   await store.saveRun(String(ctx.tenant), run);
   return run;
@@ -583,7 +598,9 @@ function toEngineRun(run: PayrollRunRecord, currency: Currency): PayrollRun {
     netPay: Money.fromMinorUnits(BigInt(l.netMinor), currency),
   }));
   return {
-    id: run.id,
+    // Revision 0 keeps the original `payroll:<id>` key; a re-run after a void
+    // (revision ≥ 1) posts under `payroll:<id>~r<n>`, a distinct entry.
+    id: run.revision > 0 ? `${run.id}~r${run.revision}` : run.id,
     date: run.date,
     employees,
     employerTaxes: Money.fromMinorUnits(BigInt(run.employerTaxesMinor), currency),
@@ -645,14 +662,16 @@ export async function voidRun(ctx: PayrollContext, id: string): Promise<Record<s
     chart, ctx.backend.store(ctx.tenant), ctx.backend.periods(ctx.tenant),
   );
   await engine.reverse(ctx.tenant, run.entryId as EntryId, {
-    idempotencyKey: asIdempotencyKey(`payroll-void:${run.id}`),
+    // Key the reversal by the revision being reversed, so voiding a re-run
+    // (a later revision) does not collide with the first void.
+    idempotencyKey: asIdempotencyKey(`payroll-void:${run.id}~r${run.revision}`),
     periodKey: asPeriodKey(run.date.slice(0, 7)),
     entryDate: run.date,
     postedAt: ctx.now(),
     provenance: provenanceFor(run.date, ctx.now()),
     memo: `Void of payroll ${run.id}`,
   });
-  const voided: PayrollRunRecord = { ...run, status: "VOID" };
+  const voided: PayrollRunRecord = { ...run, status: "VOID", revision: run.revision + 1 };
   await store.saveRun(String(ctx.tenant), voided);
   return runJson(voided);
 }
@@ -698,6 +717,7 @@ export async function liabilityView(
 }
 
 export interface RemitRequest {
+  readonly id?: string;
   readonly date?: string;
   readonly amount_minor?: string | number;
   readonly bank_code?: string;
@@ -734,18 +754,35 @@ export async function remit(
   const money = Money.fromMinorUnits(amount, ctx.currency);
   const memo = String(req.memo ?? "").trim() || "Payroll tax deposit";
 
+  // With an explicit id the remittance is idempotent — a retried request posts
+  // once. Without one, two real remittances of the same amount against the same
+  // liability on the same day (two separate deposits to the same agency) are
+  // distinct events, so the default key carries a per-(date,liability) sequence
+  // rather than collapsing the second into the first.
+  const explicitId = String(req.id ?? "").trim();
+  let remitKey = `payroll-remit:${explicitId}`;
+  if (!explicitId) {
+    const priorSameDay = (await ctx.backend.store(ctx.tenant).list(ctx.tenant)).filter(
+      (e) => e.provenance.sourceSystem === "payroll"
+        && e.provenance.sourceObject === "payroll.remit"
+        && e.entryDate === date
+        && e.lines.some((l) => l.accountId === liability),
+    ).length;
+    remitKey = `payroll-remit:${date}:${liabilityCode}#${priorSameDay}`;
+  }
+
   const engine = new PostingEngine(
     chart, ctx.backend.store(ctx.tenant), ctx.backend.periods(ctx.tenant),
   );
   const entry = await engine.post(
     {
       tenantId: ctx.tenant,
-      idempotencyKey: asIdempotencyKey(`payroll-remit:${date}:${amount}:${liabilityCode}`),
+      idempotencyKey: asIdempotencyKey(remitKey),
       periodKey: asPeriodKey(date.slice(0, 7)),
       currency: ctx.currency,
       entryDate: date,
       memo,
-      provenance: provenanceFor(date, ctx.now()),
+      provenance: { ...provenanceFor(date, ctx.now()), sourceObject: "payroll.remit" },
       lines: [
         { accountId: liability, side: "DEBIT", amount: money },
         { accountId: bank, side: "CREDIT", amount: money },

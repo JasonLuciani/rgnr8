@@ -22,6 +22,8 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Mapping, Protocol
 
+from .secrets_cipher import NullCipher, SecretCipher
+
 
 class QboStatus(str, Enum):
     CONNECTED = "connected"          # access token live or refreshable
@@ -150,8 +152,14 @@ class _DbApiConnection(Protocol):
 
 class SqlConnectionStore:
     """QBO connections over any DB-API 2.0 connection, one JSON row per tenant.
-    ``placeholder`` is ``?`` (sqlite) or ``%s`` (psycopg). The token columns
-    should be encrypted at rest by the deployment (KMS/pgcrypto)."""
+    ``placeholder`` is ``?`` (sqlite) or ``%s`` (psycopg).
+
+    The access + refresh tokens are encrypted at rest by ``cipher`` before they
+    are written and decrypted on read. The default ``NullCipher`` preserves the
+    old plaintext behaviour for dev/tests; production passes a ``FernetCipher``
+    keyed from ``RGNR8_SECRET_KEY`` (see ``secrets_cipher.cipher_from_env``).
+    Plaintext rows written before a key existed still read back and are
+    re-encrypted on their next save."""
 
     def __init__(
         self,
@@ -159,10 +167,26 @@ class SqlConnectionStore:
         *,
         table: str = "rgnr8_qbo_connection",
         placeholder: str = "?",
+        cipher: "SecretCipher | None" = None,
     ) -> None:
         self._conn = connection
         self._t = table
         self._ph = placeholder
+        self._cipher: SecretCipher = cipher if cipher is not None else NullCipher()
+
+    def _encrypt_payload(self, conn: QboConnection) -> str:
+        data = connection_to_dict(conn)
+        data["access_token"] = self._cipher.encrypt(str(data.get("access_token", "")))
+        data["refresh_token"] = self._cipher.encrypt(str(data.get("refresh_token", "")))
+        return json.dumps(data, sort_keys=True)
+
+    def _decrypt_row(self, raw: str) -> QboConnection:
+        data = dict(json.loads(raw))
+        if isinstance(data.get("access_token"), str):
+            data["access_token"] = self._cipher.decrypt(data["access_token"])
+        if isinstance(data.get("refresh_token"), str):
+            data["refresh_token"] = self._cipher.decrypt(data["refresh_token"])
+        return connection_from_dict(data)
 
     def create_schema(self) -> None:
         cur = self._conn.cursor()
@@ -177,7 +201,7 @@ class SqlConnectionStore:
 
     def save(self, conn: QboConnection) -> None:
         p = self._ph
-        payload = json.dumps(connection_to_dict(conn), sort_keys=True)
+        payload = self._encrypt_payload(conn)
         cur = self._conn.cursor()
         try:
             cur.execute(
@@ -203,7 +227,7 @@ class SqlConnectionStore:
         )
         if not rows:
             return None
-        return connection_from_dict(json.loads(str(rows[0][0])))
+        return self._decrypt_row(str(rows[0][0]))
 
     def delete(self, tenant_id: str) -> None:
         cur = self._conn.cursor()
@@ -215,4 +239,13 @@ class SqlConnectionStore:
 
     def list_all(self) -> list[QboConnection]:
         rows = self._rows(f"SELECT conn_json FROM {self._t} ORDER BY tenant_id", ())
-        return [connection_from_dict(json.loads(str(r[0]))) for r in rows]
+        return [self._decrypt_row(str(r[0])) for r in rows]
+
+    def reencrypt_all(self) -> int:
+        """Re-write every row through the current cipher — the one-shot migration
+        that encrypts rows written before a key was configured. Returns the count.
+        Safe to run repeatedly (an already-encrypted row simply re-encrypts)."""
+        conns = self.list_all()
+        for conn in conns:
+            self.save(conn)
+        return len(conns)

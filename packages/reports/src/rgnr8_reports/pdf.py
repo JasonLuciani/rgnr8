@@ -40,18 +40,19 @@ from reportlab.platypus import (  # noqa: E402
     PageTemplate,
     Paragraph,
     Spacer,
-    Table as RLTable,
     TableStyle,
 )
-
+from reportlab.platypus import (
+    Table as RLTable,
+)
 from rgnr8_forecast.brand import (
     FOREST,
+    INK,
     IVORY,
     LINE,
     MUTED,
     RISK,
     SAGE,
-    INK,
 )
 
 from .model import Block, Chart, KpiRow, Narrative, Report, Table

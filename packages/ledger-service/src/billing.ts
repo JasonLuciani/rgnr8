@@ -52,7 +52,6 @@ export class BillingError extends Error {}
 
 export const RETAINAGE_RECEIVABLE_CODE = "1260";
 export const CUSTOMER_DEPOSITS_CODE = "2400";
-const MILLI = 1000n;
 const PPM = 1_000_000n;
 
 export type MilestoneStatus = "PENDING" | "BILLED" | "CANCELLED";
@@ -876,7 +875,21 @@ export async function takeDeposit(
       `this chart has no account ${CUSTOMER_DEPOSITS_CODE} — create a job to have the job-costing accounts added`,
     );
   }
-  const id = String(input.id ?? "").trim() || `${jobId}-${date}`;
+  // With an explicit id the deposit is idempotent — a retried request with the
+  // same id posts once. Without one, two real deposits on the same job the same
+  // day (a morning deposit, an afternoon top-up) are distinct events, so the
+  // default id carries a per-(job,date) sequence rather than collapsing them
+  // into one on a `${job}-${date}` collision.
+  const explicitId = String(input.id ?? "").trim();
+  let id = explicitId;
+  if (!id) {
+    const priorSameDay = (await ctx.backend.store(ctx.tenant).list(ctx.tenant)).filter(
+      (e) => e.provenance.sourceSystem === "deposit"
+        && e.entryDate === date
+        && e.lines.some((l) => l.dimensions?.[JOB_DIMENSION] === job.id),
+    ).length;
+    id = `${jobId}-${date}#${priorSameDay}`;
+  }
   const command: PostCommand = {
     tenantId: ctx.tenant,
     idempotencyKey: asIdempotencyKey(`deposit:${id}`),

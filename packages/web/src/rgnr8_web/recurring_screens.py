@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from .books_screens import _card, _esc, _minor, _num, _seq, money
+from .books_screens import _card, _esc, _minor, _num, _seq
 
 
 def _banner(kind: str, text: str) -> str:

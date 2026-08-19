@@ -9,9 +9,6 @@ from html import escape
 from typing import Any, Callable, cast
 
 import pytest
-
-from rgnr8_forecast import Money
-
 from rgnr8_reports import (
     BASELINE_REPORTS,
     DataContext,
@@ -21,7 +18,6 @@ from rgnr8_reports import (
     ReportSpec,
     ReportSpecError,
     SqlSavedReportStore,
-    Table,
     baseline,
     build_report,
     known_kinds,
@@ -316,7 +312,6 @@ def test_xlsx_export_has_cover_and_table_sheets(
     import io
 
     import openpyxl
-
     from rgnr8_reports import render_xlsx
 
     report = render(baseline("exec_board_pack"), full_context, clock=clock)
@@ -341,7 +336,6 @@ def test_xlsx_writes_amounts_as_numbers(
     import io
 
     import openpyxl
-
     from rgnr8_reports import render_xlsx
 
     report = render(baseline("financial_statements"), full_context, clock=clock)
@@ -382,7 +376,6 @@ def _sched(fmt: str = "pdf", report_id: str = "exec_board_pack"):
     from zoneinfo import ZoneInfo  # noqa: F401
 
     from rgnr8_briefing import Schedule
-
     from rgnr8_reports import ReportSchedule
 
     return ReportSchedule(
@@ -500,7 +493,6 @@ def test_schedule_store_roundtrip_inmemory() -> None:
 
 def ReportScheduleForOtherTenant():  # noqa: N802 - tiny helper
     from rgnr8_briefing import Schedule
-
     from rgnr8_reports import ReportSchedule
 
     return ReportSchedule(
