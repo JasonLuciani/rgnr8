@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rgnr8-ocr"
+version = "0.1.0"
+description = "RGNR8 receipt & document capture — turn a photographed receipt or bill into a drafted, coded transaction. A provider-agnostic OCR seam plus a stdlib heuristic extractor; wiring a real vision provider turns it live."
+requires-python = ">=3.11"
+dependencies = []
+license = { text = "UNLICENSED" }
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "mypy>=1.8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+mypy_path = "src"
