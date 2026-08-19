@@ -82,6 +82,9 @@ export const TENANT_TABLES: readonly string[] = Object.freeze([
   "elimination_line",
   // per-account settings
   "account_settings",
+  // debt
+  "loan",
+  "loan_payment",
 ]);
 
 /**

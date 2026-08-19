@@ -86,6 +86,7 @@ const BASE: readonly TemplateLine[] = [
   { code: "6700", name: "Utilities", subtype: S.EXPENSE },
   { code: "6800", name: "Travel & Meals", subtype: S.EXPENSE },
   { code: "6900", name: "Depreciation Expense", subtype: S.OTHER_EXPENSE },
+  { code: "6950", name: "Interest Expense", subtype: S.EXPENSE },
 ];
 
 

@@ -13,6 +13,7 @@ import type { LedgerBackend } from "./backend.js";
 import { validateDimensions } from "./dimensions.js";
 import { mulDiv } from "./estimates.js";
 import { COST_CODE_DIMENSION, JOB_DIMENSION } from "./jobs.js";
+import { type InventoryCostingMethod, usesLots } from "./settings.js";
 
 /**
  * Inventory — what is on the shelf, what it cost, and whether the shelf agrees
@@ -554,10 +555,11 @@ export async function applyReceipt(
     entryId: input.entryId ?? "",
     memo: input.memo ?? "",
   });
-  // Under FIFO, a receipt is a new cost layer. Issues will relieve the oldest
-  // layer first; the item's blended unit cost above is only a display figure,
-  // the lots are the source of truth for what an issue actually costs.
-  if (await costingMethod(ctx) === "FIFO") {
+  // Under a lot-based method (FIFO, LIFO, specific-ID) a receipt is a new cost
+  // layer. Issues relieve a layer chosen by the method — oldest, newest, or the
+  // one the caller names; the item's blended unit cost above is only a display
+  // figure, the lots are the source of truth for what an issue actually costs.
+  if (usesLots(await costingMethod(ctx))) {
     const existing = await ctx.backend.inventory().lots(String(ctx.tenant), item.sku);
     const seq = existing.reduce((m, l) => Math.max(m, l.seq), 0) + 1;
     await ctx.backend.inventory().saveLot(String(ctx.tenant), {
@@ -573,20 +575,47 @@ export async function applyReceipt(
 }
 
 /** The account's inventory costing method, defaulting to moving average. */
-async function costingMethod(ctx: InventoryContext): Promise<"MOVING_AVERAGE" | "FIFO"> {
+async function costingMethod(ctx: InventoryContext): Promise<InventoryCostingMethod> {
   return (await ctx.backend.settings().get(String(ctx.tenant))).inventoryCostingMethod;
 }
 
 /**
- * Relieve `qty` from the oldest open FIFO lots, mutating them, and return the
- * exact cost consumed. Consuming a lot's whole remaining takes its stored value
- * exactly (so a drained lot leaves nothing behind); a partial take is priced at
- * the lot's unit cost. The caller has already checked there is enough on hand.
+ * Order open lots the way `method` relieves them:
+ *  - FIFO      → oldest first (ascending seq)
+ *  - LIFO      → newest first (descending seq)
+ *  - SPECIFIC  → the single named lot (`lotSeq`); absent one, oldest first, so a
+ *               shrinkage write-down or count still has a defined cost to draw.
+ *
+ * Only lots with quantity remaining are returned. `lots()` already yields them
+ * ascending by seq, so FIFO is the natural order and LIFO is its reverse.
  */
-async function consumeFifo(ctx: InventoryContext, sku: string, qty: bigint): Promise<bigint> {
+function orderLotsFor(
+  lots: readonly LotRecord[],
+  method: InventoryCostingMethod,
+  lotSeq?: number,
+): LotRecord[] {
+  const open = lots.filter((l) => BigInt(l.remainingQtyMilli) > 0n);
+  if (method === "SPECIFIC" && lotSeq !== undefined) {
+    return open.filter((l) => l.seq === lotSeq);
+  }
+  if (method === "LIFO") return [...open].sort((a, b) => b.seq - a.seq);
+  return [...open].sort((a, b) => a.seq - b.seq); // FIFO / SPECIFIC-fallback
+}
+
+/**
+ * Relieve `qty` from the open lots in the order `method` dictates, mutating them,
+ * and return the exact cost consumed. Consuming a lot's whole remaining takes its
+ * stored value exactly (so a drained lot leaves nothing behind); a partial take
+ * is priced at the lot's unit cost. The caller has already checked there is
+ * enough on hand — but under SPECIFIC the *named lot* may be short, which is a
+ * real error the caller could not have foreseen, so it is reported.
+ */
+async function consumeLots(
+  ctx: InventoryContext, sku: string, qty: bigint,
+  method: InventoryCostingMethod, lotSeq?: number,
+): Promise<bigint> {
   const store = ctx.backend.inventory();
-  const lots = (await store.lots(String(ctx.tenant), sku))
-    .filter((l) => BigInt(l.remainingQtyMilli) > 0n);
+  const lots = orderLotsFor(await store.lots(String(ctx.tenant), sku), method, lotSeq);
   let need = qty;
   let cost = 0n;
   for (const lot of lots) {
@@ -604,17 +633,25 @@ async function consumeFifo(ctx: InventoryContext, sku: string, qty: bigint): Pro
     });
     need -= take;
   }
+  if (need > 0n) {
+    throw new InventoryError(
+      `${sku}: lot ${lotSeq} does not hold ${qty} thousandths — name a lot with enough on hand`,
+    );
+  }
   return cost;
 }
 
 /**
- * The FIFO cost of issuing `qty`, computed WITHOUT mutating the lots — the value
- * the journal entry is posted with, before `consumeFifo` relieves the layers for
- * real. Both walk the same lots in the same order, so they agree exactly.
+ * The cost of issuing `qty` under `method`, computed WITHOUT mutating the lots —
+ * the value the journal entry is posted with, before `consumeLots` relieves the
+ * layers for real. Both walk the same lots in the same order, so they agree
+ * exactly.
  */
-async function previewFifoCost(ctx: InventoryContext, sku: string, qty: bigint): Promise<bigint> {
-  const lots = (await ctx.backend.inventory().lots(String(ctx.tenant), sku))
-    .filter((l) => BigInt(l.remainingQtyMilli) > 0n);
+async function previewLotCost(
+  ctx: InventoryContext, sku: string, qty: bigint,
+  method: InventoryCostingMethod, lotSeq?: number,
+): Promise<bigint> {
+  const lots = orderLotsFor(await ctx.backend.inventory().lots(String(ctx.tenant), sku), method, lotSeq);
   let need = qty;
   let cost = 0n;
   for (const lot of lots) {
@@ -629,13 +666,13 @@ async function previewFifoCost(ctx: InventoryContext, sku: string, qty: bigint):
   return cost;
 }
 
-/** Take stock out at the moving average. Non-posting, for the same reason. */
+/** Take stock out at the account's costing method. Non-posting, for the same reason. */
 export async function applyIssue(
   ctx: InventoryContext,
   input: {
     readonly sku: string; readonly date: string; readonly quantityMilli: bigint;
     readonly reference?: string; readonly entryId?: string; readonly memo?: string;
-    readonly kind?: MovementKind; readonly id?: string;
+    readonly kind?: MovementKind; readonly id?: string; readonly lotSeq?: number;
   },
 ): Promise<{ item: ItemRecord; valueMinor: bigint; unitCostMinor: bigint }> {
   const item = await requireStockItem(ctx, input.sku);
@@ -655,23 +692,27 @@ export async function applyIssue(
       `${item.sku}: ${input.quantityMilli} thousandths issued against ${onHand} on hand — count it before you cost it`,
     );
   }
-  // What the issue costs depends on the account's method. FIFO relieves the
-  // oldest cost layers; moving average takes the blended unit cost. Either way
-  // the last issue empties the item to exactly zero value (no rounding dust),
-  // and the item's aggregate value stays equal to the sum of remaining lots.
-  const isFifo = await costingMethod(ctx) === "FIFO";
+  // What the issue costs depends on the account's method. Lot-based methods
+  // (FIFO/LIFO/specific-ID) relieve chosen cost layers; moving average takes the
+  // blended unit cost. Either way the last issue empties the item to exactly zero
+  // value (no rounding dust), and the item's aggregate value stays equal to the
+  // sum of remaining lots. A whole-lot special-case only applies when the method
+  // has no named lot (a specific-ID draw must relieve *its* lot even at zero-out).
+  const method = await costingMethod(ctx);
+  const lotBased = usesLots(method);
+  const named = method === "SPECIFIC" && input.lotSeq !== undefined;
   let value: bigint;
-  if (input.quantityMilli === onHand) {
+  if (input.quantityMilli === onHand && !named) {
     value = BigInt(item.valueMinor);                 // takes everything, exactly
-    if (isFifo) await consumeFifo(ctx, item.sku, input.quantityMilli);
-  } else if (isFifo) {
-    value = await consumeFifo(ctx, item.sku, input.quantityMilli);
+    if (lotBased) await consumeLots(ctx, item.sku, input.quantityMilli, method, input.lotSeq);
+  } else if (lotBased) {
+    value = await consumeLots(ctx, item.sku, input.quantityMilli, method, input.lotSeq);
   } else {
     value = mulDiv(input.quantityMilli, BigInt(item.unitCostMinor), MILLI);
   }
-  // The unit cost reported on the movement: FIFO's actual blended draw across
-  // the layers it consumed, or (moving average) the item's blended unit cost.
-  const unitCost = isFifo && input.quantityMilli > 0n
+  // The unit cost reported on the movement: a lot method's actual blended draw
+  // across the layers it consumed, or (moving average) the item's blended cost.
+  const unitCost = lotBased && input.quantityMilli > 0n
     ? mulDiv(value, MILLI, input.quantityMilli)
     : BigInt(item.unitCostMinor);
   const quantity = onHand - input.quantityMilli;
@@ -796,6 +837,8 @@ export interface IssueInput {
   readonly work_order_id?: string;
   readonly cost_account_code?: string;
   readonly memo?: string;
+  /** Under specific-identification costing, the exact lot (receipt seq) to draw from. */
+  readonly lot_seq?: string | number;
 }
 
 /**
@@ -865,11 +908,21 @@ export async function issueStock(
       `${sku}: ${quantity} thousandths issued against ${onHand} on hand — count it before you cost it`,
     );
   }
+  const method = await costingMethod(ctx);
+  const lotSeq = input.lot_seq !== undefined && String(input.lot_seq).trim() !== ""
+    ? Number(wholeOf(input.lot_seq, "lot"))
+    : undefined;
+  if (method === "SPECIFIC" && lotSeq === undefined) {
+    throw new InventoryError(
+      `${sku}: specific-identification costing requires naming the lot to issue from`,
+    );
+  }
+  const named = method === "SPECIFIC" && lotSeq !== undefined;
   let value: bigint;
-  if (quantity === onHand) {
+  if (quantity === onHand && !named) {
     value = BigInt(preview.valueMinor);
-  } else if (await costingMethod(ctx) === "FIFO") {
-    value = await previewFifoCost(ctx, sku, quantity);
+  } else if (usesLots(method)) {
+    value = await previewLotCost(ctx, sku, quantity, method, lotSeq);
   } else {
     value = mulDiv(quantity, BigInt(preview.unitCostMinor), MILLI);
   }
@@ -917,6 +970,7 @@ export async function issueStock(
     entryId: String(entry.id),
     id: `mv:${id}`,
     memo: String(input.memo ?? ""),
+    ...(lotSeq !== undefined ? { lotSeq } : {}),
   });
   return {
     item: result.item,
@@ -1044,6 +1098,17 @@ export function itemJson(i: ItemRecord): Record<string, unknown> {
     active: i.active,
     below_reorder_point: BigInt(i.reorderPointMilli) > 0n
       && BigInt(i.quantityMilli) <= BigInt(i.reorderPointMilli),
+  };
+}
+
+export function lotJson(l: LotRecord): Record<string, unknown> {
+  return {
+    seq: l.seq,
+    sku: l.sku,
+    date: l.date,
+    unit_cost_minor: l.unitCostMinor,
+    remaining_qty_milli: l.remainingQtyMilli,
+    remaining_value_minor: l.remainingValueMinor,
   };
 }
 

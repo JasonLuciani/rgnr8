@@ -59,7 +59,12 @@ def render_settings(
         f'<form method="post" action="{base}" class="grid">'
         "<label>Inventory costing method"
         f'<select name="inventory_costing_method"{disabled}>'
-        + _options([("MOVING_AVERAGE", "Moving average"), ("FIFO", "FIFO (lots / layers)")], costing)
+        + _options([
+            ("MOVING_AVERAGE", "Moving average"),
+            ("FIFO", "FIFO — first in, first out (lots)"),
+            ("LIFO", "LIFO — last in, first out (lots)"),
+            ("SPECIFIC", "Specific identification (named lots)"),
+        ], costing)
         + "</select></label>"
         "<label>Base currency"
         f'<input name="base_currency" value="{_esc(base_ccy)}" maxlength="3"{disabled}></label>'

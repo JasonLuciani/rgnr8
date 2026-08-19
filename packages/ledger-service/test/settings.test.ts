@@ -58,7 +58,7 @@ test("a patch changes only the fields it names and persists", async () => {
 
 test("a bad value is refused, not coerced", async () => {
   const s = svc();
-  assert.equal((await call(s, "POST", "/t/acme/settings", { inventory_costing_method: "lifo" })).status, 400);
+  assert.equal((await call(s, "POST", "/t/acme/settings", { inventory_costing_method: "guesswork" })).status, 400);
   assert.equal((await call(s, "POST", "/t/acme/settings", { base_currency: "dollars" })).status, 400);
   assert.equal((await call(s, "POST", "/t/acme/settings", { retention_audit_days: -5 })).status, 400);
   assert.equal((await call(s, "POST", "/t/acme/settings", { retention_audit_days: 1.5 })).status, 400);

@@ -195,6 +195,7 @@ import {
   InventoryError,
   issueStock,
   itemJson,
+  lotJson,
   movementJson,
   receiveStock,
   recordCount,
@@ -202,6 +203,18 @@ import {
   valuation,
   type InventoryContext,
 } from "./inventory.js";
+import {
+  DebtError,
+  saveLoan,
+  recordLoanPayment,
+  recordDraw,
+  amortizationSchedule,
+  debtDashboard,
+  payoffPlan,
+  loanJson,
+  scheduleRowJson,
+  type DebtContext,
+} from "./debt.js";
 import {
   CrmError,
   attachEstimate,
@@ -727,6 +740,15 @@ export class LedgerService {
             movements: (await store.listMovements(String(tenant), item.sku)).map(movementJson),
           });
         }
+        if (rest.length === 4 && rest[1] === "items" && rest[3] === "lots" && req.method === "GET") {
+          // Open cost layers for a SKU — the source of truth for FIFO/LIFO issues
+          // and the lot numbers a specific-identification issue names.
+          const item = await store.getItem(String(tenant), rest[2]!.toUpperCase());
+          if (!item) return notFound(`unknown item ${rest[2]}`);
+          const open = (await store.lots(String(tenant), item.sku))
+            .filter((l) => BigInt(l.remainingQtyMilli) > 0n);
+          return ok({ tenant, sku: item.sku, lots: open.map(lotJson) });
+        }
         if (rest.length === 2 && rest[1] === "movements" && req.method === "GET") {
           const sku = req.query["sku"];
           const movements = await store.listMovements(
@@ -759,6 +781,63 @@ export class LedgerService {
             tenant, item: itemJson(result.item),
             entry_id: result.entryId, difference_milli: result.differenceMilli,
           });
+        }
+      }
+
+      // --- debt: loans, lines of credit, and their payments -----------------
+      if (rest[0] === "debt") {
+        const ctx = this.debtCtx(tenant);
+        const store = this.backend.debt();
+        if (rest.length === 1 && req.method === "GET") {
+          return ok(await debtDashboard(ctx, req.query["as_of"]));
+        }
+        if (rest.length === 2 && rest[1] === "loans") {
+          if (req.method === "GET") {
+            const loans = await store.listLoans(String(tenant));
+            return ok({ tenant, loans: loans.map(loanJson) });
+          }
+          if (req.method === "POST") {
+            const data = parseJson(req.body);
+            if (!data) return bad("invalid JSON body");
+            const result = await saveLoan(ctx, data);
+            return created({ tenant, loan: loanJson(result.loan), entry_id: result.entryId });
+          }
+        }
+        if (rest.length === 3 && rest[1] === "loans" && req.method === "GET") {
+          const loan = await store.getLoan(String(tenant), rest[2]!);
+          if (!loan) return notFound(`unknown loan ${rest[2]}`);
+          return ok({
+            tenant,
+            loan: loanJson(loan),
+            schedule: amortizationSchedule(loan).map(scheduleRowJson),
+            payments: await store.listPayments(String(tenant), loan.id),
+          });
+        }
+        if (rest.length === 4 && rest[1] === "loans" && rest[3] === "schedule" && req.method === "GET") {
+          const loan = await store.getLoan(String(tenant), rest[2]!);
+          if (!loan) return notFound(`unknown loan ${rest[2]}`);
+          return ok({ tenant, loan_id: loan.id, schedule: amortizationSchedule(loan).map(scheduleRowJson) });
+        }
+        if (rest.length === 4 && rest[1] === "loans" && rest[3] === "payoff" && req.method === "GET") {
+          const loan = await store.getLoan(String(tenant), rest[2]!);
+          if (!loan) return notFound(`unknown loan ${rest[2]}`);
+          const extra = BigInt(String(req.query["extra_per_period_minor"] ?? "0") || "0");
+          return ok(payoffPlan(loan, extra));
+        }
+        if (rest.length === 2 && rest[1] === "payments" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const result = await recordLoanPayment(ctx, data);
+          return created({
+            tenant, loan: loanJson(result.loan), entry_id: result.entryId,
+            principal_minor: result.principalMinor, interest_minor: result.interestMinor,
+          });
+        }
+        if (rest.length === 2 && rest[1] === "draws" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const result = await recordDraw(ctx, data);
+          return created({ tenant, loan: loanJson(result.loan), entry_id: result.entryId });
         }
       }
 
@@ -1467,6 +1546,7 @@ export class LedgerService {
       if (err instanceof CrmError) return bad(err.message);
       if (err instanceof ConsolidationServiceError) return bad(err.message);
       if (err instanceof SettingsError) return bad(err.message);
+      if (err instanceof DebtError) return bad(err.message);
       return bad(err instanceof Error ? err.message : String(err));
     }
     return notFound("not found");
@@ -1787,6 +1867,12 @@ export class LedgerService {
   }
 
   private inventoryCtx(tenant: TenantId): InventoryContext {
+    return {
+      backend: this.backend, tenant, currency: this.currency, now: this.opts.now,
+    };
+  }
+
+  private debtCtx(tenant: TenantId): DebtContext {
     return {
       backend: this.backend, tenant, currency: this.currency, now: this.opts.now,
     };

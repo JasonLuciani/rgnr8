@@ -15,12 +15,44 @@
 
 import type { Pool, Queryable } from "@rgnr8/ledger-postgres";
 
-export type InventoryCostingMethod = "MOVING_AVERAGE" | "FIFO";
+/**
+ * The inventory cost-flow assumption an account uses.
+ *
+ * - `MOVING_AVERAGE` — a single blended unit cost, recomputed on every receipt.
+ *   No layers to maintain; always internally consistent. The historical default.
+ * - `FIFO` — first in, first out: issues relieve the oldest cost layer first.
+ * - `LIFO` — last in, first out: issues relieve the newest layer first. Permitted
+ *   under US GAAP, prohibited under IFRS — an account-level choice, never forced.
+ * - `SPECIFIC` — specific identification: an issue names the exact lot it draws
+ *   from (for serialised or high-value goods). Absent a named lot, falls back to
+ *   oldest-first so a shrinkage write-down still has a defined cost.
+ *
+ * `FIFO`, `LIFO`, and `SPECIFIC` are *lot-based* — they keep per-receipt cost
+ * layers. `MOVING_AVERAGE` keeps one blended figure and no layers.
+ */
+export type InventoryCostingMethod =
+  | "MOVING_AVERAGE"
+  | "FIFO"
+  | "LIFO"
+  | "SPECIFIC";
 
 export const INVENTORY_COSTING_METHODS: readonly InventoryCostingMethod[] = [
   "MOVING_AVERAGE",
   "FIFO",
+  "LIFO",
+  "SPECIFIC",
 ];
+
+/** Methods that maintain per-receipt cost layers (as opposed to a blended cost). */
+export const LOT_BASED_METHODS: readonly InventoryCostingMethod[] = [
+  "FIFO",
+  "LIFO",
+  "SPECIFIC",
+];
+
+export function usesLots(method: InventoryCostingMethod): boolean {
+  return LOT_BASED_METHODS.includes(method);
+}
 
 export interface AccountSettings {
   /** How inventory is costed. Moving average is the historical default. */

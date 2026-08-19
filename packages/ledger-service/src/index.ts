@@ -298,6 +298,7 @@ export {
   applyIssue,
   valuation,
   itemJson,
+  lotJson,
   movementJson,
   type InventoryStore,
   type ItemRecord,
@@ -357,5 +358,30 @@ export {
   type AccountSettings,
   type InventoryCostingMethod,
 } from "./settings.js";
+export {
+  InMemoryDebtStore,
+  PgDebtStore,
+  DEBT_DDL,
+  DebtError,
+  saveLoan,
+  recordLoanPayment,
+  recordDraw,
+  recordDraw as recordLoanDraw,
+  amortizationSchedule,
+  levelPayment,
+  periodicRateScaled,
+  debtDashboard,
+  payoffPlan,
+  loanJson,
+  scheduleRowJson,
+  isRevolving,
+  type DebtStore,
+  type DebtContext,
+  type LoanRecord,
+  type LoanPaymentRecord,
+  type ScheduleRow,
+  type LoanKind,
+  type PaymentFrequency,
+} from "./debt.js";
 export { rlsDdl, appRoleDdl, superuserWarning, TENANT_TABLES } from "./security.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";
