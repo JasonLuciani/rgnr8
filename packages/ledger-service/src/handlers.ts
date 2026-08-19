@@ -215,6 +215,7 @@ import {
   scheduleRowJson,
   type DebtContext,
 } from "./debt.js";
+import { RatiosError, financialRatios, type RatiosContext } from "./ratios.js";
 import {
   FixedAssetError,
   saveAsset,
@@ -851,6 +852,11 @@ export class LedgerService {
           const result = await recordDraw(ctx, data);
           return created({ tenant, loan: loanJson(result.loan), entry_id: result.entryId });
         }
+      }
+
+      // --- management KPIs / financial ratios -------------------------------
+      if (rest[0] === "ratios" && rest.length === 1 && req.method === "GET") {
+        return ok(await financialRatios(this.ratiosCtx(tenant), req.query["as_of"]));
       }
 
       // --- fixed assets and depreciation ------------------------------------
@@ -1604,6 +1610,7 @@ export class LedgerService {
       if (err instanceof SettingsError) return bad(err.message);
       if (err instanceof DebtError) return bad(err.message);
       if (err instanceof FixedAssetError) return bad(err.message);
+      if (err instanceof RatiosError) return bad(err.message);
       return bad(err instanceof Error ? err.message : String(err));
     }
     return notFound("not found");
@@ -1936,6 +1943,12 @@ export class LedgerService {
   }
 
   private fixedAssetCtx(tenant: TenantId): FixedAssetContext {
+    return {
+      backend: this.backend, tenant, currency: this.currency, now: this.opts.now,
+    };
+  }
+
+  private ratiosCtx(tenant: TenantId): RatiosContext {
     return {
       backend: this.backend, tenant, currency: this.currency, now: this.opts.now,
     };

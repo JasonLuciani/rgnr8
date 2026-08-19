@@ -404,5 +404,10 @@ export {
   type DepreciationMethod,
   type DepreciationRow,
 } from "./fixedassets.js";
+export {
+  financialRatios,
+  RatiosError,
+  type RatiosContext,
+} from "./ratios.js";
 export { rlsDdl, appRoleDdl, superuserWarning, TENANT_TABLES } from "./security.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";
