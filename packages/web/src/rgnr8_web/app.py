@@ -165,6 +165,9 @@ from .recurring_screens import (
 )
 from .reporting_screens import render_budget, render_general_ledger
 from .settings_screens import render_settings, render_settings_unavailable
+from .debt_screens import render_debt, render_debt_unavailable, render_loan_detail
+from .asset_screens import render_asset_detail, render_assets, render_assets_unavailable
+from .health_screens import render_health, render_health_unavailable
 from .shell import (
     render_app_home,
     render_audit_log,
@@ -301,6 +304,43 @@ def _minor_decimal(v: object) -> str:
     sign = "-" if n < 0 else ""
     whole, frac = divmod(abs(n), 100)
     return f"{sign}{whole}.{frac:02d}"
+
+
+def _scaled(v: object, decimals: int) -> str:
+    """Parse a decimal string and multiply by 10^decimals, exactly (no float).
+
+    The single primitive behind every owner-facing amount input: dollars→minor
+    (2), percent→micro-rate (4, since 6.5% = 0.065 = 65000 micro), a bare ratio→
+    micro (6, e.g. a 1.25 DSCR or a 2× declining factor), and units→milli (3)."""
+    s = str(v).strip().replace(",", "").replace("$", "").replace("%", "")
+    if not s:
+        return "0"
+    neg = s.startswith("-")
+    s = s.lstrip("+-")
+    whole, _dot, frac = s.partition(".")
+    frac = (frac + "0" * decimals)[:decimals] if decimals else ""
+    whole = whole or "0"
+    try:
+        val = int(whole) * (10 ** decimals) + (int(frac) if frac else 0)
+    except ValueError:
+        return "0"
+    return f"-{val}" if neg else str(val)
+
+
+def _dollars_to_minor(v: object) -> str:
+    return _scaled(v, 2)
+
+
+def _pct_to_micro(v: object) -> str:
+    return _scaled(v, 4)
+
+
+def _ratio_to_micro(v: object) -> str:
+    return _scaled(v, 6)
+
+
+def _units_to_milli(v: object) -> str:
+    return _scaled(v, 3)
 
 
 def _provenance_note(facts: "LedgerFacts", split: "dict[str, int]") -> str:
@@ -930,6 +970,49 @@ class WebApp:
             delivery_id = parts[4]
             return self._require(subject, token_tenant, parts[1], P.MANAGE_INTEGRATIONS,
                                  lambda t: self._integration_replay(subject, t, delivery_id))
+
+        # --- debt (loans, lines of credit) ---
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "debt":
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._debt_page(subject, t, req.query))
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "debt"
+                and parts[3] == "loans" and req.method == "POST"):
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._debt_add_loan(subject, t, req.body))
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "debt"
+                and parts[3] == "payments" and req.method == "POST"):
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._debt_payment(subject, t, req.body))
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "debt"
+                and parts[3] == "draws" and req.method == "POST"):
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._debt_draw(subject, t, req.body))
+        if len(parts) == 4 and parts[0] == "t" and parts[2] == "debt":  # /debt/<loan_id>
+            loan_id = parts[3]
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._loan_detail_page(subject, t, loan_id, req.query))
+
+        # --- fixed assets ---
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "assets":
+            if req.method == "POST":
+                return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                     lambda t: self._asset_add(subject, t, req.body))
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._assets_page(subject, t, req.query))
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "assets"
+                and parts[4] in ("depreciate", "usage", "dispose") and req.method == "POST"):
+            asset_id, action = parts[3], parts[4]
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._asset_action(subject, t, asset_id, action, req.body))
+        if len(parts) == 4 and parts[0] == "t" and parts[2] == "assets":  # /assets/<asset_id>
+            asset_id = parts[3]
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._asset_detail_page(subject, t, asset_id, req.query))
+
+        # --- financial health / ratios (read-only) ---
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "health":
+            return self._require(subject, token_tenant, parts[1], P.VIEW_CASH,
+                                 lambda t: self._health_page(subject, t, req.query))
 
         # /t/<tenant>/transactions  -> the bank register (shell page)
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "transactions":
@@ -4083,6 +4166,193 @@ class WebApp:
             self._audit.record(subject, "settings.saved", self._session_clock(),
                                tenant_id=t.tenant_id, target=",".join(sorted(patch.keys())))
         return _redirect(f"{back}?done=Settings+saved")
+
+    # --- debt (loans, lines of credit) --------------------------------------
+    def _can_post(self, subject: str, t: _Tenant) -> bool:
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        return self._policy is None or Permission.POST_JOURNAL in perms
+
+    def _debt_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "debt", render_debt_unavailable("No ledger service is configured."))
+        res = self._ledger.debt_dashboard(t.tenant_id, as_of=query.get("as_of", ""))
+        if not res.ok:
+            return self._shell(subject, t, "debt", render_debt_unavailable(res.error()))
+        body = render_debt(t.tenant_id, res.body, can_write=self._can_post(subject, t),
+                           done=query.get("done", ""), error=query.get("err", ""))
+        return self._shell(subject, t, "debt", body)
+
+    def _loan_detail_page(
+        self, subject: str, t: _Tenant, loan_id: str, query: "dict[str, str]"
+    ) -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "debt", render_debt_unavailable())
+        res = self._ledger.loan(t.tenant_id, loan_id)
+        if not res.ok:
+            return self._shell(subject, t, "debt", render_debt_unavailable(res.error()))
+        data = dict(res.body)
+        extra = _dollars_to_minor(query.get("extra", ""))
+        if extra and extra != "0":
+            payoff = self._ledger.loan_payoff(t.tenant_id, loan_id, extra_per_period_minor=extra)
+            if payoff.ok:
+                data["payoff"] = payoff.body
+        body = render_loan_detail(t.tenant_id, data, can_write=self._can_post(subject, t),
+                                  done=query.get("done", ""), error=query.get("err", ""))
+        return self._shell(subject, t, "debt", body)
+
+    def _debt_add_loan(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/debt"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        d = self._form_or_json(body)
+        loan: dict[str, object] = {
+            "id": str(d.get("id", "")).strip(),
+            "lender": str(d.get("lender", "")).strip(),
+            "kind": str(d.get("kind", "TERM")).strip(),
+            "start_date": str(d.get("start_date", "")).strip(),
+            "frequency": str(d.get("frequency", "MONTHLY")).strip(),
+            "original_principal_minor": _dollars_to_minor(d.get("original_principal", "")),
+            "annual_rate_micro": _pct_to_micro(d.get("annual_rate_pct", "")),
+            "term_periods": str(d.get("term_periods", "") or "0").strip(),
+        }
+        if str(d.get("proceeds_to_code", "")).strip():
+            loan["proceeds_to_code"] = str(d.get("proceeds_to_code")).strip()
+        if str(d.get("min_dscr", "")).strip():
+            loan["min_dscr_micro"] = _ratio_to_micro(d.get("min_dscr", ""))
+        res = self._ledger.save_loan(t.tenant_id, loan)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        self._audit_debt(subject, t, "debt.loan_added", str(loan.get("id")))
+        return _redirect(f"{back}?done=Loan+added")
+
+    def _debt_payment(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/debt"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        d = self._form_or_json(body)
+        payment: dict[str, object] = {
+            "loan_id": str(d.get("loan_id", "")).strip(),
+            "date": str(d.get("date", "")).strip(),
+            "amount_minor": _dollars_to_minor(d.get("amount", "")),
+        }
+        if str(d.get("paid_from_code", "")).strip():
+            payment["paid_from_code"] = str(d.get("paid_from_code")).strip()
+        res = self._ledger.loan_payment(t.tenant_id, payment)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        self._audit_debt(subject, t, "debt.payment", str(payment.get("loan_id")))
+        return _redirect(f"{back}?done=Payment+recorded")
+
+    def _debt_draw(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/debt"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        d = self._form_or_json(body)
+        draw: dict[str, object] = {
+            "loan_id": str(d.get("loan_id", "")).strip(),
+            "date": str(d.get("date", "")).strip(),
+            "amount_minor": _dollars_to_minor(d.get("amount", "")),
+        }
+        if str(d.get("deposit_to_code", "")).strip():
+            draw["deposit_to_code"] = str(d.get("deposit_to_code")).strip()
+        res = self._ledger.loan_draw(t.tenant_id, draw)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        return _redirect(f"{back}?done=Draw+recorded")
+
+    def _audit_debt(self, subject: str, t: _Tenant, action: str, target: str) -> None:
+        if self._audit is not None:
+            self._audit.record(subject, action, self._session_clock(),
+                               tenant_id=t.tenant_id, target=target)
+
+    # --- fixed assets -------------------------------------------------------
+    def _assets_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "assets", render_assets_unavailable("No ledger service is configured."))
+        res = self._ledger.asset_register(t.tenant_id)
+        if not res.ok:
+            return self._shell(subject, t, "assets", render_assets_unavailable(res.error()))
+        body = render_assets(t.tenant_id, res.body, can_write=self._can_post(subject, t),
+                             done=query.get("done", ""), error=query.get("err", ""))
+        return self._shell(subject, t, "assets", body)
+
+    def _asset_detail_page(
+        self, subject: str, t: _Tenant, asset_id: str, query: "dict[str, str]"
+    ) -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "assets", render_assets_unavailable())
+        res = self._ledger.asset(t.tenant_id, asset_id)
+        if not res.ok:
+            return self._shell(subject, t, "assets", render_assets_unavailable(res.error()))
+        body = render_asset_detail(t.tenant_id, res.body, can_write=self._can_post(subject, t),
+                                   done=query.get("done", ""), error=query.get("err", ""))
+        return self._shell(subject, t, "assets", body)
+
+    def _asset_add(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/assets"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        d = self._form_or_json(body)
+        asset: dict[str, object] = {
+            "id": str(d.get("id", "")).strip(),
+            "name": str(d.get("name", "")).strip(),
+            "category": str(d.get("category", "")).strip(),
+            "in_service_date": str(d.get("in_service_date", "")).strip(),
+            "method": str(d.get("method", "STRAIGHT_LINE")).strip(),
+            "cost_minor": _dollars_to_minor(d.get("cost", "")),
+            "salvage_minor": _dollars_to_minor(d.get("salvage", "")),
+            "useful_life_months": str(d.get("useful_life_months", "") or "0").strip(),
+        }
+        if str(d.get("declining_factor", "")).strip():
+            asset["declining_factor_micro"] = _ratio_to_micro(d.get("declining_factor", ""))
+        if str(d.get("total_units", "")).strip():
+            asset["total_units_milli"] = _units_to_milli(d.get("total_units", ""))
+        if str(d.get("paid_from_code", "")).strip():
+            asset["paid_from_code"] = str(d.get("paid_from_code")).strip()
+        res = self._ledger.save_asset(t.tenant_id, asset)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        self._audit_debt(subject, t, "asset.added", str(asset.get("id")))
+        return _redirect(f"{back}?done=Asset+added")
+
+    def _asset_action(
+        self, subject: str, t: _Tenant, asset_id: str, action: str, body: str
+    ) -> Response:
+        back = f"/t/{t.tenant_id}/assets/{asset_id}"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        d = self._form_or_json(body)
+        if action == "depreciate":
+            res = self._ledger.depreciate_asset(t.tenant_id, asset_id, str(d.get("through_date", "")).strip())
+            done = "Depreciation+posted"
+        elif action == "usage":
+            res = self._ledger.asset_usage(t.tenant_id, asset_id, {
+                "date": str(d.get("date", "")).strip(),
+                "units_milli": _units_to_milli(d.get("units", "")),
+            })
+            done = "Usage+recorded"
+        else:  # dispose
+            disposal: dict[str, object] = {
+                "date": str(d.get("date", "")).strip(),
+                "proceeds_minor": _dollars_to_minor(d.get("proceeds", "")),
+            }
+            if str(d.get("proceeds_to_code", "")).strip():
+                disposal["proceeds_to_code"] = str(d.get("proceeds_to_code")).strip()
+            res = self._ledger.dispose_asset(t.tenant_id, asset_id, disposal)
+            done = "Asset+disposed"
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        self._audit_debt(subject, t, f"asset.{action}", asset_id)
+        return _redirect(f"{back}?done={done}")
+
+    # --- financial health / ratios ------------------------------------------
+    def _health_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "health", render_health_unavailable("No ledger service is configured."))
+        res = self._ledger.ratios(t.tenant_id, as_of=query.get("as_of", ""))
+        if not res.ok:
+            return self._shell(subject, t, "health", render_health_unavailable(res.error()))
+        return self._shell(subject, t, "health", render_health(t.tenant_id, res.body))
 
     def _transactions_page(self, subject: str, t: _Tenant) -> Response:
         """The bank register.

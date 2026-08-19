@@ -920,6 +920,75 @@ class LedgerClient:
     def lock_period(self, tenant: str, period: str) -> LedgerResponse:
         return self._call("POST", f"/t/{tenant}/periods/{period}/lock", {})
 
+    # --- debt ----------------------------------------------------------------
+
+    def debt_dashboard(self, tenant: str, *, as_of: str = "") -> LedgerResponse:
+        q = f"?as_of={urllib.parse.quote(as_of)}" if as_of else ""
+        return self._call("GET", f"/t/{tenant}/debt{q}")
+
+    def loans(self, tenant: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/debt/loans")
+
+    def loan(self, tenant: str, loan_id: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/debt/loans/{urllib.parse.quote(loan_id)}")
+
+    def save_loan(self, tenant: str, loan: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/debt/loans", dict(loan))
+
+    def loan_payment(self, tenant: str, payment: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/debt/payments", dict(payment))
+
+    def loan_draw(self, tenant: str, draw: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/debt/draws", dict(draw))
+
+    def loan_payoff(
+        self, tenant: str, loan_id: str, *, extra_per_period_minor: str = "0"
+    ) -> LedgerResponse:
+        q = f"?extra_per_period_minor={urllib.parse.quote(extra_per_period_minor)}"
+        return self._call(
+            "GET", f"/t/{tenant}/debt/loans/{urllib.parse.quote(loan_id)}/payoff{q}"
+        )
+
+    # --- fixed assets --------------------------------------------------------
+
+    def asset_register(self, tenant: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/assets")
+
+    def asset(self, tenant: str, asset_id: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/assets/{urllib.parse.quote(asset_id)}")
+
+    def save_asset(self, tenant: str, asset: Mapping[str, object]) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/assets", dict(asset))
+
+    def depreciate_asset(
+        self, tenant: str, asset_id: str, through_date: str
+    ) -> LedgerResponse:
+        return self._call(
+            "POST",
+            f"/t/{tenant}/assets/{urllib.parse.quote(asset_id)}/depreciate",
+            {"through_date": through_date},
+        )
+
+    def asset_usage(
+        self, tenant: str, asset_id: str, usage: Mapping[str, object]
+    ) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/assets/{urllib.parse.quote(asset_id)}/usage", dict(usage)
+        )
+
+    def dispose_asset(
+        self, tenant: str, asset_id: str, disposal: Mapping[str, object]
+    ) -> LedgerResponse:
+        return self._call(
+            "POST", f"/t/{tenant}/assets/{urllib.parse.quote(asset_id)}/dispose", dict(disposal)
+        )
+
+    # --- KPIs / ratios -------------------------------------------------------
+
+    def ratios(self, tenant: str, *, as_of: str = "") -> LedgerResponse:
+        q = f"?as_of={urllib.parse.quote(as_of)}" if as_of else ""
+        return self._call("GET", f"/t/{tenant}/ratios{q}")
+
 
 def _qs(frm: str, to: str) -> str:
     parts = []
