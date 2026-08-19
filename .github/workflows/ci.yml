@@ -55,7 +55,12 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install tools
-        run: python -m pip install --upgrade pytest mypy ruff cryptography
+        # pytest/mypy/ruff plus the third-party runtime deps the suites import at
+        # collection time: cryptography (qbo token cipher), and reportlab +
+        # openpyxl (the rgnr8-reports PDF/XLSX export renderers, pulled in by the
+        # web suite too). The rgnr8-* packages themselves are resolved via each
+        # pyproject's pythonpath, so only their external deps need installing here.
+        run: python -m pip install --upgrade pytest mypy ruff cryptography reportlab openpyxl
       - name: Lint (ruff)
         run: ruff check packages/*/src packages/*/tests
       - name: Type-check (mypy)
