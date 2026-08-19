@@ -166,7 +166,7 @@ from .recurring_screens import (
 from .reporting_screens import render_budget, render_general_ledger
 from .settings_screens import render_settings, render_settings_unavailable
 from rgnr8_ocr import HeuristicExtractor, to_bill_draft
-from .capture_screens import render_capture, render_capture_unavailable
+from .capture_screens import render_capture
 from .debt_screens import render_debt, render_debt_unavailable, render_loan_detail
 from .asset_screens import render_asset_detail, render_assets, render_assets_unavailable
 from .health_screens import render_health, render_health_unavailable
