@@ -7,7 +7,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "node scripts/build-ws.mjs",
     "test": "npm run test --workspaces --if-present",
     "lint:ts": "biome lint packages/*/src packages/*/test",
     "lint:ts:fix": "biome lint --write packages/*/src packages/*/test"

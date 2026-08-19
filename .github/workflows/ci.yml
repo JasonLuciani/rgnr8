@@ -37,8 +37,11 @@ jobs:
       - run: npm install
       - name: Lint (Biome)
         run: npx biome lint packages/*/src packages/*/test
-      - name: Build all packages
-        run: npm run build --workspaces --if-present
+      - name: Build all packages (dependency order)
+        # Packages resolve each other through their built dist/, so they must be
+        # compiled in dependency order — `npm run build --workspaces` uses
+        # directory order and fails on a fresh checkout. This script topo-sorts.
+        run: npm run build
       - name: Test all packages (in-memory)
         run: npm run test --workspaces --if-present
       - name: Real-PostgreSQL integration suite
