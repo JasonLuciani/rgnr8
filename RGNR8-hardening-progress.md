@@ -28,26 +28,32 @@ Commits `a708bbf`, `1cbbf1d`, `d00ae0e`, `d22b696`, `7ddc55b`.
 
 Test posture after Phase 2 (so far): ledger-service 427 · close 44 · web 591 · ops 118 (+1 PG) · qbo 31 · runtime 12 · mcp 6 — all green; mypy `--strict` + ruff + tsc + biome clean.
 
-## Phase 3 — accounting controls to system-of-record grade 🟩 3 of 8 COMPLETE
+## Phase 3 — accounting controls to system-of-record grade 🟩 7 of 8 COMPLETE
 
-Commits `eb29a67`, `d279832`, `ad5bc16`.
-- **H3-2 (A3)** cutover now freezes *every* period through the cutover month, not
-  just the cutover month. New `PeriodStore.lockThrough` high-water mark (in-memory
-  watermark + re-open exceptions; SQL `LOCKED_THROUGH` rows; `PeriodRegistry`
-  delegates). `executeCutover` calls it; docstring/`CutoverRecord` corrected.
+Commits `eb29a67`, `d279832`, `ad5bc16`, `e24fc99`, `1467218`, `8dd10bb`, `56a19b2`.
+- **H3-1 (A2)** atomic go-live that persists the chart. New `ChartStore` seam +
+  `TransactionRunner`; chart written before the opening entry, all in one unit;
+  worker + service handler persist it (no post-hoc save loop). `PgAccountStore`
+  writes a chart in one transaction. Crash-injection tests prove no orphan
+  postings and idempotent resume.
+- **H3-2 (A3)** cutover freezes *every* period through the cutover month via a new
+  `PeriodStore.lockThrough` high-water mark (in-memory watermark + SQL
+  `LOCKED_THROUGH` rows); docstring/`CutoverRecord` corrected.
 - **H3-3 (A4)** idempotency fingerprint now covers per-line dimensions, per-line
-  memo, and the full provenance record (post + reverse) — a materially changed
-  re-post under the same key raises `DuplicateIdempotencyKeyError` instead of
-  silently returning the original; identical retries still dedupe.
-- **H3-4 (A5)** accumulated depreciation reclassified from investing to an
-  operating non-cash add-back: new `ACCUMULATED_DEPRECIATION` subtype, subtype
-  classifier routes it to operating, code-based fallback detects it by name.
+  memo, and provenance (post + reverse); identical retries still dedupe.
+- **H3-4 (A5)** accumulated depreciation reclassified to an operating non-cash
+  add-back (new `ACCUMULATED_DEPRECIATION` subtype + name fallback).
+- **H3-6 (A9)** all schema now flows through the governed, checksum-tracked
+  migration runner (`migrations.ts` → `runMigrations`); drift is rejected; a
+  column ALTER ships as a new versioned migration. CI covers it.
+- **H3-7 (A7)** first-class gross profit / margin: P&L splits COGS from operating
+  expense (by subtype) and exposes `grossProfit`/`grossMargin` in JSON + render.
+- **H3-8 (A8)** multi-currency depth: `translateTrialBalance` translates P&L at
+  the period-average rate, equity at historical, monetary at current; CTA rolls
+  forward (cumulative − prior); per-line rate audit in the consolidate() output.
 
-Remaining Phase 3: **H3-1** atomic go-live incl. chart persistence (A2) ·
-**H3-5** durable close/lock/package/reopen state machine w/ SoD + evidence (A6) ·
-**H3-6** route all schema changes through the governed migration runner (A9) ·
-**H3-7** first-class gross profit (A7) · **H3-8** FX depth — average-rate P&L,
-carried-forward CTA (A8).
+Remaining Phase 3: **H3-5** durable close/lock/package/reopen state machine with
+SoD + evidence preservation (A6) — the XL ticket, in progress.
 
 ## Also outstanding
 - **H2-2** (provenance labels in the UI) — deferred Phase 2 UI feature.
