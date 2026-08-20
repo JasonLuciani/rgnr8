@@ -74,12 +74,13 @@ jobs:
           (cd packages/ocr && python -m mypy src)
           (cd packages/integrations && python -m mypy src)
           (cd packages/apikeys && python -m mypy src)
+          (cd packages/copilot && python -m mypy src)
       - name: Test every Python package
         run: |
           set -e
           for pkg in web ops qbo forecast briefing scenario ar categorize reports \
                      recon-monitor billing obs analytics runtime alerts mcp \
-                     ocr integrations apikeys; do
+                     ocr integrations apikeys copilot; do
             d="packages/$pkg"
             if [ -d "$d/tests" ]; then
               echo "== $pkg =="
