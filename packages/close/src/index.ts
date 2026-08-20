@@ -61,3 +61,22 @@ export {
   type CloseCalendarStatus,
   type OpsCloseStatusJson,
 } from "./calendar.js";
+export {
+  publishClose,
+  requestReopen,
+  approveReopen,
+  closeStateJson,
+  InMemoryCloseStateStore,
+  CloseStateError,
+  CloseGateError,
+  SeparationOfDutiesError,
+  type CloseState,
+  type CloseStatus,
+  type CloseAction,
+  type CloseTransition,
+  type CloseStateStore,
+  type CloseEngineDeps,
+  type PublishCloseInput,
+  type RequestReopenInput,
+  type ApproveReopenInput,
+} from "./closeState.js";
