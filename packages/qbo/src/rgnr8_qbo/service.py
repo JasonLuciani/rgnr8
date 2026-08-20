@@ -26,9 +26,10 @@ from __future__ import annotations
 
 import base64
 import hmac
+import secrets
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
-from typing import Callable
+from typing import Callable, Protocol
 
 from .client import QboApiClient
 from .connection import ConnectionStore, QboConnection, QboStatus
@@ -50,7 +51,37 @@ DEFAULT_STATE_TTL = timedelta(minutes=15)
 
 
 class StateError(Exception):
-    """A callback ``state`` was missing, malformed, tampered, or expired."""
+    """A callback ``state`` was missing, malformed, tampered, expired, or replayed."""
+
+
+class NonceStore(Protocol):
+    """Records one-time state nonces so a valid ``state`` can't be replayed.
+
+    ``consume(nonce, issued)`` returns True the FIRST time a nonce is seen and
+    False on any repeat — the single-use gate the callback checks."""
+
+    def consume(self, nonce: str, issued: int) -> bool: ...
+
+
+class InMemoryNonceStore:
+    """In-process one-time-nonce store. Prunes entries past the TTL so it doesn't
+    grow without bound. NOTE: per-process — with multiple web workers a durable
+    shared store (SQL/Redis) should be injected in production so replay is caught
+    across workers; tenant-binding already limits the blast radius meanwhile."""
+
+    def __init__(self, *, ttl_seconds: int = 900) -> None:
+        self._seen: dict[str, int] = {}
+        self._ttl = ttl_seconds
+
+    def consume(self, nonce: str, issued: int) -> bool:
+        # prune expired
+        cutoff = issued - self._ttl
+        if self._seen:
+            self._seen = {n: t for n, t in self._seen.items() if t >= cutoff}
+        if nonce in self._seen:
+            return False
+        self._seen[nonce] = issued
+        return True
 
 
 def _b64u(raw: bytes) -> str:
@@ -63,22 +94,30 @@ def _b64u_decode(text: str) -> bytes:
 
 
 class StateSigner:
-    """Signs/verifies the OAuth ``state`` as ``b64(tenant|issued)|b64(hmac)``.
+    """Signs/verifies the OAuth ``state`` as ``b64(tenant|issued|nonce)|b64(hmac)``.
 
-    Tenant-bound + time-boxed + tamper-evident, so the callback can recover the
-    tenant it belongs to and reject anything it didn't issue — without a
-    server-side nonce table."""
+    Tenant-bound + time-boxed + tamper-evident + **single-use**: the callback can
+    recover the tenant it belongs to, reject anything it didn't issue, and reject a
+    *replay* of a valid state (each carries a random nonce consumed once via the
+    injected `NonceStore`). `nonce_factory` is injectable for deterministic tests."""
 
-    def __init__(self, secret: str, *, clock: Clock) -> None:
+    def __init__(
+        self, secret: str, *, clock: Clock,
+        nonce_store: NonceStore | None = None,
+        nonce_factory: Callable[[], str] | None = None,
+    ) -> None:
         self._key = secret.encode("utf-8")
         self._clock = clock
+        self._nonces: NonceStore = nonce_store if nonce_store is not None else InMemoryNonceStore()
+        self._nonce = nonce_factory if nonce_factory is not None else (lambda: secrets.token_urlsafe(16))
 
     def _mac(self, payload: str) -> str:
         return _b64u(hmac.new(self._key, payload.encode("utf-8"), sha256).digest())
 
     def issue(self, tenant_id: str) -> str:
         issued = int(self._clock().timestamp())
-        payload = _b64u(f"{tenant_id}|{issued}".encode("utf-8"))
+        nonce = self._nonce()
+        payload = _b64u(f"{tenant_id}|{issued}|{nonce}".encode("utf-8"))
         return f"{payload}.{self._mac(payload)}"
 
     def verify(self, state: str, *, ttl: timedelta = DEFAULT_STATE_TTL) -> str:
@@ -89,7 +128,15 @@ class StateSigner:
         if not hmac.compare_digest(mac, self._mac(payload)):
             raise StateError("state signature mismatch")
         try:
-            tenant_id, issued_s = _b64u_decode(payload).decode("utf-8").rsplit("|", 1)
+            # tenant ids don't contain '|'; split from the right so the nonce and
+            # issued-at peel off cleanly. Back-compat: a legacy 2-field state
+            # (tenant|issued, no nonce) still parses — it just isn't replay-checked.
+            fields = _b64u_decode(payload).decode("utf-8").rsplit("|", 2)
+            if len(fields) == 3:
+                tenant_id, issued_s, nonce = fields
+            else:
+                tenant_id, issued_s = _b64u_decode(payload).decode("utf-8").rsplit("|", 1)
+                nonce = ""
             issued = int(issued_s)
         except (ValueError, UnicodeDecodeError) as exc:
             raise StateError("undecodable state") from exc
@@ -98,6 +145,9 @@ class StateSigner:
             raise StateError("state expired")
         if now + 60 < issued:  # issued in the future beyond small clock skew
             raise StateError("state issued in the future")
+        # Single-use: reject a replay of an otherwise-valid state.
+        if nonce and not self._nonces.consume(nonce, issued):
+            raise StateError("state already used")
         return tenant_id
 
 
@@ -116,12 +166,15 @@ class QboConnectService:
         *,
         state_secret: str,
         clock: Clock | None = None,
+        nonce_store: NonceStore | None = None,
     ) -> None:
         self._config = config
         self._http = http
         self._store = store
         self._clock = clock if clock is not None else (lambda: datetime.now(timezone.utc))
-        self._signer = StateSigner(state_secret, clock=self._clock)
+        # `nonce_store` makes OAuth `state` single-use; inject a durable one in a
+        # multi-worker production deploy (defaults to in-process — see NonceStore).
+        self._signer = StateSigner(state_secret, clock=self._clock, nonce_store=nonce_store)
 
     @property
     def config(self) -> QboOAuthConfig:

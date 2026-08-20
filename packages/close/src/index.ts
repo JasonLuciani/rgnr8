@@ -11,10 +11,13 @@ export {
 } from "./close.js";
 export {
   buildFinancialPackage,
+  validatePackageContent,
+  UnbalancedPackageError,
   verifyFinancialPackage,
   fingerprintContent,
   FINANCIAL_PACKAGE_VERSION,
   FINGERPRINT_ALGORITHM,
+  type BuildPackageOptions,
   type FinancialPackage,
   type FinancialPackageContent,
   type FinancialPackageInput,

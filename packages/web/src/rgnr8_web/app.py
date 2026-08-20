@@ -5356,10 +5356,17 @@ class WebApp:
             note = "Data erased"
         return _redirect(f"/t/{t.tenant_id}/settings?done={_qs_escape(note)}")
 
+    # A retention horizon can never be shorter than this floor — a controller must
+    # not be able to purge recent audit history by setting, say, a 1-day horizon.
+    # (0 still means keep forever; control/close evidence is exempt regardless.)
+    _MIN_AUDIT_RETENTION_DAYS = 90
+
     def _run_retention(self, subject: str, t: _Tenant) -> Response:
         """Enforce the account's data-retention policy now: purge audit-log rows
         older than the configured horizon. 0 days means keep forever (a no-op).
-        Reads the horizon from the account's ledger-service settings."""
+        The horizon is floored at `_MIN_AUDIT_RETENTION_DAYS`, and control/close
+        evidence (see audit.PROTECTED_AUDIT_PREFIXES) is never purged. Reads the
+        horizon from the account's ledger-service settings."""
         audit_days = 0
         if self._ledger is not None:
             res = self._ledger.settings(t.tenant_id)
@@ -5367,6 +5374,9 @@ class WebApp:
             if isinstance(settings_obj, dict):
                 raw = settings_obj.get("retention_audit_days", 0)
                 audit_days = int(raw) if isinstance(raw, (int, str)) and str(raw).isdigit() else 0
+        # Clamp a non-zero horizon up to the floor (0 = keep forever, untouched).
+        if audit_days > 0:
+            audit_days = max(audit_days, self._MIN_AUDIT_RETENTION_DAYS)
         purged = 0
         if audit_days > 0 and self._audit is not None:
             cutoff = self._session_clock() - audit_days * 86400

@@ -1,5 +1,10 @@
 import type { Migration, SqlExecutor } from "@rgnr8/migrations";
-import { verifyFinancialPackage, type FinancialPackage } from "./financialPackage.js";
+import {
+  UnbalancedPackageError,
+  validatePackageContent,
+  verifyFinancialPackage,
+  type FinancialPackage,
+} from "./financialPackage.js";
 
 /**
  * Persistence for the immutable financial package. A closed period's sealed
@@ -41,6 +46,10 @@ function assertIntact(pkg: FinancialPackage): void {
       `financial package for ${pkg.periodKey} failed verification (expected ${v.expected}, got ${v.actual})`,
     );
   }
+  // Defense in depth: even a hand-built package (bypassing buildFinancialPackage's
+  // gate) can't be persisted with books that don't tie out.
+  const reasons = validatePackageContent(pkg);
+  if (reasons.length > 0) throw new UnbalancedPackageError(reasons);
 }
 
 export class InMemoryFinancialPackageStore implements FinancialPackageStore {

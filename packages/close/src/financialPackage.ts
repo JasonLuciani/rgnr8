@@ -110,16 +110,57 @@ export function fingerprintContent(content: FinancialPackageContent): string {
   return createHash("sha256").update(canonicalize(content), "utf8").digest("hex");
 }
 
+/** The books didn't tie out, so the package was refused. `reasons` lists each
+ * failed check (unbalanced TB, unbalanced BS, QBO out of agreement). */
+export class UnbalancedPackageError extends Error {
+  readonly reasons: readonly string[];
+  constructor(reasons: readonly string[]) {
+    super(`refusing to seal an invalid financial package: ${reasons.join("; ")}`);
+    this.name = "UnbalancedPackageError";
+    this.reasons = reasons;
+  }
+}
+
+/** Every validity check the package content fails (empty ⇒ it ties out). */
+export function validatePackageContent(input: FinancialPackageInput): string[] {
+  const reasons: string[] = [];
+  if (!input.trialBalance.inBalance) reasons.push("trial balance does not balance");
+  if (!input.balanceSheet.balances) reasons.push("balance sheet does not balance");
+  if (input.qboReconciliation && !input.qboReconciliation.inAgreement) {
+    reasons.push("QBO reconciliation is not in agreement");
+  }
+  return reasons;
+}
+
+export interface BuildPackageOptions {
+  /**
+   * Seal despite validity failures. This is a deliberate, auditable escape hatch
+   * for the rare documented case (e.g. a prior-period adjustment in progress) —
+   * NOT the default. The caller that passes it must record who/why; a package is
+   * never silently sealed out of balance.
+   */
+  readonly allowUnbalanced?: boolean;
+}
+
 /**
  * Freeze a closed period's numbers into an immutable, fingerprinted package.
  * `version` is fixed and the fingerprint covers only the financial content, so
  * the same books always produce the same fingerprint regardless of who/when it
  * was packaged.
+ *
+ * Refuses to seal books that don't tie out (throws `UnbalancedPackageError`)
+ * unless `allowUnbalanced` is explicitly set — a sealed package is a financial
+ * record others rely on, so an invalid one must not be publishable by accident.
  */
 export function buildFinancialPackage(
   input: FinancialPackageInput,
   meta: PackageMeta,
+  opts: BuildPackageOptions = {},
 ): FinancialPackage {
+  const reasons = validatePackageContent(input);
+  if (reasons.length > 0 && !opts.allowUnbalanced) {
+    throw new UnbalancedPackageError(reasons);
+  }
   const content: FinancialPackageContent = { version: FINANCIAL_PACKAGE_VERSION, ...input };
   const fingerprint = fingerprintContent(content);
   return {

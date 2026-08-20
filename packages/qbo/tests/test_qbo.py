@@ -132,6 +132,22 @@ def test_state_roundtrips_tenant() -> None:
     assert signer.verify(state) == "acme"
 
 
+def test_state_is_single_use_replay_is_rejected() -> None:
+    signer = StateSigner("state-key", clock=_clock(T0))
+    state = signer.issue("acme")
+    assert signer.verify(state) == "acme"       # first use ok
+    try:
+        signer.verify(state)                     # replay of the same valid state
+        assert False, "expected StateError on replay"
+    except StateError as e:
+        assert "already used" in str(e)
+
+
+def test_distinct_states_have_distinct_nonces() -> None:
+    signer = StateSigner("state-key", clock=_clock(T0))
+    assert signer.issue("acme") != signer.issue("acme")   # random nonce per issue
+
+
 def test_state_rejects_tamper_and_expiry() -> None:
     signer = StateSigner("state-key", clock=_clock(T0))
     state = signer.issue("acme")

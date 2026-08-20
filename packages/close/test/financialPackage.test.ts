@@ -19,8 +19,10 @@ import {
 } from "@rgnr8/ledger-kernel";
 import { computeIncomeStatement, computeBalanceSheet } from "@rgnr8/statements";
 import {
+  UnbalancedPackageError,
   buildFinancialPackage,
   fingerprintContent,
+  validatePackageContent,
   verifyFinancialPackage,
   type FinancialPackageInput,
 } from "../src/index.js";
@@ -184,4 +186,55 @@ test("an included QBO reconciliation is part of the fingerprint", async () => {
 
   const pkg = buildFinancialPackage(withRecon, META);
   assert.equal(verifyFinancialPackage(pkg).valid, true);
+});
+
+// --- H2-1: publication is gated on the books tying out -----------------------
+
+test("refuses to seal an unbalanced trial balance", async () => {
+  const input = await books();
+  const bad: FinancialPackageInput = {
+    ...input,
+    trialBalance: { ...input.trialBalance, inBalance: false },
+  };
+  assert.deepEqual(validatePackageContent(bad), ["trial balance does not balance"]);
+  assert.throws(() => buildFinancialPackage(bad, META), UnbalancedPackageError);
+});
+
+test("refuses to seal an unbalanced balance sheet", async () => {
+  const input = await books();
+  const bad: FinancialPackageInput = {
+    ...input,
+    balanceSheet: { ...input.balanceSheet, balances: false },
+  };
+  assert.throws(() => buildFinancialPackage(bad, META), /balance sheet does not balance/);
+});
+
+test("refuses to seal when the QBO reconciliation is not in agreement", async () => {
+  const input = await books();
+  const bad: FinancialPackageInput = {
+    ...input,
+    qboReconciliation: {
+      inAgreement: false, totalAbsDeltaMinor: "12300", mismatchCount: 1,
+      onlyInRgnr8Count: 0, onlyInQboCount: 0,
+    },
+  };
+  assert.throws(() => buildFinancialPackage(bad, META), UnbalancedPackageError);
+});
+
+test("allowUnbalanced is a deliberate, explicit escape hatch", async () => {
+  const input = await books();
+  const bad: FinancialPackageInput = {
+    ...input,
+    balanceSheet: { ...input.balanceSheet, balances: false },
+  };
+  // default → refused; explicit override → sealed (caller must audit the why)
+  assert.throws(() => buildFinancialPackage(bad, META));
+  const forced = buildFinancialPackage(bad, META, { allowUnbalanced: true });
+  assert.equal(forced.fingerprint.length, 64);
+});
+
+test("a balanced set of books seals with no reasons", async () => {
+  const input = await books();
+  assert.deepEqual(validatePackageContent(input), []);
+  assert.equal(buildFinancialPackage(input, META).balanceSheet.balances, true);
 });

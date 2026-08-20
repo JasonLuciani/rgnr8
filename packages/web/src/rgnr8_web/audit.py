@@ -13,6 +13,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+# Evidence classes that a retention sweep must NEVER delete: close/publication
+# records, data-erasure records, membership/role changes, support impersonation,
+# account settings + integration config, and the retention actions themselves.
+# These are the accounting- and security-control trail; a controller must not be
+# able to shrink the horizon and quietly purge them (that would defeat the whole
+# "append-only" guarantee). Everything else (routine user/transaction actions)
+# remains subject to the tenant's configured retention.
+PROTECTED_AUDIT_PREFIXES: tuple[str, ...] = (
+    "close.", "data.", "membership.", "platform_role.", "support.",
+    "retention.", "settings.", "integration.",
+)
+
+
+def is_protected_action(action: str) -> bool:
+    """True if this audit action is control/close evidence exempt from retention."""
+    return any(action.startswith(pfx) for pfx in PROTECTED_AUDIT_PREFIXES)
+
 
 @dataclass(frozen=True, slots=True)
 class AuditEvent:
@@ -60,8 +77,12 @@ class InMemoryAuditLog:
         """Retention enforcement: drop this tenant's audit rows stamped before
         `before_at` (epoch seconds). Distinct from editing — this is a policy-
         driven, whole-row deletion of aged records, not a change to any of them.
+        Control/close evidence (see `PROTECTED_AUDIT_PREFIXES`) is never purged.
         Returns the number removed."""
-        keep = [e for e in self._events if not (e.tenant_id == tenant_id and e.at < before_at)]
+        keep = [
+            e for e in self._events
+            if not (e.tenant_id == tenant_id and e.at < before_at and not is_protected_action(e.action))
+        ]
         removed = len(self._events) - len(keep)
         self._events = keep
         return removed
@@ -148,11 +169,16 @@ class SqlAuditLog:
         `before_at`. A policy-driven removal of aged records (not an edit).
         Returns the number of rows removed."""
         p = self._ph
+        # Exclude protected evidence: `AND action NOT LIKE 'close.%' AND ...`.
+        not_like = " ".join(f"AND action NOT LIKE {p}" for _ in PROTECTED_AUDIT_PREFIXES)
+        params: tuple[object, ...] = (
+            tenant_id, before_at, *(f"{pfx}%" for pfx in PROTECTED_AUDIT_PREFIXES),
+        )
         cur = self._conn.cursor()
         try:
             cur.execute(
-                f"DELETE FROM {self._t} WHERE tenant_id={p} AND at<{p}",
-                (tenant_id, before_at),
+                f"DELETE FROM {self._t} WHERE tenant_id={p} AND at<{p} {not_like}",
+                params,
             )
             removed = getattr(cur, "rowcount", -1)
         finally:

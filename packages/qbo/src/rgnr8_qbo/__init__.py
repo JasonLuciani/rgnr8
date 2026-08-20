@@ -64,6 +64,8 @@ from .secrets_cipher import (
 )
 from .service import (
     DEFAULT_STATE_TTL,
+    InMemoryNonceStore,
+    NonceStore,
     QboConnectService,
     StateError,
     StateSigner,
@@ -107,6 +109,8 @@ __all__ = [
     "QboConnectService",
     "StateSigner",
     "StateError",
+    "NonceStore",
+    "InMemoryNonceStore",
     "DEFAULT_STATE_TTL",
     # api client
     "QboApiClient",
