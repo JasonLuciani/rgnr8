@@ -132,9 +132,13 @@ export {
   AttachmentError,
   saveAttachment,
   listAttachments,
+  ALLOW_ALL_SCANNER,
   type AttachmentStore,
   type AttachmentRecord,
   type SubjectKind,
+  type ContentScanner,
+  type ScanResult,
+  type AttachmentContext,
 } from "./attachments.js";
 export {
   InMemoryRecurringStore,

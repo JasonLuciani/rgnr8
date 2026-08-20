@@ -246,10 +246,34 @@ export class PgAttachmentStore implements AttachmentStore {
 
 // --- the flow ----------------------------------------------------------------
 
+/** The verdict from scanning an uploaded file. */
+export interface ScanResult {
+  readonly clean: boolean;
+  readonly reason?: string;
+}
+
+/**
+ * A content-safety / malware scanner seam. Production injects a real scanner (e.g.
+ * a ClamAV adapter); the default `ALLOW_ALL_SCANNER` is for dev/tests. A receipt
+ * that fails the scan is refused at upload time — quarantine-by-rejection — so an
+ * infected file never lands in the store or reaches a later download.
+ */
+export interface ContentScanner {
+  scan(content: Buffer, meta: { filename: string; contentType: string }): Promise<ScanResult>;
+}
+
+export const ALLOW_ALL_SCANNER: ContentScanner = {
+  async scan(): Promise<ScanResult> {
+    return { clean: true };
+  },
+};
+
 export interface AttachmentContext {
   readonly backend: LedgerBackend;
   readonly tenant: TenantId;
   readonly now: () => string;
+  /** Optional content scanner; defaults to allow-all when omitted. */
+  readonly scanner?: ContentScanner;
 }
 
 /**
@@ -362,6 +386,16 @@ export async function saveAttachment(
     throw new AttachmentError("content_base64 is not valid base64");
   }
 
+  const contentType = String(input.content_type ?? "").trim() || "application/octet-stream";
+
+  // Content-safety gate: an infected/flagged file is refused before it is stored,
+  // so it can never be served on a later download (quarantine-by-rejection).
+  const scanner = ctx.scanner ?? ALLOW_ALL_SCANNER;
+  const verdict = await scanner.scan(content, { filename, contentType });
+  if (!verdict.clean) {
+    throw new AttachmentError(`upload rejected by content scan: ${verdict.reason ?? "flagged as unsafe"}`);
+  }
+
   const uploadedAt = ctx.now();
   // URL-safe by construction: an id that has to be escaped to appear in a path
   // is an id that will eventually be compared in its escaped form and not found.
@@ -373,7 +407,7 @@ export async function saveAttachment(
     subjectKind: kind,
     subjectId,
     filename,
-    contentType: String(input.content_type ?? "").trim() || "application/octet-stream",
+    contentType,
     bytes: content.length,
     uploadedAt,
     note: String(input.note ?? "").trim(),

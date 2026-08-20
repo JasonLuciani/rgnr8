@@ -203,3 +203,37 @@ test("one tenant's attachments are invisible to another", async () => {
   });
   assert.equal(r.status, 400);
 });
+
+test("a flagged upload is refused (content scan), a clean one is accepted", async () => {
+  // A scanner that flags anything containing the EICAR marker (a standard AV
+  // test string). Production injects a real scanner; this proves the gate.
+  const scanner = {
+    async scan(content: Buffer) {
+      return content.includes("EICAR")
+        ? { clean: false, reason: "eicar test signature" }
+        : { clean: true };
+    },
+  };
+  const s = new LedgerService(new InMemoryBackend(), { now: () => NOW, scanner });
+  await call(s, "POST", "/t/acme/accounts/seed", { category: "PROFESSIONAL_SERVICES" });
+  const posted = await call(s, "POST", "/t/acme/entries", {
+    date: "2026-08-21", memo: "Software",
+    lines: [
+      { code: "6500", side: "DEBIT", amount_minor: "24900" },
+      { code: "1000", side: "CREDIT", amount_minor: "24900" },
+    ],
+  });
+  const entryId = String((obj(posted)["entry"] as Row)["id"]);
+
+  const bad = await call(s, "POST", "/t/acme/attachments", {
+    subject_kind: "entry", subject_id: entryId, filename: "x.txt",
+    content_base64: Buffer.from("EICAR-STANDARD-ANTIVIRUS-TEST-FILE").toString("base64"),
+  });
+  assert.equal(bad.status, 400);
+  assert.match(String((obj(bad)["error"])), /content scan/);
+
+  const good = await call(s, "POST", "/t/acme/attachments", {
+    subject_kind: "entry", subject_id: entryId, filename: "r.pdf", content_base64: B64,
+  });
+  assert.equal(good.status, 201);
+});

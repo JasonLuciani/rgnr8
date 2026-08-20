@@ -81,6 +81,7 @@ import {
   listAttachments,
   saveAttachment,
   type AttachmentContext,
+  type ContentScanner,
   type SubjectKind,
 } from "./attachments.js";
 import {
@@ -294,6 +295,8 @@ export interface ServiceOptions {
   /** Injected clock (ISO instant) — the service never reads a wall clock itself. */
   readonly now: () => string;
   readonly defaultCurrency?: Currency;
+  /** Optional content scanner for uploads (default allow-all; inject a real AV in prod). */
+  readonly scanner?: ContentScanner;
 }
 
 const ok = (body: unknown): ServiceResponse => ({ status: 200, body });
@@ -2037,7 +2040,10 @@ export class LedgerService {
   // --- attachments -----------------------------------------------------------
 
   private attachmentCtx(tenant: TenantId): AttachmentContext {
-    return { backend: this.backend, tenant, now: this.opts.now };
+    return {
+      backend: this.backend, tenant, now: this.opts.now,
+      ...(this.opts.scanner ? { scanner: this.opts.scanner } : {}),
+    };
   }
 
   // --- reporting dimensions --------------------------------------------------
