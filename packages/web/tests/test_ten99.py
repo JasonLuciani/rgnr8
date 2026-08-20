@@ -238,3 +238,11 @@ def test_a_viewer_can_read_the_report() -> None:
     r = _req(app, "/t/acme/books/1099?year=2025", sub="u-view")
     assert r.status == 200
     assert "Dana Ruiz Design" in r.body
+
+
+def test_full_tin_is_masked_on_screen() -> None:
+    # H2-4: the 1099 table shows only the last 4 of a TIN, never the full value.
+    app, _t, _a = _app()
+    r = _req(app, "/t/acme/books/1099?year=2025")
+    assert "98-7654321" not in r.body      # the full TIN never reaches the HTML
+    assert "***-**-4321" in r.body         # the masked form is shown instead

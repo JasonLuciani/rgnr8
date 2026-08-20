@@ -17,6 +17,16 @@ from collections.abc import Mapping
 from .books_screens import _card, _esc, _num, _seq, money
 
 
+def _mask_tin(tax_id: str) -> str:
+    """Show only the last 4 of a TIN/EIN on screen (e.g. ``***-**-6789``); the full
+    value is never rendered in HTML. The unmasked value stays server-side for the
+    actual 1099 filing."""
+    digits = "".join(c for c in tax_id if c.isdigit())
+    if len(digits) < 4:
+        return "***" if tax_id else ""
+    return f"***-**-{digits[-4:]}"
+
+
 def _banner(kind: str, text: str) -> str:
     return f'<div class="banner {kind}">{_esc(text)}</div>'
 
@@ -69,7 +79,7 @@ def _reportable_table(
     body = []
     for r in rows:
         tax = (
-            _esc(r.get("tax_id")) if r.get("tax_id")
+            _esc(_mask_tin(str(r.get("tax_id")))) if r.get("tax_id")
             else '<span style="color:var(--rg-risk,#b4462f);font-weight:700;'
                  'font-size:12px">W-9 needed</span>'
         )

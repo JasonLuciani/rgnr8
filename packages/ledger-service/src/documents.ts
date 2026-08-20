@@ -1,4 +1,5 @@
 import type { Pool, Queryable } from "@rgnr8/ledger-postgres";
+import { fieldCipherFromEnv, type FieldCipher } from "./fieldCipher.js";
 
 /**
  * Durable storage for AR/AP source documents — invoices, bills, the parties they
@@ -243,6 +244,9 @@ function str(v: unknown): string {
 }
 
 export class PgDocumentStore implements DocumentStore {
+  // Field cipher for the vendor tax id (TIN/EIN) — encrypts at rest when
+  // RGNR8_SECRET_KEY is set, passthrough otherwise (see fieldCipher.ts).
+  private readonly tin: FieldCipher = fieldCipherFromEnv();
   constructor(private readonly pool: Pool) {}
 
   async migrate(): Promise<void> {
@@ -278,7 +282,7 @@ export class PgDocumentStore implements DocumentStore {
            name = EXCLUDED.name, email = EXCLUDED.email, terms_days = EXCLUDED.terms_days,
            is_1099 = EXCLUDED.is_1099, tax_id = EXCLUDED.tax_id`,
         [tenant, kind, p.id, p.name, p.email ?? null, p.termsDays ?? null,
-         p.is1099 === true, p.taxId ?? ""],
+         p.is1099 === true, this.tin.encrypt(p.taxId ?? "")],
       ),
     );
   }
@@ -291,8 +295,12 @@ export class PgDocumentStore implements DocumentStore {
         [tenant, kind, id],
       );
       const row = res.rows[0];
-      return row ? rowToParty(row) : undefined;
+      return row ? this.partyFromRow(row) : undefined;
     });
+  }
+
+  private partyFromRow(r: Record<string, unknown>): PartyRecord {
+    return rowToParty({ ...r, tax_id: this.tin.decrypt(str(r["tax_id"])) });
   }
 
   async listParties(tenant: string, kind: PartyKind): Promise<PartyRecord[]> {
@@ -302,7 +310,7 @@ export class PgDocumentStore implements DocumentStore {
          FROM party WHERE tenant_id=$1 AND kind=$2`,
         [tenant, kind],
       );
-      return res.rows.map(rowToParty).sort((a, b) => a.name.localeCompare(b.name));
+      return res.rows.map((r) => this.partyFromRow(r)).sort((a, b) => a.name.localeCompare(b.name));
     });
   }
 
