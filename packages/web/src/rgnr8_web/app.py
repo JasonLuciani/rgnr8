@@ -5300,13 +5300,19 @@ class WebApp:
         }
         return _json(200, bundle)
 
-    # --- right-to-delete (GDPR/CCPA erasure — the export's twin) --------------
+    # --- reset owner-held web data (NOT a full GDPR/CCPA erasure) -------------
     def _erase(self, subject: str, t: _Tenant) -> Response:
-        """Purge the tenant's owner-facing data the web app holds: the bank
+        """Clear the owner-facing data the WEB APP holds for a tenant: the bank
         register feed, the month-end close board, the decisions + assumption
         overrides in TenantState, and the cached forecast/briefing. Idempotent —
         a second call clears nothing and reports zeros. Writes a `data.erased`
-        audit event. Returns a JSON summary of what was cleared."""
+        audit event.
+
+        This is NOT a regulatory right-to-erasure: it does not touch the ledger
+        (journal entries, parties incl. tax IDs, attachments), QBO tokens, users,
+        API keys, subscriptions/billing, or the audit log. The response lists
+        exactly what is retained so callers don't mistake it for full deletion. A
+        real cross-store erasure reaching the ledger is tracked separately."""
         txns = self._txns.get(t.tenant_id, [])
         had_close = t.tenant_id in self._close
         decisions_n = len(t.state.decisions)
@@ -5341,19 +5347,28 @@ class WebApp:
             self._audit.record(subject, "data.erased", self._session_clock(),
                                tenant_id=t.tenant_id, target=t.tenant_id,
                                detail=json.dumps(summary, sort_keys=True))
-        return _json(200, {"tenant": t.tenant_id, "erased": summary})
+        return _json(200, {
+            "tenant": t.tenant_id,
+            "scope": "owner-held web data only — NOT a full regulatory erasure",
+            "cleared": summary,
+            "retained": [
+                "ledger journal entries", "parties (incl. tax IDs)", "attachments",
+                "QuickBooks tokens", "users & memberships", "API keys",
+                "subscriptions & billing", "audit log",
+            ],
+        })
 
     def _erase_ui(self, subject: str, t: _Tenant) -> Response:
-        """The settings-screen right-to-erase button. Runs the same erasure as
+        """The settings-screen reset button. Runs the same owner-held-data reset as
         the API twin, then redirects back to settings with a summary."""
         resp = self._erase(subject, t)
         try:
             body = json.loads(resp.body) if isinstance(resp.body, str) else {}
-            cleared = body.get("erased", {})
+            cleared = body.get("cleared", {})
             n = cleared.get("transactions", 0) if isinstance(cleared, dict) else 0
-            note = f"Data erased ({n} transactions and owner state cleared)"
+            note = f"Owner-held data reset ({n} transactions and owner state cleared)"
         except (json.JSONDecodeError, AttributeError):
-            note = "Data erased"
+            note = "Owner-held data reset"
         return _redirect(f"/t/{t.tenant_id}/settings?done={_qs_escape(note)}")
 
     # A retention horizon can never be shorter than this floor — a controller must

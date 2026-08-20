@@ -105,16 +105,20 @@ def render_settings(
         )
         sections.append(_card("Run retention now", sweep))
 
-    # --- right to erase (ERASE_DATA) ---
+    # --- reset owner-held data (ERASE_DATA) ---
     if can_erase:
         erase = (
-            '<p class="muted">Permanently erase this business\'s owner-facing data '
-            "(bank register, close board, decisions and assumption overrides, cached "
-            "forecast) on request (GDPR / CCPA). This is irreversible and is logged.</p>"
+            '<p class="muted">Clear the owner-facing data this app holds — the bank '
+            "register, close board, decisions and assumption overrides, and cached "
+            "forecast. This is irreversible and is logged.</p>"
+            '<p class="muted" style="font-size:12px">This does <strong>not</strong> delete '
+            "your ledger (journal entries, vendors and their tax IDs, attachments), "
+            "QuickBooks connection, users, API keys, billing, or the audit log — so it "
+            "is not a full GDPR/CCPA erasure. Contact support for a complete deletion.</p>"
             f'<form method="post" action="/t/{_esc(tenant)}/erase" '
-            'onsubmit="return confirm(\'Erase this data permanently? This cannot be undone.\')">'
-            '<button type="submit" class="danger">Erase this business\'s data</button></form>'
+            'onsubmit="return confirm(\'Clear owner-held data? This cannot be undone.\')">'
+            '<button type="submit" class="danger">Reset owner-held data</button></form>'
         )
-        sections.append(_card("Right to erase", erase))
+        sections.append(_card("Reset owner-held data", erase))
 
     return banner + "".join(sections)

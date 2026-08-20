@@ -1,4 +1,4 @@
-"""Public-track additions: GDPR/CCPA erasure (the export's twin), the owner-gated
+"""Public-track additions: owner-held data reset (the export's twin), the owner-gated
 audit-log viewer (JSON + in-shell page), and the cached-briefing perf win."""
 
 from __future__ import annotations
@@ -93,7 +93,7 @@ def test_erase_is_owner_gated_purges_and_audits() -> None:
 
     r = app.handle(Request("POST", "/api/acme/erase", _h("owner@acme.com")))
     assert r.status == 200
-    erased = json.loads(r.body)["erased"]
+    erased = json.loads(r.body)["cleared"]
     assert erased["transactions"] == 2
     assert erased["decisions"] == 1
     assert erased["close_board"] is True
@@ -113,11 +113,11 @@ def test_erase_is_owner_gated_purges_and_audits() -> None:
 def test_erase_is_idempotent() -> None:
     app, _ = _app(audit=InMemoryAuditLog())
     first = json.loads(app.handle(Request("POST", "/api/acme/erase", _h("owner@acme.com"))).body)
-    assert first["erased"]["transactions"] == 2
+    assert first["cleared"]["transactions"] == 2
     second = json.loads(app.handle(Request("DELETE", "/api/acme/erase", _h("owner@acme.com"))).body)
-    assert second["erased"]["transactions"] == 0
-    assert second["erased"]["decisions"] == 0
-    assert second["erased"]["close_board"] is False
+    assert second["cleared"]["transactions"] == 0
+    assert second["cleared"]["decisions"] == 0
+    assert second["cleared"]["close_board"] is False
 
 
 def test_erase_forbidden_for_viewer() -> None:
@@ -204,3 +204,15 @@ def test_briefing_is_built_once_across_repeated_gets(monkeypatch: pytest.MonkeyP
     app.handle(Request("POST", "/api/acme/assumptions", h, '{"minimum_cash":"20000.00"}'))
     app.handle(Request("GET", "/api/acme/today", h))
     assert calls["n"] == 2                                  # recomputed exactly once more
+
+
+def test_erase_response_is_honest_about_scope() -> None:
+    # H2-3: the reset must not be presented as a full regulatory erasure.
+    app, _ = _app()
+    r = app.handle(Request("POST", "/api/acme/erase", _h("owner@acme.com")))
+    body = json.loads(r.body)
+    assert "NOT a full regulatory erasure" in body["scope"]
+    retained = body["retained"]
+    assert any("ledger" in x for x in retained)
+    assert any("tax ID" in x for x in retained)
+    assert any("audit" in x for x in retained)
