@@ -14,7 +14,11 @@ import { CORE_DDL } from "./schema.js";
  * Semantics:
  * - Default OPEN: `status` returns OPEN when no row exists for (tenant, period).
  * - `lock` upserts status = 'LOCKED' with a `locked_at` audit timestamp.
- * - `unlock` upserts status = 'OPEN' (a controlled prior-period re-open).
+ * - `lockThrough` upserts status = 'LOCKED_THROUGH' at a high-water period; any
+ *   period ≤ a LOCKED_THROUGH mark reads LOCKED. Used at cutover to freeze all
+ *   converted history in one row instead of one row per historical month.
+ * - `unlock` upserts status = 'OPEN' (a controlled prior-period re-open); an
+ *   explicit OPEN row overrides a covering watermark until it is re-advanced.
  *
  * Tenant isolation: every statement runs inside a transaction that first binds
  * the `app.tenant_id` GUC, exactly like PgLedgerStore, so the RLS policy on
@@ -31,12 +35,21 @@ export class SqlPeriodStore implements PeriodStore {
   async status(tenantId: TenantId, period: PeriodKey): Promise<PeriodStatus> {
     return this.withTenant(tenantId, async (q) => {
       const res = await q.query(
-        `SELECT status FROM ledger_period WHERE tenant_id = $1 AND period = $2`,
+        `SELECT
+           (SELECT status FROM ledger_period
+              WHERE tenant_id = $1 AND period = $2) AS own,
+           EXISTS(SELECT 1 FROM ledger_period
+              WHERE tenant_id = $1 AND status = 'LOCKED_THROUGH'
+                AND period >= $2) AS watermarked`,
         [tenantId, period],
       );
-      const row = res.rows[0] as { status?: string } | undefined;
-      // No row → the period was never sealed → OPEN.
-      return row && String(row.status) === "LOCKED" ? "LOCKED" : "OPEN";
+      const row = res.rows[0] as { own?: string | null; watermarked?: boolean } | undefined;
+      const own = row && row.own != null ? String(row.own) : undefined;
+      // An explicit OPEN row is a re-open exception that overrides a watermark.
+      if (own === "OPEN") return "OPEN";
+      if (own === "LOCKED" || own === "LOCKED_THROUGH") return "LOCKED";
+      // No own lock → sealed iff a LOCKED_THROUGH mark covers this period.
+      return row && row.watermarked ? "LOCKED" : "OPEN";
     });
   }
 
@@ -49,6 +62,26 @@ export class SqlPeriodStore implements PeriodStore {
          ON CONFLICT (tenant_id, period)
          DO UPDATE SET status = 'LOCKED', locked_at = $3`,
         [tenantId, period, lockedAt],
+      );
+    });
+  }
+
+  async lockThrough(tenantId: TenantId, period: PeriodKey): Promise<void> {
+    const lockedAt = new Date().toISOString();
+    await this.withTenant(tenantId, async (q) => {
+      // Set the high-water mark row…
+      await q.query(
+        `INSERT INTO ledger_period (tenant_id, period, status, locked_at)
+         VALUES ($1, $2, 'LOCKED_THROUGH', $3)
+         ON CONFLICT (tenant_id, period)
+         DO UPDATE SET status = 'LOCKED_THROUGH', locked_at = $3`,
+        [tenantId, period, lockedAt],
+      );
+      // …and re-seal any explicit re-open exceptions now at/below the mark.
+      await q.query(
+        `DELETE FROM ledger_period
+         WHERE tenant_id = $1 AND status = 'OPEN' AND period <= $2`,
+        [tenantId, period],
       );
     });
   }

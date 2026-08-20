@@ -122,7 +122,7 @@ export interface CutoverRecord {
   readonly openingEntryId: string;
   /** Total of the opening-balance debits (= credits) posted. */
   readonly openingTotal: Money;
-  /** The last period locked as part of the cutover (everything ≤ this is frozen). */
+  /** High-water lock set at cutover: every period ≤ this is frozen. */
   readonly lockedThroughPeriod: string;
   readonly postedAt: string;
 }
@@ -159,11 +159,11 @@ export async function executeCutover(
   const entry = existing ?? (await engine.post(command, { postedAt }));
   const newlyPosted = existing === undefined;
 
-  // Freeze the cutover period (and thereby the converted history). Callers that
-  // track earlier periods can lock each; locking the cutover month is the seal
-  // that stops edits to the opening books.
+  // Freeze the cutover month AND all converted history before it: a single
+  // high-water lock so a posting back-dated into any pre-cutover month is
+  // refused, not only one dated into the cutover month itself.
   const cutoverPeriod = asPeriodKey(plan.cutoverDate.slice(0, 7));
-  await periods.lock(tenant, cutoverPeriod);
+  await periods.lockThrough(tenant, cutoverPeriod);
 
   // Opening total = sum of the debit lines (equals credits).
   let openingMinor = 0n;

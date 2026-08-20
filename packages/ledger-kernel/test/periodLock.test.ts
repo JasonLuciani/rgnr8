@@ -6,6 +6,7 @@ import {
   PostingEngine,
   asIdempotencyKey,
   asPeriodKey,
+  asTenantId,
 } from "../src/index.js";
 import { AUG, POST_AT, PROV, TENANT, saleCommand, standardCoa } from "./helpers.js";
 import { InMemoryLedgerStore } from "../src/index.js";
@@ -72,6 +73,41 @@ test("locking one period leaves other periods and tenants open", async () => {
   );
   assert.equal(sep.sequence, 1);
   assert.equal(await periods.status(TENANT, SEP), "OPEN");
+});
+
+test("lockThrough seals the watermark month and every month before it", async () => {
+  const periods = new InMemoryPeriodStore();
+  await periods.lockThrough(TENANT, AUG);
+
+  assert.equal(await periods.status(TENANT, AUG), "LOCKED"); // the mark itself
+  assert.equal(await periods.status(TENANT, asPeriodKey("2026-07")), "LOCKED"); // before
+  assert.equal(await periods.status(TENANT, asPeriodKey("2025-01")), "LOCKED"); // far before
+  assert.equal(await periods.status(TENANT, SEP), "OPEN"); // after the mark
+});
+
+test("lockThrough is monotonic and tenant-scoped", async () => {
+  const periods = new InMemoryPeriodStore();
+  await periods.lockThrough(TENANT, SEP);
+  // A later call with an EARLIER period never lowers the mark.
+  await periods.lockThrough(TENANT, AUG);
+  assert.equal(await periods.status(TENANT, SEP), "LOCKED");
+
+  // Another tenant is untouched by this tenant's watermark.
+  const other = asTenantId("beta");
+  assert.equal(await periods.status(other, AUG), "OPEN");
+});
+
+test("unlock below a watermark is a re-open exception; re-advancing re-seals", async () => {
+  const periods = new InMemoryPeriodStore();
+  await periods.lockThrough(TENANT, SEP);
+  assert.equal(await periods.status(TENANT, AUG), "LOCKED");
+
+  await periods.unlock(TENANT, AUG); // controlled prior-period adjustment
+  assert.equal(await periods.status(TENANT, AUG), "OPEN");
+
+  // Re-advancing the watermark past the exception re-seals it.
+  await periods.lockThrough(TENANT, SEP);
+  assert.equal(await periods.status(TENANT, AUG), "LOCKED");
 });
 
 test("unlock re-opens a sealed period for a prior-period adjustment", async () => {

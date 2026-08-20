@@ -120,6 +120,34 @@ test("executeCutover posts opening balances, locks the period, and records SoR t
   await assert.rejects(() => engine.post(backdated, { postedAt: "2026-09-01T00:00:00Z" }), PeriodClosedError);
 });
 
+test("cutover freezes every period before the cutover month, not just the cutover month", async () => {
+  const store = new InMemoryLedgerStore();
+  const periods = new PeriodRegistry();
+  const engine = new PostingEngine(coa, store, periods);
+
+  await executeCutover(engine, periods, store, plan(), "2026-08-31T00:00:00Z");
+
+  // A month strictly BEFORE the cutover month must be frozen too — otherwise
+  // converted history could drift after go-live.
+  assert.equal(await periods.status(tenant, asPeriodKey("2026-07")), "LOCKED");
+  assert.equal(await periods.status(tenant, asPeriodKey("2025-12")), "LOCKED");
+  // A month after the cutover stays open — RGNR8 posts forward from here.
+  assert.equal(await periods.status(tenant, asPeriodKey("2026-09")), "OPEN");
+
+  const backdatedJuly: PostCommand = {
+    tenantId: tenant, idempotencyKey: asIdempotencyKey("july-late"), periodKey: asPeriodKey("2026-07"),
+    currency: USD, entryDate: "2026-07-15", provenance: prov,
+    lines: [
+      { accountId: asAccountId("cash"), side: "DEBIT", amount: m("100.00") },
+      { accountId: asAccountId("sales"), side: "CREDIT", amount: m("100.00") },
+    ],
+  };
+  await assert.rejects(
+    () => engine.post(backdatedJuly, { postedAt: "2026-09-01T00:00:00Z" }),
+    PeriodClosedError,
+  );
+});
+
 test("re-running the same cutover is idempotent (no double opening entry)", async () => {
   const store = new InMemoryLedgerStore();
   const periods = new PeriodRegistry();

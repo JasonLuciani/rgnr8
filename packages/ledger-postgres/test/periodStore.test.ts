@@ -59,6 +59,36 @@ test("lock upserts LOCKED and status round-trips; unlock re-opens", async () => 
   assert.equal(await periods.status(TENANT, AUG), "OPEN");
 });
 
+test("lockThrough seals the watermark month and every earlier month; later stays OPEN", async () => {
+  const pool = makePool();
+  const periods = new SqlPeriodStore(pool);
+  await periods.migrate();
+
+  await periods.lockThrough(TENANT, AUG);
+  assert.equal(await periods.status(TENANT, AUG), "LOCKED"); // the mark
+  assert.equal(await periods.status(TENANT, asPeriodKey("2026-07")), "LOCKED"); // before
+  assert.equal(await periods.status(TENANT, SEP), "OPEN"); // after
+
+  // Durable: a fresh store over the same DB still sees the watermark.
+  const afterRestart = new SqlPeriodStore(pool);
+  assert.equal(await afterRestart.status(TENANT, asPeriodKey("2026-06")), "LOCKED");
+});
+
+test("unlock below a SQL watermark re-opens; re-advancing the mark re-seals", async () => {
+  const pool = makePool();
+  const periods = new SqlPeriodStore(pool);
+  await periods.migrate();
+
+  await periods.lockThrough(TENANT, SEP);
+  assert.equal(await periods.status(TENANT, AUG), "LOCKED");
+
+  await periods.unlock(TENANT, AUG);
+  assert.equal(await periods.status(TENANT, AUG), "OPEN"); // explicit exception overrides
+
+  await periods.lockThrough(TENANT, SEP);
+  assert.equal(await periods.status(TENANT, AUG), "LOCKED"); // exception cleared
+});
+
 test("locks are scoped per tenant and per period", async () => {
   const pool = makePool();
   const periods = new SqlPeriodStore(pool);
