@@ -170,6 +170,9 @@ from .capture_screens import render_capture
 from .debt_screens import render_debt, render_debt_unavailable, render_loan_detail
 from .asset_screens import render_asset_detail, render_assets, render_assets_unavailable
 from .health_screens import render_health, render_health_unavailable
+from .ask_screens import render_ask, render_ask_unavailable
+from .copilot_bridge import AskService, LedgerReaderAdapter, copilot_scopes
+from rgnr8_copilot import LLMProvider
 from .shell import (
     render_app_home,
     render_audit_log,
@@ -479,6 +482,7 @@ class WebApp:
         qbo: QboConnectService | None = None,
         webhooks: "WebhookEndpointStore | None" = None,
         webhook_outbox: "WebhookOutbox | None" = None,
+        ask_llm: "LLMProvider | None" = None,
     ) -> None:
         # Outbound webhooks: a per-tenant endpoint store and a durable outbox. When
         # absent, the integrations surface reports "not configured" rather than 404.
@@ -562,6 +566,11 @@ class WebApp:
         self._budgets: dict[str, Mapping[str, Money]] = {}
         self._usage: dict[str, UsageSummary] = {}
         self._billing_accounts: dict[str, Account] = {}
+        # Ask RGNR8: the conversational finance layer. With an LLM provider bound,
+        # /t/<tenant>/ask answers plain-English questions by calling read tools that
+        # compute from this tenant's books (every figure verified, cited, RBAC-scoped).
+        # None → the surface renders "not configured" rather than 404 (back-compat).
+        self._ask_svc = AskService(ask_llm) if ask_llm is not None else None
 
     def add_tenant(
         self,
@@ -1035,6 +1044,14 @@ class WebApp:
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "health":
             return self._require(subject, token_tenant, parts[1], P.VIEW_CASH,
                                  lambda t: self._health_page(subject, t, req.query))
+
+        # --- Ask RGNR8 (conversational finance, read-only) ---
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "ask":
+            if req.method == "POST":
+                return self._require(subject, token_tenant, parts[1], P.ASK_CFO,
+                                     lambda t: self._ask_answer(subject, t, req.body))
+            return self._require(subject, token_tenant, parts[1], P.ASK_CFO,
+                                 lambda t: self._ask_page(subject, t, req.query))
 
         # /t/<tenant>/transactions  -> the bank register (shell page)
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "transactions":
@@ -4375,6 +4392,44 @@ class WebApp:
         if not res.ok:
             return self._shell(subject, t, "health", render_health_unavailable(res.error()))
         return self._shell(subject, t, "health", render_health(t.tenant_id, res.body))
+
+    # --- Ask RGNR8 (conversational finance) ---------------------------------
+    def _ask_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        if self._ask_svc is None:
+            return self._shell(subject, t, "ask", render_ask_unavailable())
+        if self._ledger is None:
+            return self._shell(subject, t, "ask",
+                               render_ask_unavailable("No ledger service is configured."))
+        question = query.get("q", "").strip()
+        if not question:
+            return self._shell(subject, t, "ask", render_ask(t.tenant_id))
+        return self._shell(subject, t, "ask", self._ask_run(subject, t, question))
+
+    def _ask_answer(self, subject: str, t: _Tenant, body: str) -> Response:
+        if self._ask_svc is None:
+            return self._shell(subject, t, "ask", render_ask_unavailable())
+        if self._ledger is None:
+            return self._shell(subject, t, "ask",
+                               render_ask_unavailable("No ledger service is configured."))
+        question = str(self._form_or_json(body).get("q", "")).strip()
+        if not question:
+            return self._shell(subject, t, "ask",
+                               render_ask(t.tenant_id, error="Ask a question first."))
+        return self._shell(subject, t, "ask", self._ask_run(subject, t, question))
+
+    def _ask_run(self, subject: str, t: _Tenant, question: str) -> str:
+        """Answer one question. The copilot reads only through a tenant-pinned
+        adapter over the same ledger client every screen uses, and only the tools
+        the caller's role permits — RBAC is enforced twice, here and in the DB."""
+        assert self._ask_svc is not None and self._ledger is not None
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        scopes = copilot_scopes(perms, rbac_on=self._policy is not None)
+        reader = LedgerReaderAdapter(self._ledger, t.tenant_id)
+        hints: dict[str, object] = {"today": self._today(t), "business": t.name}
+        answer = self._ask_svc.answer(
+            tenant=t.tenant_id, scopes=scopes, reader=reader, hints=hints, question=question,
+        )
+        return render_ask(t.tenant_id, question=question, answer=answer)
 
     # --- receipt capture (OCR → drafted bill) -------------------------------
     def _capture_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:

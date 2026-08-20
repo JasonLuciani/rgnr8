@@ -989,6 +989,20 @@ class LedgerClient:
         q = f"?as_of={urllib.parse.quote(as_of)}" if as_of else ""
         return self._call("GET", f"/t/{tenant}/ratios{q}")
 
+    def get(
+        self, tenant: str, path: str, params: Mapping[str, str] | None = None
+    ) -> LedgerResponse:
+        """Generic tenant-scoped read — the seam Ask RGNR8's tools call. `path`
+        starts with '/', e.g. '/ratios' or '/jobs/harper/cost'."""
+        qs = ""
+        if params:
+            pairs = [
+                f"{urllib.parse.quote(k)}={urllib.parse.quote(str(v))}"
+                for k, v in params.items() if str(v) != ""
+            ]
+            qs = ("?" + "&".join(pairs)) if pairs else ""
+        return self._call("GET", f"/t/{tenant}{path}{qs}")
+
 
 def _qs(frm: str, to: str) -> str:
     parts = []

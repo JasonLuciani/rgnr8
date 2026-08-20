@@ -23,6 +23,7 @@ from .rbac import Membership, Permission, Role, User
 # nav item → (path suffix, label, permission required)
 _NAV: list[tuple[str, str, Permission]] = [
     ("", "Cash", Permission.VIEW_CASH),
+    ("ask", "Ask", Permission.ASK_CFO),
     ("transactions", "Transactions", Permission.VIEW_TRANSACTIONS),
     ("books", "Books", Permission.VIEW_TRANSACTIONS),
     ("jobs", "Jobs", Permission.VIEW_TRANSACTIONS),
