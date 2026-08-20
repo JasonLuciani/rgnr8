@@ -17,16 +17,28 @@ from datetime import datetime, timezone
 
 import _pathsetup  # noqa: F401
 
-from rgnr8_briefing import RecordingDeliverer
+from rgnr8_briefing import (
+    HttpEmailTransport,
+    ProviderDeliverer,
+    RecordingDeliverer,
+    UrllibHttpClient,
+)
 from rgnr8_ops import Settings, load_fleet
 from db import open_connection
 
 
 def _deliverer(settings: Settings) -> object:
+    """The real SendGrid transport when a key is set, else a recording no-op for
+    dry runs. Previously this always returned the recorder — briefings never sent."""
     if settings.sendgrid_api_key:
-        # Real transport is wired in rgnr8-briefing (HttpEmailTransport/ProviderDeliverer);
-        # a deploy would construct it here from settings. Kept explicit for the operator.
-        print("[worker] SendGrid key present — construct ProviderDeliverer(HttpEmailTransport)")
+        email = HttpEmailTransport(
+            UrllibHttpClient(),
+            api_key=settings.sendgrid_api_key,
+            from_email=settings.delivery_from,
+        )
+        print(f"[worker] email transport: SendGrid, from {settings.delivery_from}")
+        return ProviderDeliverer(email)
+    print("[worker] no RGNR8_SENDGRID_API_KEY — using recording no-op (dry run)")
     return RecordingDeliverer()
 
 

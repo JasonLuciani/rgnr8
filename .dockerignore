@@ -1,0 +1,14 @@
+# Keep the build context small and the image clean.
+**/node_modules
+**/dist
+**/__pycache__
+**/.mypy_cache
+**/.pytest_cache
+**/*.pyc
+.git
+.github
+*.bundle
+
+# never bake secrets into the image
+deploy/.env
+**/.env

@@ -1,5 +1,8 @@
-# Runtime dependencies for deploying RGNR8 (the Python web surface).
-# The RGNR8 packages themselves are pure-stdlib except for the report exporters.
+# Runtime dependencies for deploying RGNR8 (the Python web surface + worker).
+# The rgnr8_* packages are imported from source (deploy/_pathsetup.py); these are
+# the third-party libraries they touch at import/runtime.
 gunicorn>=21.2
-reportlab>=4.0
-openpyxl>=3.1
+psycopg[binary]>=3.1     # Postgres driver (durable stores)
+reportlab>=4.0           # PDF report export (rgnr8_reports)
+openpyxl>=3.1            # XLSX report export (rgnr8_reports)
+cryptography>=42.0       # Fernet at-rest encryption (rgnr8_qbo secrets_cipher)

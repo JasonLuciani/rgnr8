@@ -35,8 +35,21 @@ class Settings:
     tenant_claim: str = "tenant"
     port: int = 8080
 
+    # --- browser login / sessions ---
+    # A session secret enables self-issued session cookies so browser owners can
+    # log in with a password (with a credential store wired). In jwks (SSO) mode
+    # leave this unset and authenticate through the IdP.
+    session_secret: str | None = None
+
     # --- database ---
     database_url: str | None = None  # None → in-memory (dev only)
+
+    # --- ledger service (the accounting system of record) ---
+    ledger_url: str | None = None    # RGNR8_LEDGER_URL; absent → books screens say "not configured"
+    ledger_token: str | None = None  # RGNR8_LEDGER_TOKEN
+
+    # --- secrets ---
+    secret_key: str | None = None    # RGNR8_SECRET_KEY (Fernet key for at-rest encryption)
 
     # --- delivery (optional until you turn it on) ---
     sendgrid_api_key: str | None = None
@@ -49,6 +62,12 @@ class Settings:
     gusto_api_key: str | None = None
     qbo_client_id: str | None = None
     qbo_client_secret: str | None = None
+    qbo_redirect_uri: str | None = None
+    qbo_environment: str = "sandbox"  # "sandbox" | "production"
+
+    # --- Ask RGNR8 (conversational layer, optional) ---
+    anthropic_api_key: str | None = None
+    ask_model: str = "claude-sonnet-4"
 
     # non-secret derived flags
     warnings: tuple[str, ...] = field(default_factory=tuple)
@@ -56,6 +75,10 @@ class Settings:
     @property
     def is_production_db(self) -> bool:
         return self.database_url is not None
+
+    @property
+    def qbo_enabled(self) -> bool:
+        return bool(self.qbo_client_id and self.qbo_client_secret)
 
     @property
     def placeholder(self) -> str:
@@ -94,6 +117,29 @@ class Settings:
         except ValueError as exc:
             raise ConfigError("RGNR8_PORT must be an integer") from exc
 
+        session_secret = e.get("RGNR8_SESSION_SECRET")
+        # Browser login needs a session secret unless we're on a real IdP (jwks).
+        if auth_mode != "jwks" and database_url and not session_secret:
+            warnings.append(
+                "no RGNR8_SESSION_SECRET — browser login is disabled (API bearer tokens only)"
+            )
+        ledger_url = e.get("RGNR8_LEDGER_URL")
+        if database_url and not ledger_url:
+            warnings.append(
+                "no RGNR8_LEDGER_URL — the books/ledger screens will show 'not configured'"
+            )
+
+        qbo_id = e.get("RGNR8_QBO_CLIENT_ID")
+        qbo_secret = e.get("RGNR8_QBO_CLIENT_SECRET")
+        secret_key = e.get("RGNR8_SECRET_KEY")
+        # Fail closed: never write external OAuth credentials to the DB in cleartext.
+        if qbo_id and qbo_secret and database_url and not secret_key:
+            raise ConfigError(
+                "QBO is enabled (RGNR8_QBO_CLIENT_ID/SECRET) with a database but no "
+                "RGNR8_SECRET_KEY — refusing to store OAuth tokens in cleartext. Set "
+                "RGNR8_SECRET_KEY to a Fernet key."
+            )
+
         return Settings(
             auth_mode=auth_mode,
             jwt_secret=jwt_secret,
@@ -102,15 +148,23 @@ class Settings:
             jwt_audience=audience,
             tenant_claim=e.get("RGNR8_TENANT_CLAIM", "tenant"),
             port=port,
+            session_secret=session_secret,
             database_url=database_url,
+            ledger_url=ledger_url,
+            ledger_token=e.get("RGNR8_LEDGER_TOKEN"),
+            secret_key=secret_key,
             sendgrid_api_key=e.get("RGNR8_SENDGRID_API_KEY"),
             fcm_api_key=e.get("RGNR8_FCM_API_KEY"),
             delivery_from=e.get("RGNR8_DELIVERY_FROM", "briefings@rgnr8.app"),
             plaid_client_id=e.get("RGNR8_PLAID_CLIENT_ID"),
             plaid_secret=e.get("RGNR8_PLAID_SECRET"),
             gusto_api_key=e.get("RGNR8_GUSTO_API_KEY"),
-            qbo_client_id=e.get("RGNR8_QBO_CLIENT_ID"),
-            qbo_client_secret=e.get("RGNR8_QBO_CLIENT_SECRET"),
+            qbo_client_id=qbo_id,
+            qbo_client_secret=qbo_secret,
+            qbo_redirect_uri=e.get("RGNR8_QBO_REDIRECT_URI"),
+            qbo_environment=(e.get("RGNR8_QBO_ENVIRONMENT") or "sandbox").strip().lower(),
+            anthropic_api_key=e.get("RGNR8_ANTHROPIC_API_KEY") or e.get("ANTHROPIC_API_KEY"),
+            ask_model=e.get("RGNR8_ASK_MODEL", "claude-sonnet-4"),
             warnings=tuple(warnings),
         )
 
@@ -126,11 +180,17 @@ class Settings:
             "jwks_url": self.jwks_url or "unset",
             "issuer": self.jwt_issuer or "unset",
             "audience": self.jwt_audience or "unset",
+            "session_secret": has(self.session_secret),
+            "ledger": self.ledger_url or "unset",
+            "ledger_token": has(self.ledger_token),
+            "secret_key": has(self.secret_key),
             "sendgrid": has(self.sendgrid_api_key),
             "fcm": has(self.fcm_api_key),
             "plaid": has(self.plaid_client_id and self.plaid_secret),
             "gusto": has(self.gusto_api_key),
             "qbo": has(self.qbo_client_id and self.qbo_client_secret),
+            "qbo_env": self.qbo_environment,
+            "ask": has(self.anthropic_api_key),
             "port": self.port,
             "warnings": list(self.warnings),
         }

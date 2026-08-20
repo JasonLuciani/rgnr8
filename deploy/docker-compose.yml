@@ -27,16 +27,32 @@ services:
     command: ["python", "migrate.py"]
     restart: "no"
 
+  # The accounting system of record (Node/TS). Migrates its schema on boot, then
+  # serves the ledger API on an internal-only port — the web app reaches it over
+  # the compose network; it is NOT published to the host.
+  ledger:
+    build: { context: .., dockerfile: deploy/Dockerfile.ledger }
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://rgnr8:rgnr8@db:5432/rgnr8
+      RGNR8_LEDGER_PORT: "8181"
+      # RGNR8_LEDGER_TOKEN comes from .env and must match the web app's.
+    depends_on:
+      db: { condition: service_healthy }
+
   web:
     build: { context: .., dockerfile: deploy/Dockerfile }
     env_file: .env
     environment:
       RGNR8_DATABASE_URL: postgresql://rgnr8:rgnr8@db:5432/rgnr8
       RGNR8_PORT: "8080"
+      RGNR8_LEDGER_URL: http://ledger:8181
+      # RGNR8_LEDGER_TOKEN / RGNR8_JWT_SECRET / RGNR8_SESSION_SECRET come from .env.
     ports: ["8080:8080"]
     depends_on:
       db: { condition: service_healthy }
       migrate: { condition: service_completed_successfully }
+      ledger: { condition: service_healthy }
 
   # A scheduler (cron/K8s CronJob) would invoke this on a cadence; here it runs
   # one tick and exits. Swap `command` for your scheduler in production.

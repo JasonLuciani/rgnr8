@@ -67,6 +67,64 @@ def test_jwks_mode_builds_without_network() -> None:
     assert app.handle(Request("GET", "/api/acme/today")).status == 401
 
 
+# --- Phase 0 composition: login, ledger, Ask, QBO all wired from one factory ---
+
+def test_session_secret_wires_a_working_browser_login() -> None:
+    s = Settings.from_env({"RGNR8_JWT_SECRET": "x", "RGNR8_SESSION_SECRET": "sess"})
+    app = build_web_app(s)
+    assert app._auth_service is not None      # real password login, not email-only
+    assert app._session_secret is not None
+    assert app._sso_mode() is False           # browser self-issued login is active
+    # POST /login is a real credential check now — not the "self-issued disabled" 400
+    r = app.handle(Request("POST", "/login", {"content-type": "application/x-www-form-urlencoded"},
+                           "email=nobody@acme.com&password=wrong"))
+    assert "Self-issued login is disabled" not in r.body
+
+
+def test_jwks_mode_has_no_self_issued_login() -> None:
+    s = Settings.from_env({
+        "RGNR8_AUTH_MODE": "jwks",
+        "RGNR8_JWKS_URL": "https://i/jwks", "RGNR8_JWT_ISSUER": "https://i/",
+        "RGNR8_JWT_AUDIENCE": "aud",
+    })
+    app = build_web_app(s)
+    assert app._auth_service is None and app._session_secret is None  # log in via the IdP
+
+
+def test_ledger_url_wires_the_client() -> None:
+    off = build_web_app(Settings.from_env({"RGNR8_JWT_SECRET": "x"}))
+    assert off._ledger is None                # absent → "not configured", not pretend
+    on = build_web_app(Settings.from_env({"RGNR8_JWT_SECRET": "x",
+                                          "RGNR8_LEDGER_URL": "http://ledger:8181",
+                                          "RGNR8_LEDGER_TOKEN": "svc"}))
+    assert on._ledger is not None
+
+
+def test_anthropic_key_wires_ask() -> None:
+    off = build_web_app(Settings.from_env({"RGNR8_JWT_SECRET": "x"}))
+    assert off._ask_svc is None
+    on = build_web_app(Settings.from_env({"RGNR8_JWT_SECRET": "x",
+                                          "RGNR8_ANTHROPIC_API_KEY": "sk-live"}))
+    assert on._ask_svc is not None
+
+
+def test_qbo_fails_closed_without_a_secret_key_on_a_database() -> None:
+    with pytest.raises(ConfigError):
+        Settings.from_env({
+            "RGNR8_JWT_SECRET": "x", "RGNR8_DATABASE_URL": "postgresql://u@h/db",
+            "RGNR8_QBO_CLIENT_ID": "id", "RGNR8_QBO_CLIENT_SECRET": "sec",
+        })
+
+
+def test_qbo_wired_when_configured_with_a_key() -> None:
+    s = Settings.from_env({
+        "RGNR8_JWT_SECRET": "x", "RGNR8_SESSION_SECRET": "sess",
+        "RGNR8_QBO_CLIENT_ID": "id", "RGNR8_QBO_CLIENT_SECRET": "sec",
+    })
+    app = build_web_app(s)  # in-memory (no DB) → connection store needs no cipher
+    assert app._qbo is not None
+
+
 def test_readiness_does_a_real_db_round_trip() -> None:
     conn = sqlite3.connect(":memory:")
     s = Settings.from_env({"RGNR8_JWT_SECRET": "x", "RGNR8_DATABASE_URL": "sqlite://"})

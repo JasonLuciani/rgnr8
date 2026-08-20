@@ -12,7 +12,10 @@ enum values exactly, so a slug recorded here maps to a TS template one-to-one.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+
+from rgnr8_runtime.subscriptions import DbApiConnection
 
 # Slugs + human labels — MUST match ledger-kernel's BusinessCategory enum values.
 BUSINESS_CATEGORIES: tuple[tuple[str, str], ...] = (
@@ -247,3 +250,131 @@ class OnboardingRegistry:
     def go_live_request(self, tenant_id: str) -> dict[str, object] | None:
         """The go-live/1 request queued for the TS accounting core, if any."""
         return self._go_live_request.get(tenant_id)
+
+
+class SqlOnboardingRegistry(OnboardingRegistry):
+    """Durable onboarding state over any DB-API 2.0 connection (sqlite in tests,
+    psycopg/Postgres in production). Same surface as `OnboardingRegistry`, but the
+    COA choice, cutover record, and queued go-live request survive a process
+    restart — go-live tracking must not vanish when the operator pod bounces."""
+
+    def __init__(self, connection: DbApiConnection, *, placeholder: str = "?") -> None:
+        # Deliberately do NOT call super().__init__(): all state lives in the DB,
+        # and every public method is overridden below.
+        self._conn = connection
+        self._ph = placeholder
+
+    def create_schema(self) -> None:
+        cur = self._conn.cursor()
+        try:
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS rgnr8_onboarding ("
+                "tenant_id TEXT PRIMARY KEY, coa_category TEXT, go_live_json TEXT)"
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS rgnr8_cutover ("
+                "tenant_id TEXT PRIMARY KEY, source_system TEXT NOT NULL, "
+                "cutover_date TEXT NOT NULL, marked_by TEXT NOT NULL, "
+                "marked_at INTEGER NOT NULL, opening_entry_id TEXT NOT NULL DEFAULT '')"
+            )
+        finally:
+            cur.close()
+        self._conn.commit()
+
+    def _upsert_onboarding(self, tenant_id: str, *, coa: str | None, go_live: str | None) -> None:
+        # Merge onto the existing row so setting one column never clears the other.
+        p = self._ph
+        cur = self._conn.cursor()
+        try:
+            cur.execute(f"SELECT coa_category, go_live_json FROM rgnr8_onboarding "
+                        f"WHERE tenant_id={p}", (tenant_id,))
+            _rows = cur.fetchall()
+            row = _rows[0] if _rows else None
+            cur_coa = row[0] if row else None
+            cur_gl = row[1] if row else None
+            new_coa = coa if coa is not None else cur_coa
+            new_gl = go_live if go_live is not None else cur_gl
+            cur.execute(
+                f"INSERT INTO rgnr8_onboarding (tenant_id, coa_category, go_live_json) "
+                f"VALUES ({p}, {p}, {p}) ON CONFLICT (tenant_id) DO UPDATE SET "
+                "coa_category=excluded.coa_category, go_live_json=excluded.go_live_json",
+                (tenant_id, new_coa, new_gl),
+            )
+        finally:
+            cur.close()
+        self._conn.commit()
+
+    def set_coa_category(self, tenant_id: str, category: str) -> None:
+        if not is_valid_category(category):
+            raise OnboardingError(f"unknown COA category {category!r}")
+        self._upsert_onboarding(tenant_id, coa=category, go_live=None)
+
+    def coa_category(self, tenant_id: str) -> str | None:
+        cur = self._conn.cursor()
+        try:
+            cur.execute(f"SELECT coa_category FROM rgnr8_onboarding WHERE tenant_id={self._ph}",
+                        (tenant_id,))
+            _rows = cur.fetchall()
+            row = _rows[0] if _rows else None
+        finally:
+            cur.close()
+        return str(row[0]) if row and row[0] is not None else None
+
+    def mark_cutover(
+        self, tenant_id: str, source_system: str, cutover_date: str,
+        *, marked_by: str, marked_at: int, opening_entry_id: str = "",
+    ) -> CutoverRecord:
+        if source_system not in SOURCE_SYSTEMS:
+            raise OnboardingError(f"unknown source system {source_system!r}")
+        rec = CutoverRecord(tenant_id, source_system, cutover_date, marked_by,
+                            marked_at, opening_entry_id)
+        p = self._ph
+        cur = self._conn.cursor()
+        try:
+            cur.execute(
+                f"INSERT INTO rgnr8_cutover (tenant_id, source_system, cutover_date, "
+                f"marked_by, marked_at, opening_entry_id) VALUES ({p}, {p}, {p}, {p}, {p}, {p}) "
+                "ON CONFLICT (tenant_id) DO UPDATE SET source_system=excluded.source_system, "
+                "cutover_date=excluded.cutover_date, marked_by=excluded.marked_by, "
+                "marked_at=excluded.marked_at, opening_entry_id=excluded.opening_entry_id",
+                (tenant_id, source_system, cutover_date, marked_by, marked_at, opening_entry_id),
+            )
+        finally:
+            cur.close()
+        self._conn.commit()
+        return rec
+
+    def cutover(self, tenant_id: str) -> CutoverRecord | None:
+        cur = self._conn.cursor()
+        try:
+            cur.execute(
+                f"SELECT tenant_id, source_system, cutover_date, marked_by, marked_at, "
+                f"opening_entry_id FROM rgnr8_cutover WHERE tenant_id={self._ph}", (tenant_id,))
+            _rows = cur.fetchall()
+            row = _rows[0] if _rows else None
+        finally:
+            cur.close()
+        if row is None:
+            return None
+        return CutoverRecord(str(row[0]), str(row[1]), str(row[2]), str(row[3]),
+                             int(str(row[4])), str(row[5]))
+
+    def is_live(self, tenant_id: str) -> bool:
+        return self.cutover(tenant_id) is not None
+
+    def set_go_live_request(self, tenant_id: str, request: dict[str, object]) -> None:
+        self._upsert_onboarding(tenant_id, coa=None, go_live=json.dumps(request))
+
+    def go_live_request(self, tenant_id: str) -> dict[str, object] | None:
+        cur = self._conn.cursor()
+        try:
+            cur.execute(f"SELECT go_live_json FROM rgnr8_onboarding WHERE tenant_id={self._ph}",
+                        (tenant_id,))
+            _rows = cur.fetchall()
+            row = _rows[0] if _rows else None
+        finally:
+            cur.close()
+        if not row or row[0] is None:
+            return None
+        parsed = json.loads(str(row[0]))
+        return parsed if isinstance(parsed, dict) else None

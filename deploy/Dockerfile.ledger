@@ -1,0 +1,30 @@
+# RGNR8 ledger service — the accounting system of record (Node/TypeScript).
+# Built separately from the Python web image (deploy/Dockerfile) because it is a
+# Node HTTP server. On boot with DATABASE_URL set, bin.ts runs the schema
+# migration and then serves; see deploy/docker-compose.yml for how the web image
+# reaches it over the internal network.
+
+# --- build stage: install the workspace and compile every @rgnr8/* package ---
+FROM node:20-slim AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY scripts ./scripts
+COPY packages ./packages
+RUN npm ci
+RUN npm run build          # topological workspace build (scripts/build-ws.mjs) → dist/
+
+# --- runtime stage ---
+FROM node:20-slim
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/packages ./packages
+EXPOSE 8181
+
+# Unauthenticated /health returns 200 once serving.
+HEALTHCHECK --interval=10s --timeout=3s --retries=10 \
+  CMD node -e "require('http').get('http://127.0.0.1:'+(process.env.RGNR8_LEDGER_PORT||8181)+'/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+
+# bin.ts migrates the schema on boot (when DATABASE_URL is set), then serves.
+CMD ["node", "packages/ledger-service/dist/bin.js"]

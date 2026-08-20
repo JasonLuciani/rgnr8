@@ -24,19 +24,35 @@ from rgnr8_obs import (
     StructuredLogger,
 )
 from rgnr8_runtime.subscriptions import SqlSubscriptionStore
+from rgnr8_copilot import anthropic_llm
+from rgnr8_qbo import (
+    ConnectionStore,
+    InMemoryConnectionStore,
+    QboConnectService,
+    QboEnvironment,
+    QboOAuthConfig,
+    SqlConnectionStore,
+    cipher_from_env,
+)
+from rgnr8_qbo import UrllibHttpClient as QboHttpClient
 from rgnr8_web import (
+    AuthService,
     FinancialPackageReader,
     HttpJwksProvider,
+    InMemoryCredentialStore,
     InMemoryTenantStore,
     InMemoryUserDirectory,
     JwksAuthenticator,
     JwtAuthenticator,
+    LedgerClient,
     RateLimiter,
     Role,
+    SqlCredentialStore,
     SqlTenantStore,
     SqlUserDirectory,
     StaticTokenAuthenticator,
     UrllibJwksSource,
+    UrllibTransport,
     User,
     UserDirectory,
     WebApp,
@@ -94,14 +110,78 @@ def build_web_app(
     if require_rbac:
         users = (SqlUserDirectory(conn, placeholder=settings.placeholder)  # type: ignore[arg-type]
                  if conn is not None else InMemoryUserDirectory())
-    return WebApp(
+
+    # --- browser login ---------------------------------------------------
+    # A session secret enables self-issued session cookies; a credential store
+    # makes POST /login a real password check (not just an email). In jwks (SSO)
+    # mode leave the session secret unset and authenticate through the IdP.
+    session_secret = settings.session_secret
+    credentials = None
+    auth_service = None
+    if session_secret:
+        credentials = (
+            SqlCredentialStore(conn, placeholder=settings.placeholder)  # type: ignore[arg-type]
+            if conn is not None else InMemoryCredentialStore()
+        )
+        if isinstance(credentials, SqlCredentialStore):
+            credentials.create_schema()
+        auth_service = AuthService(credentials=credentials)
+
+    # --- QuickBooks Online connect (optional) ----------------------------
+    # Only wired when the Intuit app credentials are present. Tokens are
+    # encrypted at rest via the Fernet key (config.from_env fails closed when a
+    # DB is configured without one). State signing needs a secret; without any
+    # available secret the connect surface stays "not configured".
+    qbo = None
+    qbo_state_secret = session_secret or settings.jwt_secret or settings.secret_key
+    if settings.qbo_enabled and qbo_state_secret:
+        assert settings.qbo_client_id is not None and settings.qbo_client_secret is not None
+        if conn is not None:
+            # At-rest encryption for tokens; config.from_env fails closed when a DB
+            # is configured without RGNR8_SECRET_KEY, so the key is present here.
+            cipher = cipher_from_env({"RGNR8_SECRET_KEY": settings.secret_key or ""})
+            conn_store: ConnectionStore = SqlConnectionStore(
+                conn, placeholder=settings.placeholder, cipher=cipher)  # type: ignore[arg-type]
+        else:
+            conn_store = InMemoryConnectionStore()
+        redirect = settings.qbo_redirect_uri or "http://localhost:8080/oauth/qbo/callback"
+        qbo = QboConnectService(
+            QboOAuthConfig(
+                client_id=settings.qbo_client_id,
+                client_secret=settings.qbo_client_secret,
+                redirect_uri=redirect,
+                environment=QboEnvironment(settings.qbo_environment),
+            ),
+            QboHttpClient(),
+            conn_store,
+            state_secret=qbo_state_secret,
+        )
+
+    # --- Ask RGNR8 (optional) --------------------------------------------
+    ask_llm = anthropic_llm(settings.anthropic_api_key, model=settings.ask_model)
+
+    app = WebApp(
         store=store,  # type: ignore[arg-type]
         packages=packages,
         authenticator=build_authenticator(settings, clock=clock),
         users=users,
         require_rbac=require_rbac,
         usage_recorder=usage_recorder,
+        session_secret=session_secret,
+        credentials=credentials,
+        auth_service=auth_service,
+        qbo=qbo,
+        ask_llm=ask_llm,
     )
+
+    # --- ledger (the accounting system of record) ------------------------
+    # Without a ledger URL the books/ledger screens say "not configured" rather
+    # than pretending. With one, every books screen and Ask RGNR8 read the real
+    # general ledger through the same tenant-scoped client.
+    if settings.ledger_url:
+        app.set_ledger(LedgerClient(UrllibTransport(settings.ledger_url),
+                                    token=settings.ledger_token or ""))
+    return app
 
 
 def _seat_owner(app: WebApp, email: str, tenant_id: str) -> None:

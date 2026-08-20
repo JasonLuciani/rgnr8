@@ -76,3 +76,29 @@ def test_onboard_from_dto_persists_and_rehydrates() -> None:
     f.onboard_from_dto("northwind", "Northwind", "o@n.com", dto, Money.from_decimal("20000.00"))
     back = Fleet.load(store, jwt_secret=SECRET, clock=lambda: NOW_EPOCH)
     assert back.tenants["northwind"].inputs.opening.available == Money.from_decimal("50000.00")
+
+
+# --- onboarding / go-live durability (H0-7) ----------------------------------
+
+def test_onboarding_and_go_live_state_survive_a_restart() -> None:
+    from rgnr8_ops import SqlOnboardingRegistry
+
+    conn = sqlite3.connect(":memory:")
+    reg = SqlOnboardingRegistry(conn)
+    reg.create_schema()
+    reg.set_coa_category("acme", "CONTRACTOR_TRADES")
+    reg.mark_cutover("acme", "quickbooks", "2026-07-01",
+                     marked_by="op@rgnr8.app", marked_at=NOW_EPOCH, opening_entry_id="OB-1")
+    reg.set_go_live_request("acme", {"contract": "go-live/1", "category": "CONTRACTOR_TRADES"})
+
+    # "Restart": a brand-new registry over the same connection sees the state.
+    again = SqlOnboardingRegistry(conn)
+    assert again.coa_category("acme") == "CONTRACTOR_TRADES"
+    assert again.is_live("acme") is True
+    rec = again.cutover("acme")
+    assert rec is not None and rec.source_system == "quickbooks" and rec.opening_entry_id == "OB-1"
+    assert again.go_live_request("acme") == {"contract": "go-live/1", "category": "CONTRACTOR_TRADES"}
+    # setting one field must not clear the other (merge semantics)
+    again.set_coa_category("acme", "RETAIL")
+    assert again.go_live_request("acme") is not None
+    assert again.coa_category("acme") == "RETAIL"

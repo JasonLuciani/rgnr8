@@ -96,6 +96,7 @@ class OperatorApp:
         clock: Callable[[], datetime],
         auth_service: AuthService | None = None,
         ledger: LedgerClient | None = None,
+        onboarding: OnboardingRegistry | None = None,
     ) -> None:
         self._fleet = fleet
         self._billing = billing
@@ -115,7 +116,9 @@ class OperatorApp:
             billing, fleet, users, audit, clock=lambda: self._epoch()
         )
         # Onboarding metadata: the chosen COA template + cutover/go-live status.
-        self._onboarding = OnboardingRegistry()
+        # Injectable so production passes a SqlOnboardingRegistry (durable across
+        # restarts); defaults to in-memory for dev/tests.
+        self._onboarding = onboarding if onboarding is not None else OnboardingRegistry()
 
     # --- clock ---------------------------------------------------------------
     def _epoch(self) -> int:
