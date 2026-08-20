@@ -26,6 +26,55 @@ test("idempotency: reusing a key with a DIFFERENT payload is rejected", async ()
   );
 });
 
+test("idempotency: reusing a key with different DIMENSIONS is rejected", async () => {
+  const { engine } = fixture();
+  const withDim = (dept: string): typeof base => {
+    const base = saleCommand("100.00", "dim-key");
+    return {
+      ...base,
+      lines: base.lines.map((l, i) =>
+        i === 0 ? { ...l, dimensions: { department: dept } } : l,
+      ),
+    };
+  };
+  await engine.post(withDim("sales"), { postedAt: POST_AT });
+  // Same amounts/accounts, different dimensional coding — must NOT silently dedupe.
+  await assert.rejects(
+    () => engine.post(withDim("marketing"), { postedAt: POST_AT }),
+    DuplicateIdempotencyKeyError,
+  );
+  // The identical re-post (same dimensions) still dedupes.
+  const replay = await engine.post(withDim("sales"), { postedAt: POST_AT });
+  assert.ok(replay.id);
+});
+
+test("idempotency: reusing a key with a different LINE MEMO is rejected", async () => {
+  const { engine } = fixture();
+  const withLineMemo = (memo: string): typeof base => {
+    const base = saleCommand("100.00", "linememo-key");
+    return { ...base, lines: base.lines.map((l, i) => (i === 0 ? { ...l, memo } : l)) };
+  };
+  await engine.post(withLineMemo("card"), { postedAt: POST_AT });
+  await assert.rejects(
+    () => engine.post(withLineMemo("wire"), { postedAt: POST_AT }),
+    DuplicateIdempotencyKeyError,
+  );
+});
+
+test("idempotency: reusing a key with different PROVENANCE is rejected", async () => {
+  const { engine } = fixture();
+  const base = saleCommand("100.00", "prov-key");
+  await engine.post(base, { postedAt: POST_AT });
+  const reMapped = {
+    ...base,
+    provenance: { ...base.provenance, mappingVersion: "map-2" },
+  };
+  await assert.rejects(
+    () => engine.post(reMapped, { postedAt: POST_AT }),
+    DuplicateIdempotencyKeyError,
+  );
+});
+
 test("period lock: posting into a closed period is rejected until reopened", async () => {
   const { engine, periods, store } = fixture();
   periods.close(AUG);

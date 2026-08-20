@@ -118,6 +118,7 @@ export class PostingEngine {
         opts.periodKey,
         opts.entryDate,
         memo,
+        opts.provenance,
         swapped,
       );
       if (fingerprintOfEntry(existing) !== intended) {
@@ -149,10 +150,49 @@ export class PostingEngine {
 }
 
 // --- idempotency fingerprinting ------------------------------------------------
+//
+// The fingerprint is the full economic identity of an entry: reusing an
+// idempotency key with a MATERIALLY different payload must raise, not silently
+// return the original. So the fingerprint covers everything that changes what
+// the entry means — currency, period, date, entry + line memo, per-line
+// dimensional coding, and the provenance record — not just accounts and amounts.
+// A genuine idempotent retry re-sends the identical command (including its
+// provenance snapshot), so it still dedupes.
+
+/** Deterministic serialization of a line's dimension tags (key-sorted). */
+function fingerprintDimensions(dims?: Readonly<Record<string, string>>): string {
+  if (!dims) return "";
+  return Object.keys(dims)
+    .sort()
+    .map((k) => `${k}=${dims[k]}`)
+    .join(",");
+}
+
+function fingerprintProvenance(p: Provenance): string {
+  return [
+    p.sourceSystem,
+    p.sourceObject,
+    p.sourceVersion,
+    p.effectiveDate,
+    p.postedDate,
+    p.ingestedAt,
+    p.normalizationVersion,
+    p.mappingVersion,
+  ].join("|");
+}
 
 function fingerprintLines(lines: readonly PostedLine[]): string {
   return lines
-    .map((l) => `${l.accountId}|${l.side}|${l.amount.currency.code}|${l.amount.minorUnits}`)
+    .map((l) =>
+      [
+        l.accountId,
+        l.side,
+        l.amount.currency.code,
+        l.amount.minorUnits,
+        l.memo ?? "",
+        fingerprintDimensions(l.dimensions),
+      ].join("|"),
+    )
     .join(";");
 }
 
@@ -162,14 +202,20 @@ function fingerprintOfCommand(c: PostCommand): string {
     c.periodKey,
     c.entryDate,
     c.memo ?? "",
+    fingerprintProvenance(c.provenance),
     fingerprintLines(c.lines as readonly PostedLine[]),
   ].join("::");
 }
 
 function fingerprintOfEntry(e: PostedEntry): string {
-  return [e.currency.code, e.periodKey, e.entryDate, e.memo ?? "", fingerprintLines(e.lines)].join(
-    "::",
-  );
+  return [
+    e.currency.code,
+    e.periodKey,
+    e.entryDate,
+    e.memo ?? "",
+    fingerprintProvenance(e.provenance),
+    fingerprintLines(e.lines),
+  ].join("::");
 }
 
 /** Fingerprint of the reversal a `reverse()` call would produce, for the same
@@ -179,7 +225,15 @@ function fingerprintOfReversal(
   periodKey: PeriodKey,
   entryDate: string,
   memo: string,
+  provenance: Provenance,
   lines: readonly PostedLine[],
 ): string {
-  return [currencyCode, periodKey, entryDate, memo, fingerprintLines(lines)].join("::");
+  return [
+    currencyCode,
+    periodKey,
+    entryDate,
+    memo,
+    fingerprintProvenance(provenance),
+    fingerprintLines(lines),
+  ].join("::");
 }
