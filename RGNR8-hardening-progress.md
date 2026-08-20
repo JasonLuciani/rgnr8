@@ -79,10 +79,34 @@ Commits `eb29a67`, `d279832`, `ad5bc16`, `e24fc99`, `1467218`, `8dd10bb`, `56a19
   screen tags figures POSTED / SEALED and the cash outlook carries the legend so
   an owner can tell fact from forecast. Commit `a149cdd`.
 
-## What's left before Phase 4
-Nothing outstanding in Phases 0–3. Phase 4 is the strategic layer: **H4-1**
-narrow-v1 scope + feature flags, **H4-2** marketing-claims audit, **H4-3**
-independent re-verification of all P0/P1 findings.
+## Phase 4 — product narrowing & re-verification ✅ COMPLETE
+
+Commits `7a43bbc`, `ba048aa`, `c4dc3db`.
+- **H4-1** narrow v1 scope + feature flags. `scope.py` is the single source of
+  truth for the production/provisional line: v1 = cash clarity + guided close +
+  accountant handoff (+ admin infra); everything else (AR/AP, jobs, estimates,
+  payroll, …) is provisional. The shell badges provisional nav items and banners
+  their screens; `render_shell(hide_provisional=True)` hides them entirely.
+  Scope doc: `RGNR8-v1-scope.md`.
+- **H4-2** marketing-claims register (`RGNR8-claims-register.md`): 11 public
+  claims each mapped to a verified capability + passing gate, or rewritten
+  (no "compliance-ready"/"audit-ready", no "real-time", GDPR-erasure already
+  fixed). Standing rules for future copy. In-app copy verified to make no
+  overreaching claim today.
+- **H4-3** independent re-verification (`RGNR8-reverification.md`): four fresh
+  reviewers re-traced all 29 original findings against current source — 27 CLOSED
+  with evidence, 2 tracked, 0 re-opened, 0 new P0s. The pass caught and **fixed**
+  two residual regressions: S4 (webhook signing secret was plaintext at rest in
+  the deploy wiring) and A6 (SoD dormant on the web publish path — the board now
+  records the preparer and passes it). Three hardening residuals tracked (D5
+  onboarding wiring, S6 impersonation kill-switch/case-binding, A2 single-txn
+  go-live) — none a launch blocker.
+
+## Status: all four hardening phases complete
+Phases 0–3 (deployability, security/isolation, truth-in-UI/lifecycle, accounting
+controls) and Phase 4 (narrowing + re-verification) are done. Every original
+P0/P1 finding is Closed with evidence. Remaining work is the tracked hardening
+residuals above and graduating provisional surfaces into v1 as they harden.
 
 ## Push mechanics
 Cloud session holds no GitHub token; pushes go through a refreshed `~/Downloads/rgnr8-repo.bundle` that Jason fetches into his clone and pushes:
