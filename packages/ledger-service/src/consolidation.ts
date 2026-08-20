@@ -66,12 +66,21 @@ export interface GroupMember {
   readonly ownershipPpm: number;
   /** The currency this entity keeps its books in. Empty = the group base. */
   readonly currency?: string;
-  /** Current FX rate to the group base, ×1e6 (e.g. EUR→USD 1.08 = "1080000").
+  /** Current (closing) FX rate to the group base, ×1e6 (e.g. EUR→USD 1.08 =
+   *  "1080000"). Applies to monetary balance-sheet items (assets, liabilities).
    *  Empty when the entity already reports in the base currency. */
   readonly rateMicro?: string;
   /** Historical rate for equity accounts, ×1e6. Defaults to the current rate;
    *  when it differs, the gap is the cumulative translation adjustment. */
   readonly equityRateMicro?: string;
+  /** Period-AVERAGE rate for the income statement (revenue, expense), ×1e6.
+   *  ASC 830 / IAS 21 translate P&L at the average rate, not the closing rate.
+   *  Defaults to the current rate (a one-rate group is unchanged). */
+  readonly averageRateMicro?: string;
+  /** Cumulative translation adjustment carried in from prior periods, in base
+   *  minor units. The reported CTA rolls this forward: cumulative = prior +
+   *  the current period's translation gap. Defaults to 0. */
+  readonly priorCtaMinor?: string;
 }
 
 /** The FX rate scale: rates are stored as integers × 1e6. */
@@ -181,12 +190,17 @@ CREATE TABLE IF NOT EXISTS entity_group_member (
   currency         text NOT NULL DEFAULT '',
   rate_micro       text NOT NULL DEFAULT '',
   equity_rate_micro text NOT NULL DEFAULT '',
+  average_rate_micro text NOT NULL DEFAULT '',
+  prior_cta_minor  text NOT NULL DEFAULT '',
   CONSTRAINT entity_group_member_pk PRIMARY KEY (tenant_id, group_id, member_tenant_id)
 );
 -- Members written before multi-currency had no currency/rate columns.
 ALTER TABLE entity_group_member ADD COLUMN IF NOT EXISTS currency          text NOT NULL DEFAULT '';
 ALTER TABLE entity_group_member ADD COLUMN IF NOT EXISTS rate_micro        text NOT NULL DEFAULT '';
 ALTER TABLE entity_group_member ADD COLUMN IF NOT EXISTS equity_rate_micro text NOT NULL DEFAULT '';
+-- Members written before average-rate P&L / CTA roll-forward had neither.
+ALTER TABLE entity_group_member ADD COLUMN IF NOT EXISTS average_rate_micro text NOT NULL DEFAULT '';
+ALTER TABLE entity_group_member ADD COLUMN IF NOT EXISTS prior_cta_minor   text NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS elimination_entry (
   tenant_id   text NOT NULL,
@@ -238,7 +252,8 @@ export class PgConsolidationStore implements ConsolidationStore {
     db: Queryable, tenant: string, groupId: string,
   ): Promise<GroupMember[]> {
     const res = await db.query(
-      `SELECT member_tenant_id, label, ownership_ppm, currency, rate_micro, equity_rate_micro
+      `SELECT member_tenant_id, label, ownership_ppm, currency, rate_micro, equity_rate_micro,
+              average_rate_micro, prior_cta_minor
        FROM entity_group_member
        WHERE tenant_id=$1 AND group_id=$2 ORDER BY member_tenant_id`,
       [tenant, groupId],
@@ -250,6 +265,8 @@ export class PgConsolidationStore implements ConsolidationStore {
       currency: String(r["currency"] ?? ""),
       rateMicro: String(r["rate_micro"] ?? ""),
       equityRateMicro: String(r["equity_rate_micro"] ?? ""),
+      averageRateMicro: String(r["average_rate_micro"] ?? ""),
+      priorCtaMinor: String(r["prior_cta_minor"] ?? ""),
     }));
   }
 
@@ -305,11 +322,13 @@ export class PgConsolidationStore implements ConsolidationStore {
       for (const m of group.members) {
         await db.query(
           `INSERT INTO entity_group_member (tenant_id, group_id, member_tenant_id,
-             label, ownership_ppm, currency, rate_micro, equity_rate_micro)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+             label, ownership_ppm, currency, rate_micro, equity_rate_micro,
+             average_rate_micro, prior_cta_minor)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
           [
             tenant, group.id, m.tenantId, m.label, m.ownershipPpm,
             m.currency ?? "", m.rateMicro ?? "", m.equityRateMicro ?? "",
+            m.averageRateMicro ?? "", m.priorCtaMinor ?? "",
           ],
         );
       }
@@ -406,10 +425,15 @@ export interface GroupInput {
     readonly ownership_ppm?: number;
     /** The currency this entity keeps its books in (empty = the group base). */
     readonly currency?: string;
-    /** Current FX rate to the group base as a decimal (e.g. "1.08"). */
+    /** Current (closing) FX rate to the group base as a decimal (e.g. "1.08"). */
     readonly rate?: string | number;
     /** Historical rate for equity (defaults to the current rate). */
     readonly equity_rate?: string | number;
+    /** Period-average rate for the P&L (defaults to the current rate). */
+    readonly average_rate?: string | number;
+    /** Cumulative translation adjustment carried in from prior periods, in base
+     *  minor units (e.g. "-1234" = a $12.34 debit CTA). Defaults to 0. */
+    readonly prior_cta_minor?: string | number;
   }>;
 }
 
@@ -424,6 +448,16 @@ function rateToMicro(raw: string | number | undefined, label: string): string {
   const micro = BigInt(whole) * RATE_MICRO + BigInt(frac.padEnd(6, "0"));
   if (micro <= 0n) throw new ConsolidationServiceError(`${label} must be greater than zero`);
   return micro.toString();
+}
+
+/** Parse a signed integer minor amount ("-1234"). Empty → "". */
+function ctaMinor(raw: string | number | undefined, label: string): string {
+  const text = String(raw ?? "").trim();
+  if (!text) return "";
+  if (!/^-?\d+$/.test(text)) {
+    throw new ConsolidationServiceError(`${label} must be an integer amount in minor units`);
+  }
+  return BigInt(text).toString();
 }
 
 export async function saveGroup(
@@ -451,9 +485,11 @@ export async function saveGroup(
     const currency = String(m.currency ?? "").trim().toUpperCase();
     const rateMicro = rateToMicro(m.rate, `translation rate for ${tenantId}`);
     const equityRateMicro = rateToMicro(m.equity_rate, `equity rate for ${tenantId}`);
+    const averageRateMicro = rateToMicro(m.average_rate, `average rate for ${tenantId}`);
+    const priorCtaMinor = ctaMinor(m.prior_cta_minor, `prior CTA for ${tenantId}`);
     members.push({
       tenantId, label: String(m.label ?? "").trim() || tenantId, ownershipPpm,
-      currency, rateMicro, equityRateMicro,
+      currency, rateMicro, equityRateMicro, averageRateMicro, priorCtaMinor,
     });
   }
   if (members.length < 2) {
@@ -534,6 +570,8 @@ export async function saveElimination(
 interface EntityBalances {
   readonly member: GroupMember;
   readonly tb: TrialBalance;
+  /** Present only when the entity was translated from another currency. */
+  readonly translation?: EntityTranslation;
 }
 
 /** Round a signed value by an FX rate (×1e6), half-away-from-zero. */
@@ -545,35 +583,119 @@ function translateAmount(signedMinor: bigint, rateMicro: bigint): bigint {
   return neg ? -rounded : rounded;
 }
 
+/** Which rate class translated a line — the per-line audit trail. */
+export type RateClass = "current" | "historical" | "average";
+
+export interface LineRateAudit {
+  readonly accountId: string;
+  readonly code: string;
+  readonly rateClass: RateClass;
+  /** The rate applied, ×1e6. */
+  readonly rateMicro: string;
+}
+
+/** The cumulative translation adjustment, decomposed for roll-forward. */
+export interface CtaBreakdown {
+  /** Total CTA carried on the translated sheet (base minor units). */
+  readonly cumulativeMinor: string;
+  /** CTA carried in from prior periods. */
+  readonly priorMinor: string;
+  /** This period's movement = cumulative − prior. */
+  readonly currentPeriodMinor: string;
+}
+
+export interface EntityTranslation {
+  readonly tb: TrialBalance;
+  /** Per-line record of which rate class/value translated it. */
+  readonly lines: readonly LineRateAudit[];
+  readonly cta: CtaBreakdown;
+}
+
+export interface TranslationRatesMicro {
+  /** Closing rate for monetary/BS items (assets, liabilities), ×1e6. */
+  readonly currentMicro: bigint;
+  /** Historical rate for equity, ×1e6. */
+  readonly equityMicro: bigint;
+  /** Period-average rate for revenue/expense, ×1e6. */
+  readonly averageMicro: bigint;
+  /** CTA carried in from prior periods (base minor units). */
+  readonly priorCtaMinor: bigint;
+}
+
 /**
- * Translate one entity's trial balance into the group's base currency.
+ * Translate a trial balance into a reporting currency by ASC 830 / IAS 21 rate
+ * classes, with a per-line rate audit trail and a roll-forward CTA:
  *
- * Assets, liabilities, revenue and expense translate at the current rate; equity
- * translates at its historical rate. When those rates differ the translated books
- * no longer foot, and the gap — the cumulative translation adjustment — is booked
- * to a translation-adjustment equity line so the entity's contribution balances.
- * With a single rate (or none) this is an exact scalar multiply and the CTA is
- * zero, so a same-currency group behaves exactly as before.
+ *  - assets & liabilities → CURRENT (closing) rate,
+ *  - equity → HISTORICAL rate,
+ *  - revenue & expense → period-AVERAGE rate (NOT the closing rate),
+ *
+ * The gap the differing rates open is the cumulative translation adjustment,
+ * booked to a CTA equity line so the translated books foot exactly. That plug is
+ * the *cumulative* CTA (the trial balance is an as-of cumulative one); the prior
+ * period's CTA is carried in so the reported movement is `cumulative − prior`.
+ * With a single rate (or none) every class collapses to one multiply, the CTA is
+ * zero, and a same-currency entity is unchanged.
  */
-function translateEntity(tb: TrialBalance, member: GroupMember, currency: Currency): TrialBalance {
-  const rate = BigInt(member.rateMicro || RATE_MICRO.toString());
-  const equityRate = BigInt(member.equityRateMicro || member.rateMicro || RATE_MICRO.toString());
+export function translateTrialBalance(
+  tb: TrialBalance,
+  currency: Currency,
+  entityId: string,
+  rates: TranslationRatesMicro,
+): EntityTranslation {
+  const audit: LineRateAudit[] = [];
   const entries: TrialBalanceEntry[] = tb.entries.map((e) => {
-    const r = e.accountClass === "equity" ? equityRate : rate;
-    return { ...e, signed: Money.fromMinorUnits(translateAmount(e.signed.minorUnits, r), currency) };
+    let rateMicro: bigint;
+    let rateClass: RateClass;
+    if (e.accountClass === "equity") {
+      rateMicro = rates.equityMicro;
+      rateClass = "historical";
+    } else if (e.accountClass === "revenue" || e.accountClass === "expense") {
+      rateMicro = rates.averageMicro;
+      rateClass = "average";
+    } else {
+      rateMicro = rates.currentMicro;
+      rateClass = "current";
+    }
+    audit.push({ accountId: String(e.accountId), code: e.code, rateClass, rateMicro: rateMicro.toString() });
+    return { ...e, signed: Money.fromMinorUnits(translateAmount(e.signed.minorUnits, rateMicro), currency) };
   });
+
   const residual = entries.reduce((acc, e) => acc + e.signed.minorUnits, 0n);
+  const cumulativeCta = -residual; // the plug that makes the translated books foot
   if (residual !== 0n) {
-    // Book the plug to equity as the CTA so the translated books foot exactly.
     entries.push({
-      accountId: asAccountId(`__cta__:${member.tenantId}`),
+      accountId: asAccountId(`__cta__:${entityId}`),
       code: CTA_CODE,
       name: CTA_NAME,
       accountClass: "equity",
-      signed: Money.fromMinorUnits(-residual, currency),
+      signed: Money.fromMinorUnits(cumulativeCta, currency),
     });
   }
-  return makeTrialBalance(currency, entries);
+  const prior = rates.priorCtaMinor;
+  return {
+    tb: makeTrialBalance(currency, entries),
+    lines: audit,
+    cta: {
+      cumulativeMinor: cumulativeCta.toString(),
+      priorMinor: prior.toString(),
+      currentPeriodMinor: (cumulativeCta - prior).toString(),
+    },
+  };
+}
+
+/** Translate one group member's trial balance, resolving its configured rates. */
+function translateEntity(tb: TrialBalance, member: GroupMember, currency: Currency): EntityTranslation {
+  const currentMicro = BigInt(member.rateMicro || RATE_MICRO.toString());
+  const equityMicro = BigInt(member.equityRateMicro || member.rateMicro || RATE_MICRO.toString());
+  const averageMicro = BigInt(member.averageRateMicro || member.rateMicro || RATE_MICRO.toString());
+  const priorCtaMinor = BigInt(member.priorCtaMinor || "0");
+  return translateTrialBalance(tb, currency, member.tenantId, {
+    currentMicro,
+    equityMicro,
+    averageMicro,
+    priorCtaMinor,
+  });
 }
 
 async function entityBalances(
@@ -593,7 +715,7 @@ async function entityBalances(
     const kernel = await computeTrialBalance(
       ctx.backend.store(tenant), tenant, chart, ctx.currency, window,
     );
-    let tb = fromKernelTrialBalance(kernel);
+    const tb = fromKernelTrialBalance(kernel);
     const memberCurrency = (member.currency ?? "").trim().toUpperCase();
     if (memberCurrency && memberCurrency !== base) {
       // A member keeps its books in another currency: it must be translated, and
@@ -611,9 +733,11 @@ async function entityBalances(
           + "is configured for it",
         );
       }
-      tb = translateEntity(tb, member, ctx.currency);
+      const translation = translateEntity(tb, member, ctx.currency);
+      out.push({ member, tb: translation.tb, translation });
+    } else {
+      out.push({ member, tb });
     }
-    out.push({ member, tb });
   }
   return out;
 }
@@ -820,6 +944,24 @@ export async function consolidate(
     rows,
     intercompany: intercompanyRows,
     eliminations: eliminationRows,
+    // FX translation audit: for every entity translated from another currency,
+    // the CTA roll-forward and the per-line rate used (current/historical/average).
+    translation: entities
+      .filter((e) => e.translation !== undefined)
+      .map((e) => ({
+        tenant_id: e.member.tenantId,
+        currency: (e.member.currency ?? "").toUpperCase(),
+        cta: {
+          cumulative_minor: e.translation!.cta.cumulativeMinor,
+          prior_minor: e.translation!.cta.priorMinor,
+          current_period_minor: e.translation!.cta.currentPeriodMinor,
+        },
+        rates: e.translation!.lines.map((l) => ({
+          account_code: l.code,
+          rate_class: l.rateClass,
+          rate_micro: l.rateMicro,
+        })),
+      })),
     mismatch_minor: residualRow ? String(residualRow["signed_minor"]) : "0",
     balanced: result.balanced,
     consolidated: {
@@ -937,6 +1079,8 @@ export function groupJson(g: GroupRecord): Record<string, unknown> {
       ...(m.currency ? { currency: m.currency } : {}),
       ...(m.rateMicro ? { rate_micro: m.rateMicro } : {}),
       ...(m.equityRateMicro ? { equity_rate_micro: m.equityRateMicro } : {}),
+      ...(m.averageRateMicro ? { average_rate_micro: m.averageRateMicro } : {}),
+      ...(m.priorCtaMinor ? { prior_cta_minor: m.priorCtaMinor } : {}),
     })),
   };
 }

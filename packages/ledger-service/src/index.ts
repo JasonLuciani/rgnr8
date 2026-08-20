@@ -341,12 +341,19 @@ export {
   saveElimination,
   consolidate,
   consolidatedStatements,
+  translateTrialBalance,
   groupJson,
   eliminationJson,
   type ConsolidationStore,
   type GroupRecord,
+  type GroupMember,
   type EliminationEntry,
   type ConsolidationContext,
+  type EntityTranslation,
+  type TranslationRatesMicro,
+  type LineRateAudit,
+  type CtaBreakdown,
+  type RateClass,
 } from "./consolidation.js";
 export { ten99Report, Ten99Error, type Ten99Context, type Ten99Json } from "./ten99.js";
 export {
