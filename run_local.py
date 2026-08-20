@@ -58,6 +58,7 @@ from rgnr8_web import (  # noqa: E402
     UrllibTransport,
     WebApp,
 )
+from rgnr8_copilot import anthropic_llm  # noqa: E402
 from rgnr8_web.server import serve  # noqa: E402
 
 # --- configuration from the environment -------------------------------------
@@ -97,10 +98,18 @@ def build_app() -> WebApp:
             state_secret=SESSION_SECRET,
         )
 
+    # Ask RGNR8: set ANTHROPIC_API_KEY to make /t/<tenant>/ask live. Without it the
+    # screen renders "not configured" (same graceful-off pattern as QBO above).
+    ask_llm = anthropic_llm(
+        os.environ.get("ANTHROPIC_API_KEY"),
+        model=os.environ.get("ASK_MODEL", "claude-sonnet-4"),
+    )
+
     app = WebApp(
         users=users,
         session_secret=SESSION_SECRET,  # enables the simple email dev login
         qbo=qbo,
+        ask_llm=ask_llm,
     )
     # A placeholder company so there's a tenant to connect. The forecast inputs
     # are a minimal opening balance; real numbers arrive once QBO is syncing.

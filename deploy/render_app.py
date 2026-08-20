@@ -35,6 +35,7 @@ from rgnr8_qbo import (  # noqa: E402
     QboOAuthConfig,
     UrllibHttpClient,
 )
+from rgnr8_copilot import anthropic_llm  # noqa: E402
 from rgnr8_web import InMemoryUserDirectory, Role, User, WebApp  # noqa: E402
 from rgnr8_web.wsgi import wsgi_app  # noqa: E402
 
@@ -73,7 +74,14 @@ def build_app() -> WebApp:
             state_secret=SESSION_SECRET,
         )
 
-    app = WebApp(users=users, session_secret=SESSION_SECRET, qbo=qbo)
+    # Ask RGNR8 goes live only when an Anthropic key is present — same pattern as
+    # the QBO wiring above. Without a key, /ask renders "not configured".
+    ask_llm = anthropic_llm(
+        os.environ.get("ANTHROPIC_API_KEY"),
+        model=os.environ.get("ASK_MODEL", "claude-sonnet-4"),
+    )
+
+    app = WebApp(users=users, session_secret=SESSION_SECRET, qbo=qbo, ask_llm=ask_llm)
     app.add_tenant(
         TENANT_ID,
         TENANT_NAME,

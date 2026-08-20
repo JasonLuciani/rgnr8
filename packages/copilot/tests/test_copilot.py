@@ -14,10 +14,13 @@ from rgnr8_copilot import (
     AskOrchestrator,
     FakeLedgerReader,
     FakeLLM,
+    HttpError,
     HttpLLM,
     LLMTurn,
     Msg,
     ToolCall,
+    UrllibHttpClient,
+    anthropic_llm,
     collect_minor_figures,
     default_registry,
     extract_money_minor,
@@ -282,3 +285,91 @@ def test_httpllm_parses_a_final_text_response() -> None:
     http = _FakeHttp({"content": [{"type": "text", "text": "You're healthy."}]})
     turn = HttpLLM(http, "sk-test").plan("sys", [Msg("user", "?")], [])
     assert turn.is_final and turn.final_text == "You're healthy."
+
+
+# --- the concrete urllib client + env factory --------------------------------
+
+import io
+import json
+import urllib.error
+import urllib.request
+
+import pytest
+
+
+class _FakeResp:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    def read(self) -> bytes:
+        return self._data
+
+    def __enter__(self) -> "_FakeResp":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+
+def test_urllib_client_posts_json_and_parses_the_reply(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_urlopen(req: urllib.request.Request, timeout: float = 0.0) -> _FakeResp:
+        seen["url"] = req.full_url
+        seen["method"] = req.get_method()
+        seen["data"] = req.data
+        seen["key"] = req.get_header("X-api-key")
+        return _FakeResp(b'{"content": [{"type": "text", "text": "hi"}]}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    out = UrllibHttpClient().post_json(
+        "https://api.anthropic.com/v1/messages", {"model": "m"}, {"x-api-key": "sk-live"},
+    )
+    assert out["content"] == [{"type": "text", "text": "hi"}]
+    assert seen["method"] == "POST"
+    assert seen["key"] == "sk-live"
+    assert isinstance(seen["data"], (bytes, bytearray))
+    assert json.loads(seen["data"]) == {"model": "m"}
+
+
+def test_urllib_client_surfaces_an_http_error_with_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(req: urllib.request.Request, timeout: float = 0.0) -> _FakeResp:
+        raise urllib.error.HTTPError(
+            "https://x", 429, "Too Many Requests", {}, io.BytesIO(b"rate limited"),  # type: ignore[arg-type]
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+    with pytest.raises(HttpError) as caught:
+        UrllibHttpClient().post_json("https://x", {}, {})
+    assert caught.value.status == 429
+    assert "rate limited" in str(caught.value)
+
+
+def test_urllib_client_rejects_a_non_object_reply(monkeypatch: pytest.MonkeyPatch) -> None:
+    def arr(req: urllib.request.Request, timeout: float = 0.0) -> _FakeResp:
+        return _FakeResp(b"[1, 2, 3]")
+
+    monkeypatch.setattr(urllib.request, "urlopen", arr)
+    with pytest.raises(HttpError):
+        UrllibHttpClient().post_json("https://x", {}, {})
+
+
+def test_anthropic_factory_is_off_without_a_key() -> None:
+    assert anthropic_llm(None) is None
+    assert anthropic_llm("   ") is None
+
+
+def test_anthropic_factory_builds_a_live_provider_with_a_key() -> None:
+    llm = anthropic_llm("sk-live", model="claude-x")
+    assert isinstance(llm, HttpLLM)
+
+
+def test_factory_provider_plans_over_a_stubbed_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_urlopen(req: urllib.request.Request, timeout: float = 0.0) -> _FakeResp:
+        return _FakeResp(b'{"content": [{"type": "text", "text": "healthy"}]}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    llm = anthropic_llm("sk-live")
+    assert llm is not None
+    turn = llm.plan("sys", [Msg("user", "am I healthy?")], [])
+    assert turn.is_final and turn.final_text == "healthy"

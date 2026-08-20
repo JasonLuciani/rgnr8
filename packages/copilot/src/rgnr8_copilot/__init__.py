@@ -9,6 +9,8 @@ future write action is gated by RBAC + explicit confirmation.
 
 from __future__ import annotations
 
+from .factory import anthropic_llm
+from .http import HttpError, UrllibHttpClient
 from .ledger import FakeLedgerReader, LedgerReadError, LedgerReader
 from .llm import FakeLLM, HttpLLM, LLMProvider, LLMTurn, Msg, ToolCall
 from .model import AskAnswer, AskContext, Citation, ToolResult, TraceStep
@@ -22,6 +24,9 @@ __all__ = [
     "LLMProvider",
     "FakeLLM",
     "HttpLLM",
+    "UrllibHttpClient",
+    "HttpError",
+    "anthropic_llm",
     "LLMTurn",
     "Msg",
     "ToolCall",
