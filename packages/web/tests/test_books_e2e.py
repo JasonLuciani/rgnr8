@@ -14,7 +14,10 @@ hasn't been built.
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import os
+import re
 import socket
 import subprocess
 import time
@@ -110,17 +113,27 @@ def _seed(base: str, tenant: str, category: str) -> None:
     req = urllib.request.Request(
         f"{base}/t/{tenant}/accounts/seed",
         data=json.dumps({"category": category}).encode(),
-        headers={"authorization": f"Bearer {TOKEN}", "content-type": "application/json"},
+        headers={"authorization": f"Bearer {_svc_bearer(f'/t/{tenant}/accounts/seed')}",
+                 "content-type": "application/json"},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=5) as r:
         assert r.status == 201
 
 
+def _svc_bearer(path: str) -> str:
+    """The per-tenant token the ledger now requires: HMAC(secret, tenant) from the
+    path (matches LedgerClient and the service). A raw shared token no longer works."""
+    m = re.match(r"^/t/([^/]+)", path)
+    if m is not None:
+        return hmac.new(TOKEN.encode(), m.group(1).encode(), hashlib.sha256).hexdigest()
+    return TOKEN
+
+
 def _service_get(base: str, path: str) -> Any:
     """Read the service directly — used only to learn entry ids the UI renders."""
     req = urllib.request.Request(
-        f"{base}{path}", headers={"authorization": f"Bearer {TOKEN}"}, method="GET"
+        f"{base}{path}", headers={"authorization": f"Bearer {_svc_bearer(path)}"}, method="GET"
     )
     with urllib.request.urlopen(req, timeout=5) as r:
         return json.loads(r.read().decode())
@@ -130,7 +143,7 @@ def _service_post(base: str, path: str, payload: dict[str, Any]) -> Any:
     """Write to the service directly — used to stand in for the bank sync."""
     req = urllib.request.Request(
         f"{base}{path}", data=json.dumps(payload).encode(),
-        headers={"authorization": f"Bearer {TOKEN}", "content-type": "application/json"},
+        headers={"authorization": f"Bearer {_svc_bearer(path)}", "content-type": "application/json"},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=5) as r:
@@ -141,7 +154,7 @@ def _service_post_raw(base: str, path: str, payload: dict[str, Any]) -> dict[str
     """POST to the service, returning the status even when it refuses."""
     req = urllib.request.Request(
         f"{base}{path}", data=json.dumps(payload).encode(),
-        headers={"authorization": f"Bearer {TOKEN}", "content-type": "application/json"},
+        headers={"authorization": f"Bearer {_svc_bearer(path)}", "content-type": "application/json"},
         method="POST",
     )
     try:

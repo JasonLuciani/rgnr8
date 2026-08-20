@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { newDb } from "pg-mem";
 import {
@@ -24,11 +25,15 @@ async function boot(backend: InMemoryBackend | PostgresBackend): Promise<{
   const port = (server.address() as AddressInfo).port;
   const base = `http://127.0.0.1:${port}`;
 
+  const bearerFor = (path: string): string => {
+    const m = /^\/t\/([^/]+)/.exec(path);
+    return m ? createHmac("sha256", TOKEN).update(m[1]!).digest("hex") : TOKEN;
+  };
   return {
     call: async (method, path, body) => {
       const res = await fetch(`${base}${path}`, {
         method,
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        headers: { authorization: `Bearer ${bearerFor(path)}`, "content-type": "application/json" },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
       return { status: res.status, json: (await res.json()) as Record<string, unknown> };

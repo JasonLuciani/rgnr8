@@ -12,8 +12,11 @@ into a float — `Money.from_minor` keeps it exact on the Python side.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import http.client
 import json
+import re
 import threading
 import urllib.error
 import urllib.parse
@@ -21,6 +24,10 @@ import urllib.request
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
+
+# Matches a tenant-scoped path "/t/<tenant>/..." so the client can present the
+# per-tenant auth token the ledger service expects.
+_TENANT_IN_PATH = re.compile(r"^/t/([^/]+)(?:/|$)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,15 +162,28 @@ class LedgerClient:
         self._t = transport
         self._token = token
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, path: str) -> dict[str, str]:
         h = {"content-type": "application/json"}
         if self._token:
-            h["authorization"] = f"Bearer {self._token}"
+            m = _TENANT_IN_PATH.match(path)
+            if m is not None:
+                # Present the per-tenant token, not the raw shared secret: it is
+                # the HMAC of this tenant id under the secret, so a credential for
+                # one tenant can't act on another (matches the ledger service).
+                tenant = m.group(1)
+                derived = hmac.new(
+                    self._token.encode("utf-8"), tenant.encode("utf-8"), hashlib.sha256
+                ).hexdigest()
+                h["authorization"] = f"Bearer {derived}"
+            else:
+                # Non-tenant paths (/health, /ready) are public on the service;
+                # send the raw secret only for symmetry.
+                h["authorization"] = f"Bearer {self._token}"
         return h
 
     def _call(self, method: str, path: str, payload: object = None) -> LedgerResponse:
         body = json.dumps(payload) if payload is not None else ""
-        return self._t.request(method, path, body, self._headers())
+        return self._t.request(method, path, body, self._headers(path))
 
     # --- reads ---------------------------------------------------------------
 

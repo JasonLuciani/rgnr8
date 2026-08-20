@@ -28,6 +28,15 @@ import { appRoleDdl, superuserWarning } from "./security.js";
 async function main(): Promise<void> {
   const port = Number(process.env["RGNR8_LEDGER_PORT"] ?? 8181);
   const token = process.env["RGNR8_LEDGER_TOKEN"] ?? "";
+  // Fail closed: refuse to serve with auth off unless a dev explicitly opts out.
+  // Previously an empty token silently ran the ledger with NO auth at all.
+  if (!token && process.env["RGNR8_LEDGER_ALLOW_NO_AUTH"] !== "1") {
+    process.stderr.write(
+      "RGNR8_LEDGER_TOKEN is required to serve the ledger. Set it, or set "
+      + "RGNR8_LEDGER_ALLOW_NO_AUTH=1 for local dev only.\n",
+    );
+    process.exit(2);
+  }
   const databaseUrl = process.env["DATABASE_URL"] ?? "";
   const appUrl = process.env["RGNR8_LEDGER_APP_URL"] ?? "";
   const provisionRole = process.env["RGNR8_PROVISION_APP_ROLE"] ?? "";

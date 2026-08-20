@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { InMemoryBackend, LedgerService, type ServiceResponse } from "../src/index.js";
 
 const NOW = "2026-08-31T00:00:00Z";
@@ -9,20 +10,27 @@ function svc(): LedgerService {
   return new LedgerService(new InMemoryBackend(), { authToken: TOKEN, now: () => NOW });
 }
 
+/** The per-tenant token a valid caller presents: HMAC(secret, tenant) from the path. */
+function tenantTok(secret: string, path: string): string {
+  const m = /^\/t\/([^/]+)/.exec(path);
+  return m ? createHmac("sha256", secret).update(m[1]!).digest("hex") : secret;
+}
+
 function call(
   s: LedgerService,
   method: string,
   path: string,
   body: unknown = "",
   query: Record<string, string> = {},
-  token: string = TOKEN,
+  token?: string,   // omit → the correct per-tenant token is derived from the path
 ): Promise<ServiceResponse> {
+  const bearer = token ?? tenantTok(TOKEN, path);
   return s.handle({
     method,
     path,
     query,
     body: typeof body === "string" ? body : JSON.stringify(body),
-    headers: { authorization: `Bearer ${token}` },
+    headers: { authorization: `Bearer ${bearer}` },
   });
 }
 
@@ -61,12 +69,16 @@ test("health and readiness need no auth; everything else does", async () => {
   });
   assert.equal(unauthed.status, 401);
   assert.equal((await call(s, "GET", "/t/acme/accounts", "", {}, "wrong")).status, 401);
-  // the constant-time compare is length-independent: a prefix of the real token
-  // and a token longer than it are both rejected, not just an equal-length miss.
-  assert.equal((await call(s, "GET", "/t/acme/accounts", "", {}, "svc-secre")).status, 401);
-  assert.equal((await call(s, "GET", "/t/acme/accounts", "", {}, "svc-secret-plus")).status, 401);
   assert.equal((await call(s, "GET", "/t/acme/accounts", "", {}, "")).status, 401);
-  // and the correct token still gets in
+  // the raw shared secret is NOT a valid bearer — only the per-tenant token is
+  assert.equal((await call(s, "GET", "/t/acme/accounts", "", {}, TOKEN)).status, 401);
+  // a token minted for ANOTHER tenant is refused on this tenant's path (the fix:
+  // no single credential authorizes the whole fleet)
+  assert.equal(
+    (await call(s, "GET", "/t/acme/accounts", "", {}, tenantTok(TOKEN, "/t/other/x"))).status,
+    401,
+  );
+  // and the correct per-tenant token still gets in
   await call(s, "POST", "/t/acme/accounts/seed", { category: "PROFESSIONAL_SERVICES" });
   assert.equal((await call(s, "GET", "/t/acme/accounts")).status, 200);
 });

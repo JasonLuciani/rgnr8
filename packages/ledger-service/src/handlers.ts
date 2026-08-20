@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { SettingsError, mergeSettings, settingsJson } from "./settings.js";
 import {
   AccountSubtype,
@@ -317,6 +317,18 @@ function timingSafeTokenEqual(presented: string, expected: string): boolean {
   return timingSafeEqual(a, b);
 }
 
+/**
+ * The token a caller must present to act on `tenant`: HMAC-SHA256 of the tenant id
+ * under the shared service secret. This binds a credential to ONE tenant — a
+ * token minted for tenant A does not validate on tenant B's path — so a leaked or
+ * misused token can't be replayed across the whole fleet the way a single shared
+ * bearer could. The web app derives the same value per request (see
+ * `ledger_client.py`); the raw secret itself is never a valid bearer.
+ */
+export function tenantAuthToken(secret: string, tenant: string): string {
+  return createHmac("sha256", secret).update(tenant).digest("hex");
+}
+
 function parseJson(body: string): Record<string, unknown> | null {
   if (!body.trim()) return {};
   try {
@@ -420,17 +432,21 @@ export class LedgerService {
         : { status: 503, body: { status: "unavailable", error: "backend not reachable" } };
     }
 
-    if (this.opts.authToken) {
-      const auth = req.headers["authorization"] ?? "";
-      const presented = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
-      if (!timingSafeTokenEqual(presented, this.opts.authToken)) {
-        return { status: 401, body: { error: "unauthorized" } };
-      }
-    }
-
     if (parts[0] !== "t" || parts.length < 2) return notFound("not found");
     const tenant = asTenantId(parts[1]!);
     const rest = parts.slice(2);
+
+    // Authorization is per-tenant: the presented bearer must be the token derived
+    // for THIS tenant from the shared secret. A token for another tenant (or the
+    // raw secret) is rejected, so no single credential authorizes the whole fleet.
+    if (this.opts.authToken) {
+      const auth = req.headers["authorization"] ?? "";
+      const presented = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
+      const expected = tenantAuthToken(this.opts.authToken, String(tenant));
+      if (!timingSafeTokenEqual(presented, expected)) {
+        return { status: 401, body: { error: "unauthorized" } };
+      }
+    }
 
     try {
       // --- per-account settings -------------------------------------------
