@@ -142,6 +142,26 @@ def test_publish_delegates_to_the_authoritative_ledger_when_wired() -> None:
     assert body["period"] == "2026-08"
 
 
+def test_publish_threads_the_preparer_for_separation_of_duties() -> None:
+    import json
+    app = _app()
+    app.add_close("acme", CloseBoard("2026-08", (CloseTask("only", "The one task", "open"),)))
+    fake = _FakeLedgerTransport(200, {"period": "2026-08", "status": "PUBLISHED"})
+    app.set_ledger(LedgerClient(fake))
+    # The bookkeeper prepares the close (advances the task)...
+    hb = {**_h("book@acme.com"), "content-type": "application/json"}
+    app.handle(Request("POST", "/api/acme/close", hb, '{"id":"only","status":"done"}'))
+    # ...the owner publishes it.
+    ho = {**_h("owner@acme.com"), "content-type": "application/json"}
+    app.handle(Request("POST", "/api/acme/close/publish", ho, "{}"))
+
+    body = json.loads(fake.calls[-1][2])
+    # The authoritative publish is told BOTH identities, so the ledger can enforce
+    # that the preparer is not also the publisher.
+    assert body["prepared_by"] == "book@acme.com"
+    assert body["published_by"] == "owner@acme.com"
+
+
 def test_publish_surfaces_the_ledger_gate_rejection() -> None:
     import json
     app = _app()

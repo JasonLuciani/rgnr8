@@ -1644,7 +1644,7 @@ class WebApp:
                                      self._close_json)
             if resource == "close" and req.method == "POST":
                 return self._require(subject, token_tenant, tenant, P.MANAGE_CLOSE,
-                                     lambda t: self._close_advance(t, req.body))
+                                     lambda t: self._close_advance(subject, t, req.body))
             # build + save a custom report definition (gated on RECORD_DECISION —
             # everyone but a read-only viewer can author a report).
             if resource == "reports" and req.method == "POST":
@@ -5088,7 +5088,7 @@ class WebApp:
                        "owner": tk.owner, "due": tk.due} for tk in b.tasks],
         })
 
-    def _close_advance(self, t: _Tenant, body: str) -> Response:
+    def _close_advance(self, subject: str, t: _Tenant, body: str) -> Response:
         """Set a close task's status. Body: {"id": "...", "status": "done"|"open"|...}."""
         try:
             data = json.loads(body) if body else {}
@@ -5106,6 +5106,9 @@ class WebApp:
         if not any(task.key == key for task in board.tasks):
             return _json(404, {"error": f"unknown close task {key}"})
         board = board.with_task_status(key, status)
+        # Record who prepared the close so the authoritative publish can enforce
+        # separation of duties (the preparer may not also publish).
+        board = dataclasses.replace(board, prepared_by=subject or board.prepared_by)
         self._close[t.tenant_id] = board
         return _json(200, {"id": key, "status": status, "done": board.done, "total": board.total,
                            "complete": board.complete})
@@ -5136,6 +5139,9 @@ class WebApp:
                 res = self._ledger.publish_close(
                     t.tenant_id, frm, to, published_by=subject or "owner",
                     period=board.period, controls=controls,
+                    # Separation of duties: whoever prepared the close (advanced
+                    # the tasks) may not also publish it.
+                    prepared_by=board.prepared_by,
                 )
             except LedgerUnavailable:
                 return _json(503, {"error": "the ledger service is unreachable; try again"})

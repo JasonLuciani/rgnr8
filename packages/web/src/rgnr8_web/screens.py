@@ -207,6 +207,9 @@ class CloseBoard:
     period: str  # "2026-08"
     tasks: tuple[CloseTask, ...] = ()
     sealed: bool = False  # a financial package has been published for the period
+    #: Who last advanced a close task — passed to the authoritative publish as
+    #: the "preparer" so separation of duties (preparer != publisher) is live.
+    prepared_by: str = ""
 
     @property
     def total(self) -> int:

@@ -72,8 +72,14 @@ def bootstrap_python_schemas(
         cast("Any", conn), placeholder=placeholder,
         cipher=cipher_from_env(os.environ),
     )
-    # Outbound webhooks: per-tenant endpoints + the durable delivery outbox.
-    webhook_endpoints = SqlWebhookEndpointStore(cast("Any", conn), placeholder=placeholder)
+    # Outbound webhooks: per-tenant endpoints + the durable delivery outbox. The
+    # per-endpoint signing secret is encrypted at rest by the SAME cipher as the
+    # QBO tokens above (Fernet when RGNR8_SECRET_KEY is set, NullCipher for dev) —
+    # without this it would silently fall back to plaintext at rest.
+    webhook_endpoints = SqlWebhookEndpointStore(
+        cast("Any", conn), placeholder=placeholder,
+        cipher=cipher_from_env(os.environ),
+    )
     webhook_outbox = SqlWebhookOutbox(cast("Any", conn), placeholder=placeholder)
 
     tenant_store.create_schema()
