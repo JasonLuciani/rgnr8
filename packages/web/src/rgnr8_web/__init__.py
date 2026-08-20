@@ -72,6 +72,7 @@ from .middleware import (
     RateLimiter,
     counter_request_ids,
     default_rate_limit_key,
+    make_rate_limit_key,
     security_headers,
     with_security_headers,
 )
@@ -173,6 +174,7 @@ __all__ = [
     "security_headers",
     "with_security_headers",
     "default_rate_limit_key",
+    "make_rate_limit_key",
     "counter_request_ids",
     "render_login_html",
     "render_shell",

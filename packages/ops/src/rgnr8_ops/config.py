@@ -40,6 +40,10 @@ class Settings:
     # log in with a password (with a credential store wired). In jwks (SSO) mode
     # leave this unset and authenticate through the IdP.
     session_secret: str | None = None
+    # Session cookies carry `Secure` (HTTPS-only) by default; set False only for
+    # local dev over plain http. Trust X-Forwarded-For only behind a known proxy.
+    secure_cookies: bool = True
+    trust_forwarded_for: bool = False
 
     # --- database ---
     database_url: str | None = None  # None → in-memory (dev only)
@@ -149,6 +153,8 @@ class Settings:
             tenant_claim=e.get("RGNR8_TENANT_CLAIM", "tenant"),
             port=port,
             session_secret=session_secret,
+            secure_cookies=_bool(e.get("RGNR8_SECURE_COOKIES"), default=True),
+            trust_forwarded_for=_bool(e.get("RGNR8_TRUST_FORWARDED_FOR"), default=False),
             database_url=database_url,
             ledger_url=ledger_url,
             ledger_token=e.get("RGNR8_LEDGER_TOKEN"),
@@ -181,6 +187,8 @@ class Settings:
             "issuer": self.jwt_issuer or "unset",
             "audience": self.jwt_audience or "unset",
             "session_secret": has(self.session_secret),
+            "secure_cookies": self.secure_cookies,
+            "trust_forwarded_for": self.trust_forwarded_for,
             "ledger": self.ledger_url or "unset",
             "ledger_token": has(self.ledger_token),
             "secret_key": has(self.secret_key),

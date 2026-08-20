@@ -24,6 +24,7 @@ Three concerns live here:
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import math
 from typing import Callable, Protocol
@@ -40,6 +41,7 @@ from .app import Request, Response
 __all__ = [
     "RateLimiter",
     "default_rate_limit_key",
+    "make_rate_limit_key",
     "security_headers",
     "with_security_headers",
     "SECURITY_HEADERS",
@@ -50,27 +52,45 @@ __all__ = [
 
 # --- rate limiting ----------------------------------------------------------
 
-def default_rate_limit_key(request: Request) -> str:
-    """Derive the bucket key for a request.
+def _fingerprint(secret: str) -> str:
+    """A short, stable, non-reversible tag for a credential. The raw bearer/API
+    key must never become a limiter key (or land in a key dump / log); we bucket
+    on its SHA-256 instead."""
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16]
 
-    Prefer a stable *principal*: the ``X-API-Key`` header, else the bearer token
-    in ``Authorization``. Anonymous traffic falls back to the client IP as
-    forwarded by the edge (``X-Forwarded-For``, first hop). Never the wall clock,
-    never random — the key is a pure function of the request.
-    """
+
+def _rate_limit_key(request: Request, *, trust_forwarded_for: bool) -> str:
     api_key = request.headers.get("x-api-key", "").strip()
     if api_key:
-        return f"key:{api_key}"
+        return f"key:{_fingerprint(api_key)}"
     auth = request.headers.get("authorization", "").strip()
     if auth:
-        if auth.lower().startswith("bearer "):
-            return f"principal:{auth[7:].strip()}"
-        return f"principal:{auth}"
-    fwd = request.headers.get("x-forwarded-for", "").strip()
-    if fwd:
-        # X-Forwarded-For is a comma-separated chain; the left-most is the client.
-        return f"ip:{fwd.split(',')[0].strip()}"
+        token = auth[7:].strip() if auth.lower().startswith("bearer ") else auth
+        return f"principal:{_fingerprint(token)}"
+    # X-Forwarded-For is client-controlled: honour it ONLY when the deployment
+    # says it sits behind a trusted proxy that overwrites it. Otherwise a caller
+    # could rotate the header to dodge the IP bucket, so we don't trust it.
+    if trust_forwarded_for:
+        fwd = request.headers.get("x-forwarded-for", "").strip()
+        if fwd:
+            return f"ip:{fwd.split(',')[0].strip()}"
     return "anonymous"
+
+
+def default_rate_limit_key(request: Request) -> str:
+    """Derive the bucket key for a request. Credentials are bucketed by a hashed
+    fingerprint (never the raw secret); ``X-Forwarded-For`` is NOT trusted by
+    default (see ``make_rate_limit_key`` to opt in behind a known proxy). A pure
+    function of the request — never the wall clock, never random."""
+    return _rate_limit_key(request, trust_forwarded_for=False)
+
+
+def make_rate_limit_key(*, trust_forwarded_for: bool = False) -> Callable[[Request], str]:
+    """A key function that optionally trusts ``X-Forwarded-For`` — set this True
+    only when the app is deployed behind a proxy that overwrites the header."""
+    def _key(request: Request) -> str:
+        return _rate_limit_key(request, trust_forwarded_for=trust_forwarded_for)
+    return _key
 
 
 class RateLimiter:

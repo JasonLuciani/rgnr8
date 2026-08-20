@@ -88,14 +88,22 @@ def test_limited_returns_429_with_retry_after() -> None:
     assert body["retry_after"] == 2
 
 
-def test_default_key_prefers_principal_then_ip() -> None:
+def test_default_key_hashes_credentials_and_ignores_untrusted_xff() -> None:
+    from rgnr8_web import make_rate_limit_key
+
+    # Credentials bucket by a hashed fingerprint — never the raw secret.
+    k_api = default_rate_limit_key(Request("GET", "/", headers={"x-api-key": "rgk_abc"}))
+    assert k_api.startswith("key:") and "rgk_abc" not in k_api
+    assert k_api == default_rate_limit_key(Request("GET", "/", headers={"x-api-key": "rgk_abc"}))
+    k_tok = default_rate_limit_key(Request("GET", "/", headers={"authorization": "Bearer tok-123"}))
+    assert k_tok.startswith("principal:") and "tok-123" not in k_tok
+    # X-Forwarded-For is NOT trusted by default (client could forge it to dodge buckets).
     assert default_rate_limit_key(
-        Request("GET", "/", headers={"x-api-key": "rgk_abc"})
-    ) == "key:rgk_abc"
-    assert default_rate_limit_key(
-        Request("GET", "/", headers={"authorization": "Bearer tok-123"})
-    ) == "principal:tok-123"
-    assert default_rate_limit_key(
+        Request("GET", "/", headers={"x-forwarded-for": "1.2.3.4, 5.6.7.8"})
+    ) == "anonymous"
+    # Behind a trusted proxy, opt in and the first hop is used.
+    trusting = make_rate_limit_key(trust_forwarded_for=True)
+    assert trusting(
         Request("GET", "/", headers={"x-forwarded-for": "1.2.3.4, 5.6.7.8"})
     ) == "ip:1.2.3.4"
     assert default_rate_limit_key(Request("GET", "/")) == "anonymous"

@@ -493,6 +493,7 @@ class WebApp:
         webhooks: "WebhookEndpointStore | None" = None,
         webhook_outbox: "WebhookOutbox | None" = None,
         ask_llm: "LLMProvider | None" = None,
+        secure_cookies: bool = True,
     ) -> None:
         # Outbound webhooks: a per-tenant endpoint store and a durable outbox. When
         # absent, the integrations surface reports "not configured" rather than 404.
@@ -581,6 +582,9 @@ class WebApp:
         # compute from this tenant's books (every figure verified, cited, RBAC-scoped).
         # None → the surface renders "not configured" rather than 404 (back-compat).
         self._ask_svc = AskService(ask_llm) if ask_llm is not None else None
+        # Session cookies carry the `Secure` attribute by default (HTTPS-only).
+        # Dev over plain http (run_local) sets this False so the cookie is sent.
+        self._secure_cookies = secure_cookies
         # Live Ask RGNR8 conversations, keyed (tenant, caller) so follow-ups carry
         # context per owner. In-memory for this cut (a redeploy clears threads).
         self._ask_threads: dict[tuple[str, str], _AskThread] = {}
@@ -4046,6 +4050,8 @@ class WebApp:
             self._session_secret,
         )
         cookie = f"rgnr8_session={token}; Path=/; Max-Age=28800; HttpOnly; SameSite=Lax"
+        if self._secure_cookies:
+            cookie += "; Secure"
         return _redirect("/app", (("Set-Cookie", cookie),))
 
     @staticmethod

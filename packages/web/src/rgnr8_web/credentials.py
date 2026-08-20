@@ -156,6 +156,11 @@ class VerificationToken:
 class VerificationTokenStore(Protocol):
     def save(self, token: VerificationToken) -> None: ...
     def get(self, token: str) -> VerificationToken | None: ...
+    def consume(self, token: str) -> bool:
+        """Atomically mark an un-consumed token consumed. Returns True only for the
+        single caller that flips it (0→1); a concurrent or repeat call gets False.
+        This is the single-use gate — read-then-save is a TOCTOU double-spend."""
+        ...
 
 
 class InMemoryVerificationTokenStore:
@@ -168,6 +173,13 @@ class InMemoryVerificationTokenStore:
     def get(self, token: str) -> VerificationToken | None:
         return self._by_token.get(token)
 
+    def consume(self, token: str) -> bool:
+        rec = self._by_token.get(token)
+        if rec is None or rec.consumed:
+            return False
+        self._by_token[token] = dataclasses.replace(rec, consumed=True)
+        return True
+
 
 # --- SQL stores (any DB-API 2.0 connection) ----------------------------------
 
@@ -176,6 +188,8 @@ class _DbApiCursor(Protocol):
     def execute(self, sql: str, params: object = ..., /) -> object: ...
     def fetchall(self) -> list[tuple[object, ...]]: ...
     def close(self) -> None: ...
+    @property
+    def rowcount(self) -> int: ...
 
 
 class _DbApiConnection(Protocol):
@@ -294,6 +308,21 @@ class SqlVerificationTokenStore:
         return VerificationToken(str(r[0]), str(r[1]), str(r[2]), TokenPurpose(str(r[3])),
                                  int(str(r[4])), int(str(r[5])), bool(int(str(r[6]))))
 
+    def consume(self, token: str) -> bool:
+        """One atomic conditional UPDATE — the row flips 0→1 for exactly one caller.
+        `rowcount == 1` proves this call won the race; a concurrent or repeat call
+        matches zero rows. No SELECT-then-save window for a double-spend."""
+        p = self._ph
+        cur = self._conn.cursor()
+        try:
+            cur.execute(
+                f"UPDATE {self._t} SET consumed=1 WHERE token={p} AND consumed=0", (token,))
+            won = cur.rowcount == 1
+        finally:
+            cur.close()
+        self._conn.commit()
+        return won
+
 
 # --- the service -------------------------------------------------------------
 
@@ -390,8 +419,11 @@ class AuthService:
         cred = self._creds.get_by_user_id(rec.user_id)
         if cred is None:
             return False
+        # Atomic single-use gate: only the caller that wins the 0→1 flip proceeds,
+        # so two concurrent verifications can't both take effect.
+        if not self._tokens.consume(token):
+            return False
         self._creds.save(dataclasses.replace(cred, verified=True))
-        self._tokens.save(dataclasses.replace(rec, consumed=True))
         if self._audit is not None:
             self._audit.record(cred.user_id, "user.verified", now, target=cred.email)
         return True
@@ -436,9 +468,12 @@ class AuthService:
         cred = self._creds.get_by_user_id(rec.user_id)
         if cred is None:
             return False
+        # Atomic single-use gate — burn the token before applying, so two concurrent
+        # resets can't both set a password from one link.
+        if not self._tokens.consume(token):
+            return False
         self._creds.save(dataclasses.replace(
             cred, password_hash=self._hasher.hash(new_password), verified=True))
-        self._tokens.save(dataclasses.replace(rec, consumed=True))
         if self._audit is not None:
             self._audit.record(cred.user_id, "password.reset", now, target=cred.email)
         return True

@@ -47,6 +47,7 @@ from rgnr8_web import (
     LedgerClient,
     RateLimiter,
     Role,
+    make_rate_limit_key,
     SqlCredentialStore,
     SqlTenantStore,
     SqlUserDirectory,
@@ -172,6 +173,7 @@ def build_web_app(
         auth_service=auth_service,
         qbo=qbo,
         ask_llm=ask_llm,
+        secure_cookies=settings.secure_cookies,
     )
 
     # --- ledger (the accounting system of record) ------------------------
@@ -247,7 +249,10 @@ def build_observability(
     logger = StructuredLogger(StreamLogSink(sys.stdout), clock=clock, service="rgnr8-web")
     metrics = MetricsRegistry(clock=clock)
     errors: ErrorReporter = InMemoryErrorReporter()
-    rate_limiter = RateLimiter(capacity=60, refill_per_second=30, clock=clock)
+    rate_limiter = RateLimiter(
+        capacity=60, refill_per_second=30, clock=clock,
+        key_func=make_rate_limit_key(trust_forwarded_for=settings.trust_forwarded_for),
+    )
     return rate_limiter, logger, metrics, errors
 
 

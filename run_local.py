@@ -110,6 +110,7 @@ def build_app() -> WebApp:
         session_secret=SESSION_SECRET,  # enables the simple email dev login
         qbo=qbo,
         ask_llm=ask_llm,
+        secure_cookies=False,  # local dev serves over plain http
     )
     # A placeholder company so there's a tenant to connect. The forecast inputs
     # are a minimal opening balance; real numbers arrive once QBO is syncing.

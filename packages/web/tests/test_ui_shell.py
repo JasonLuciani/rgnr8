@@ -106,3 +106,26 @@ def test_no_cookie_no_access() -> None:
     app = _app()
     assert app.handle(Request("GET", "/app")).status == 401
     assert app.handle(Request("GET", "/t/acme/team")).status == 401
+
+# --- H1-5: session cookie carries Secure (HTTPS-only) by default -------------
+
+def _login_cookie(secure_cookies: bool) -> str:
+    users = InMemoryUserDirectory()
+    users.upsert_user(User("owner@acme.com", "owner@acme.com", "Olive Owner"))
+    users.set_membership("owner@acme.com", "acme", Role.OWNER)
+    app = WebApp(authenticator=JwtAuthenticator(SECRET, clock=lambda: NOW), users=users,
+                 session_secret=SECRET, session_clock=lambda: NOW, secure_cookies=secure_cookies)
+    app.add_tenant("acme", "Acme Co", _inputs(),
+                   ForecastConfig(minimum_cash=Money.from_decimal("10000.00")), token="unused")
+    r = app.handle(Request("POST", "/login", {}, "email=owner@acme.com&role=owner"))
+    return r.headers.get("Set-Cookie", "")
+
+
+def test_session_cookie_is_secure_by_default() -> None:
+    sc = _login_cookie(secure_cookies=True)
+    assert "Secure" in sc and "HttpOnly" in sc and "SameSite=Lax" in sc
+
+
+def test_secure_flag_can_be_disabled_for_local_http_dev() -> None:
+    sc = _login_cookie(secure_cookies=False)
+    assert "Secure" not in sc and "HttpOnly" in sc

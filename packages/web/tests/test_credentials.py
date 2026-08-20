@@ -285,3 +285,41 @@ def test_auth_service_over_sql_stores_end_to_end() -> None:
     assert svc.login("ada@acme.com", "hunter2222") is None
     assert svc.verify_email(vt) is True
     assert svc.login("ada@acme.com", "hunter2222") == "ada@acme.com"
+
+
+# --- H1-4: atomic single-use token consume (no TOCTOU double-spend) -----------
+
+def test_inmemory_consume_wins_once_then_false() -> None:
+    store = InMemoryVerificationTokenStore()
+    store.save(VerificationToken("t1", "u", "u@acme.com", TokenPurpose.VERIFY_EMAIL, NOW, NOW + HOUR))
+    assert store.consume("t1") is True     # first caller wins the 0->1 flip
+    assert store.consume("t1") is False    # a second (concurrent/repeat) caller loses
+    assert store.consume("missing") is False
+
+
+def test_sql_consume_is_atomic_via_conditional_update() -> None:
+    conn = sqlite3.connect(":memory:")
+    store = SqlVerificationTokenStore(conn)
+    store.create_schema()
+    store.save(VerificationToken("t1", "u", "u@acme.com", TokenPurpose.PASSWORD_RESET, NOW, NOW + HOUR))
+    assert store.consume("t1") is True
+    assert store.consume("t1") is False    # already consumed → matches zero rows
+    got = store.get("t1")
+    assert got is not None and got.consumed is True
+
+
+def test_reset_password_double_submit_only_applies_once() -> None:
+    # Two submissions of the same reset link: the first sets the password, the
+    # second is refused by the consume gate (not a silent second apply).
+    clock = {"t": NOW}
+    creds = InMemoryCredentialStore()
+    tokens = InMemoryVerificationTokenStore()
+    svc = AuthService(creds, tokens, clock=lambda: clock["t"],
+                      token_factory=lambda: "reset-1", salt_factory=_fixed_salt)
+    svc.signup("ada@acme.com", "hunter2222")
+    tok = svc.request_password_reset("ada@acme.com")
+    assert tok is not None
+    assert svc.reset_password(tok, "brand-new-pw-1") is True
+    assert svc.reset_password(tok, "another-pw-9999") is False   # token already burned
+    assert svc.login("ada@acme.com", "brand-new-pw-1") == "ada@acme.com"
+    assert svc.login("ada@acme.com", "another-pw-9999") is None
