@@ -42,6 +42,28 @@ _FALLBACK = (
 _MONEY = re.compile(r"\$\s?(\d[\d,]*(?:\.\d{1,2})?)")
 
 
+def _system_for(ctx: AskContext) -> str:
+    """The system prompt, grounded with cheap facts from `ctx.hints` (today's date,
+    the business name) so the model can turn "last quarter" into explicit from/to
+    dates when it calls a tool. This never lets the model compute money — it only
+    helps it choose tool arguments. Deterministic: no wall clock, hints are injected."""
+    facts: list[str] = []
+    today = ctx.hints.get("today")
+    if isinstance(today, str) and today:
+        facts.append(f"today is {today}")
+    business = ctx.hints.get("business")
+    if isinstance(business, str) and business:
+        facts.append(f"the business is {business}")
+    if not facts:
+        return SYSTEM_PROMPT
+    return (
+        SYSTEM_PROMPT
+        + " Context: " + "; ".join(facts) + ". When a question implies a period "
+        '("last quarter", "this year", "year to date", "last month"), translate it to '
+        "explicit from/to dates relative to today when you call a tool."
+    )
+
+
 def extract_money_minor(text: str) -> set[int]:
     """Every `$`-prefixed amount in `text`, as integer minor units. Only currency
     tokens are checked — counts, years, and percentages are deliberately ignored."""
@@ -100,6 +122,7 @@ class AskOrchestrator:
         """Answer `question` in the context of `conversation`, returning the answer
         and the updated conversation to carry into the next turn."""
         catalog = self._registry.catalog(ctx.permissions)
+        system = _system_for(ctx)
         # Seed the working messages with the prior CLEAN transcript, then this turn's
         # question. Tool traffic below is appended to `messages` for this turn only.
         messages: list[Msg] = [*conversation.messages, Msg("user", question)]
@@ -111,7 +134,7 @@ class AskOrchestrator:
         retried = False
 
         for _step in range(self._max_steps + 1):
-            turn = self._llm.plan(SYSTEM_PROMPT, messages, catalog)
+            turn = self._llm.plan(system, messages, catalog)
 
             if turn.is_final:
                 final = turn.final_text or ""

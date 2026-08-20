@@ -19,6 +19,7 @@ from rgnr8_copilot import (
     HttpLLM,
     LLMTurn,
     Msg,
+    SYSTEM_PROMPT,
     ToolCall,
     UrllibHttpClient,
     anthropic_llm,
@@ -362,6 +363,25 @@ def test_answer_is_still_single_turn_and_stateless() -> None:
     ])
     ans = orch.answer(_ctx(), "cash?")
     assert ans.verified and _CASH in ans.text
+
+
+def test_the_system_prompt_is_grounded_with_date_and_business() -> None:
+    orch, llm = _orch([LLMTurn(final_text="Sure.")])
+    ctx = AskContext(tenant="acme", permissions=frozenset({"reports:read"}),
+                     ledger=_reader(), hints={"today": "2026-08-31", "business": "Acme Co"})
+    orch.answer(ctx, "how did we do last quarter?")
+    system = llm.seen[0][0]
+    assert "today is 2026-08-31" in system
+    assert "Acme Co" in system
+    assert "last quarter" in system  # the instruction to resolve periods to dates
+
+
+def test_the_system_prompt_is_unchanged_without_hints() -> None:
+    orch, llm = _orch([LLMTurn(final_text="Sure.")])
+    ctx = AskContext(tenant="acme", permissions=frozenset({"reports:read"}),
+                     ledger=_reader(), hints={})
+    orch.answer(ctx, "hello?")
+    assert llm.seen[0][0] == SYSTEM_PROMPT
 
 
 # --- the concrete urllib client + env factory --------------------------------
