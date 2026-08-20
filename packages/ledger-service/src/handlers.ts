@@ -2346,13 +2346,16 @@ export class LedgerService {
     if (!data) return bad("invalid JSON body");
     const dto = { ...(data as unknown as GoLiveDto), tenant_id: String(tenant) };
     const request = goLiveFromDto(dto);
+    // Persist the chart through the backend's chart store as part of go-live, so
+    // the accounts are written BEFORE the opening entry posts — no orphan
+    // postings, and no separate post-hoc save loop that could be interrupted.
     const result = await executeGoLive(
       this.backend.store(tenant),
       this.backend.periods(tenant),
       request,
       this.opts.now(),
+      { chartStore: this.backend.chartStore() },
     );
-    for (const account of result.chart.list()) await this.backend.saveAccount(tenant, account);
     return ok({
       tenant,
       opening_entry_id: result.cutover.entry.id,

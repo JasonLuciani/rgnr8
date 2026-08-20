@@ -4,14 +4,17 @@ import {
   AccountSubtype,
   BusinessCategory,
   GoLiveWorker,
+  InMemoryChartStore,
   InMemoryGoLiveQueue,
   InMemoryLedgerStore,
   Money,
   PeriodRegistry,
   USD,
+  asPeriodKey,
   asTenantId,
   goLiveToDto,
   sourceAccountsFromTrialBalance,
+  type ChartStore,
   type GoLiveDto,
   type GoLiveRequest,
   type LedgerFor,
@@ -37,17 +40,27 @@ function requestFor(tenantId: string): GoLiveRequest {
 }
 
 // One ledger per tenant, created lazily and reused (so re-drains hit the same store).
-function ledgers(): { ledgerFor: LedgerFor; storeOf: (t: string) => InMemoryLedgerStore } {
+function ledgers(): {
+  ledgerFor: LedgerFor;
+  storeOf: (t: string) => InMemoryLedgerStore;
+  chartOf: (t: string) => InMemoryChartStore;
+} {
   const stores = new Map<string, InMemoryLedgerStore>();
   const periods = new Map<string, PeriodRegistry>();
+  const charts = new Map<string, InMemoryChartStore>();
   const ledgerFor: LedgerFor = (tenantId) => {
     if (!stores.has(tenantId)) {
       stores.set(tenantId, new InMemoryLedgerStore());
       periods.set(tenantId, new PeriodRegistry());
+      charts.set(tenantId, new InMemoryChartStore());
     }
-    return { store: stores.get(tenantId)!, periods: periods.get(tenantId)! };
+    return {
+      store: stores.get(tenantId)!,
+      periods: periods.get(tenantId)!,
+      chartStore: charts.get(tenantId)!,
+    };
   };
-  return { ledgerFor, storeOf: (t) => stores.get(t)! };
+  return { ledgerFor, storeOf: (t) => stores.get(t)!, chartOf: (t) => charts.get(t)! };
 }
 
 test("worker drains queued go-live requests into each tenant's ledger", async () => {
@@ -92,6 +105,75 @@ test("processed jobs leave the pending set; re-draining is a no-op", async () =>
   assert.equal(second.length, 0); // nothing pending
   assert.equal((await storeOf("acme").list(asTenantId("acme"))).length, 1); // not double-posted
   assert.ok(queue.result("j1")?.ok);
+});
+
+test("worker-driven go-live persists the chart so chart(tenant) returns the accounts (A2)", async () => {
+  const queue = new InMemoryGoLiveQueue();
+  queue.enqueue({ id: "j1", dto: goLiveToDto(requestFor("acme")) });
+  const { ledgerFor, chartOf } = ledgers();
+
+  const [res] = await new GoLiveWorker(queue, ledgerFor).drain("2026-08-31T00:00:00Z");
+  assert.ok(res!.ok);
+
+  const chart = chartOf("acme").chart(asTenantId("acme"));
+  assert.ok(chart, "the chart must be persisted, not discarded");
+  // The brought-over source accounts and the OBE are all in the persisted chart.
+  assert.ok(chart!.get("acct:1000" as never), "checking account persisted");
+  assert.ok(chart!.get("acct:3010" as never), "opening balance equity persisted");
+});
+
+test("CRASH INJECTION: a chart-persist failure leaves NO orphan postings (A2)", async () => {
+  // chartStore throws before any posting → because the chart is written first,
+  // a failure can only ever leave chart-less + posting-less state, never a
+  // posting that references an unpersisted account.
+  const store = new InMemoryLedgerStore();
+  const periods = new PeriodRegistry();
+  const boom: ChartStore = { saveChart: () => Promise.reject(new Error("disk full")) };
+  const ledgerFor: LedgerFor = () => ({ store, periods, chartStore: boom });
+
+  const queue = new InMemoryGoLiveQueue();
+  queue.enqueue({ id: "j1", dto: goLiveToDto(requestFor("acme")) });
+  const [res] = await new GoLiveWorker(queue, ledgerFor).drain("2026-08-31T00:00:00Z");
+
+  assert.equal(res!.ok, false);
+  assert.match(res!.error!, /disk full/);
+  assert.equal((await store.list(asTenantId("acme"))).length, 0, "no opening entry posted");
+});
+
+test("CRASH INJECTION: a lock failure after posting is idempotently resumable (A2)", async () => {
+  // Fail the period lock on the first attempt (after the opening entry posts).
+  // In-memory can't roll back, but: the chart is persisted (no orphan), and a
+  // retry is idempotent — no duplicate opening entry, and the lock then holds.
+  const store = new InMemoryLedgerStore();
+  const chart = new InMemoryChartStore();
+  let periods = new PeriodRegistry();
+  let failLock = true;
+  const flaky = () => {
+    const p = new PeriodRegistry();
+    const realLockThrough = p.lockThrough.bind(p);
+    p.lockThrough = (t, period) => (failLock ? Promise.reject(new Error("lock lost")) : realLockThrough(t, period));
+    return p;
+  };
+  periods = flaky();
+  const ledgerFor: LedgerFor = () => ({ store, periods, chartStore: chart });
+
+  const q1 = new InMemoryGoLiveQueue();
+  q1.enqueue({ id: "j1", dto: goLiveToDto(requestFor("acme")) });
+  const [first] = await new GoLiveWorker(q1, ledgerFor).drain("2026-08-31T00:00:00Z");
+  assert.equal(first!.ok, false);
+  assert.match(first!.error!, /lock lost/);
+  // The opening entry did post; the chart is persisted (so it is not an orphan).
+  assert.equal((await store.list(asTenantId("acme"))).length, 1);
+  assert.ok(chart.chart(asTenantId("acme")));
+
+  // Resume: lock now succeeds. Re-running is idempotent — still one entry, locked.
+  failLock = false;
+  const q2 = new InMemoryGoLiveQueue();
+  q2.enqueue({ id: "j2", dto: goLiveToDto(requestFor("acme")) });
+  const [second] = await new GoLiveWorker(q2, ledgerFor).drain("2026-08-31T00:00:00Z");
+  assert.ok(second!.ok);
+  assert.equal((await store.list(asTenantId("acme"))).length, 1, "no double opening entry");
+  assert.equal(await periods.status(asTenantId("acme"), asPeriodKey("2026-08")), "LOCKED");
 });
 
 test("sourceAccountsFromTrialBalance maps debit/credit columns to signed balances", () => {

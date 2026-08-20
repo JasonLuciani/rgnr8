@@ -12,9 +12,11 @@ import {
   AccountType,
   AccountSubtype,
   accountTypeOfSubtype,
+  asTenantId,
   type Account,
   type AccountId,
   type Provenance,
+  type TenantId,
 } from "./types.js";
 
 /**
@@ -66,6 +68,56 @@ export interface GoLiveResult {
   /** Accounts created beyond the template (brought over from the source + OBE). */
   readonly createdAccounts: readonly Account[];
   readonly cutover: CutoverResult;
+  /** True when the chart was persisted through a {@link ChartStore}. */
+  readonly chartPersisted: boolean;
+}
+
+/**
+ * Durable sink for a tenant's chart of accounts. The Postgres implementation
+ * (`PgAccountStore`) persists to the `account` table; the in-memory one is for
+ * tests. Go-live writes the chart here so it survives the process — closing the
+ * "worker builds the chart then throws it away" gap.
+ */
+export interface ChartStore {
+  /** Persist every account in `coa` for a tenant (idempotent upsert). */
+  saveChart(tenant: TenantId, coa: ChartOfAccounts): Promise<void>;
+}
+
+/** Runs a unit of work; production passes a DB-transaction runner so the
+ * chart-write + opening post + period lock commit or roll back together. */
+export type TransactionRunner = <T>(fn: () => Promise<T>) => Promise<T>;
+
+export interface GoLiveOptions {
+  /**
+   * Persist the built chart as part of go-live. When omitted the chart is
+   * returned but not stored (pure in-memory callers). The worker always passes
+   * one so a completed go-live leaves a durable chart.
+   */
+  readonly chartStore?: ChartStore;
+  /**
+   * Wraps chart-persist + opening-post + period-lock as one unit. Defaults to
+   * sequential execution; a DB runner makes the three steps atomic so a failure
+   * can never leave a half-live tenant (a posting without its chart, or an
+   * unlocked converted history).
+   */
+  readonly transaction?: TransactionRunner;
+}
+
+const RUN_SEQUENTIALLY: TransactionRunner = (fn) => fn();
+
+/** A process-local ChartStore for tests and the reference topology. */
+export class InMemoryChartStore implements ChartStore {
+  private readonly charts = new Map<TenantId, ChartOfAccounts>();
+
+  saveChart(tenant: TenantId, coa: ChartOfAccounts): Promise<void> {
+    this.charts.set(tenant, coa);
+    return Promise.resolve();
+  }
+
+  /** The persisted chart for a tenant, if go-live has run. */
+  chart(tenant: TenantId): ChartOfAccounts | undefined {
+    return this.charts.get(tenant);
+  }
 }
 
 function accountIdFor(code: string): AccountId {
@@ -126,39 +178,57 @@ function buildGoLiveChart(request: GoLiveRequest): { chart: ChartOfAccounts; cre
 
 /**
  * Execute a client's go-live end to end. `store` + `periods` must be a fresh (or
- * this tenant's) ledger; the flow builds the chart, constructs the posting
- * engine over it, posts the opening balances, and locks the cutover period.
- * Idempotent through {@link executeCutover}. `postedAt` is injected.
+ * this tenant's) ledger; the flow builds the chart, **persists it** (when a
+ * `chartStore` is supplied), constructs the posting engine over it, posts the
+ * opening balances, and locks the cutover period.
+ *
+ * Atomicity: chart-persist → opening-post → period-lock run inside
+ * `opts.transaction` (a DB transaction in production) so they commit or roll
+ * back together — a crash never leaves a posting without its chart or a converted
+ * history left unlocked. The chart is written *before* the opening entry so, even
+ * on the sequential in-memory path (no rollback), a failure can only ever leave
+ * chart-without-postings — never a posting referencing an unpersisted account.
+ * The whole flow is idempotent through {@link executeCutover}, so a failed
+ * go-live is safely re-runnable. `postedAt` is injected.
  */
 export async function executeGoLive(
   store: LedgerStore,
   periods: PeriodStore,
   request: GoLiveRequest,
   postedAt: string,
+  opts: GoLiveOptions = {},
 ): Promise<GoLiveResult> {
   if (request.sourceAccounts.length === 0) {
     throw new CutoverError("go-live has no source accounts to open with");
   }
   const { chart, created } = buildGoLiveChart(request);
   const engine = new PostingEngine(chart, store, periods);
+  const tenant = asTenantId(request.tenantId);
 
   const balances: OpeningBalance[] = request.sourceAccounts.map((src) => ({
     accountId: accountIdFor(src.code),
     balance: src.balance,
   }));
 
-  const cutover = await executeCutover(engine, periods, store, {
-    tenantId: request.tenantId,
-    sourceSystem: request.sourceSystem,
-    cutoverDate: request.cutoverDate,
-    currency: request.currency,
-    balances,
-    openingBalanceEquityId: accountIdFor(request.openingBalanceEquityCode),
-    provenance: request.provenance,
-    memo: `Go-live from ${request.sourceSystem}`,
-  }, postedAt);
+  const run = opts.transaction ?? RUN_SEQUENTIALLY;
+  return run(async () => {
+    // Persist the chart FIRST so the opening entry can never reference an
+    // account that was not stored.
+    if (opts.chartStore) await opts.chartStore.saveChart(tenant, chart);
 
-  return { chart, createdAccounts: created, cutover };
+    const cutover = await executeCutover(engine, periods, store, {
+      tenantId: request.tenantId,
+      sourceSystem: request.sourceSystem,
+      cutoverDate: request.cutoverDate,
+      currency: request.currency,
+      balances,
+      openingBalanceEquityId: accountIdFor(request.openingBalanceEquityCode),
+      provenance: request.provenance,
+      memo: `Go-live from ${request.sourceSystem}`,
+    }, postedAt);
+
+    return { chart, createdAccounts: created, cutover, chartPersisted: opts.chartStore !== undefined };
+  });
 }
 
 /**

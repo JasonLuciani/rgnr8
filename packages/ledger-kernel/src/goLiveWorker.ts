@@ -1,6 +1,12 @@
 import type { PeriodStore } from "./periods.js";
 import type { LedgerStore } from "./ledgerStore.js";
-import { executeGoLive, goLiveFromDto, type GoLiveDto } from "./goLive.js";
+import {
+  executeGoLive,
+  goLiveFromDto,
+  type ChartStore,
+  type GoLiveDto,
+  type TransactionRunner,
+} from "./goLive.js";
 
 /**
  * The runtime transport for go-live: a queue of `go-live/1` requests the Python
@@ -57,8 +63,18 @@ export class InMemoryGoLiveQueue implements GoLiveQueue {
   }
 }
 
-/** Supplies the (store, periods) a tenant posts its go-live into. */
-export type LedgerFor = (tenantId: string) => { store: LedgerStore; periods: PeriodStore };
+/**
+ * Supplies the ledger a tenant posts its go-live into. `chartStore` (when
+ * provided) is where the chart of accounts is persisted so it survives the
+ * process; `transaction` (when provided) makes chart-persist + opening-post +
+ * period-lock atomic. The reference in-memory topology may omit both.
+ */
+export type LedgerFor = (tenantId: string) => {
+  store: LedgerStore;
+  periods: PeriodStore;
+  chartStore?: ChartStore;
+  transaction?: TransactionRunner;
+};
 
 export class GoLiveWorker {
   constructor(
@@ -78,8 +94,11 @@ export class GoLiveWorker {
       let result: GoLiveJobResult;
       try {
         const request = goLiveFromDto(job.dto);
-        const { store, periods } = this.ledgerFor(tenantId);
-        const outcome = await executeGoLive(store, periods, request, postedAt);
+        const { store, periods, chartStore, transaction } = this.ledgerFor(tenantId);
+        const outcome = await executeGoLive(store, periods, request, postedAt, {
+          ...(chartStore ? { chartStore } : {}),
+          ...(transaction ? { transaction } : {}),
+        });
         result = {
           id: job.id,
           tenantId,

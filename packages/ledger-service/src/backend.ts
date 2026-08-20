@@ -5,6 +5,7 @@ import {
   templateAccounts,
   type Account,
   type BusinessCategory,
+  type ChartStore,
   type Currency,
   type LedgerStore,
   type PeriodStore,
@@ -79,6 +80,8 @@ export interface LedgerBackend {
   chart(tenant: TenantId): Promise<ChartOfAccounts>;
   /** Insert or update one account. */
   saveAccount(tenant: TenantId, account: Account): Promise<void>;
+  /** Durable chart sink for atomic go-live (persists a whole chart at once). */
+  chartStore(): ChartStore;
   /** Seed a chart from a business-category template; returns what was written. */
   seedChart(tenant: TenantId, category: BusinessCategory, currency: Currency): Promise<Account[]>;
   /** The append-only journal store for a tenant. */
@@ -173,6 +176,16 @@ export class InMemoryBackend implements LedgerBackend {
   saveAccount(tenant: TenantId, account: Account): Promise<void> {
     this.accountMap(tenant).set(account.id, account);
     return Promise.resolve();
+  }
+
+  chartStore(): ChartStore {
+    return {
+      saveChart: (tenant, coa) => {
+        const m = this.accountMap(tenant);
+        for (const account of coa.list()) m.set(account.id, account);
+        return Promise.resolve();
+      },
+    };
   }
 
   seedChart(tenant: TenantId, category: BusinessCategory, currency: Currency): Promise<Account[]> {
@@ -533,6 +546,11 @@ export class PostgresBackend implements LedgerBackend {
 
   saveAccount(tenant: TenantId, account: Account): Promise<void> {
     return this.accounts.upsert(tenant, account);
+  }
+
+  chartStore(): ChartStore {
+    // PgAccountStore.saveChart writes the whole chart in one transaction.
+    return this.accounts;
   }
 
   seedChart(tenant: TenantId, category: BusinessCategory, currency: Currency): Promise<Account[]> {

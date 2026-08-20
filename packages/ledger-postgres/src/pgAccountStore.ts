@@ -54,32 +54,19 @@ export class PgAccountStore {
 
   /** Insert or update one account for a tenant. */
   async upsert(tenant: TenantId, account: Account): Promise<void> {
-    await this.withTenant(tenant, async (db) => {
-      await db.query(
-        `INSERT INTO account (tenant_id, id, code, name, type, currency_code, subtype, parent_id, active)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-         ON CONFLICT (tenant_id, id) DO UPDATE SET
-           code = EXCLUDED.code, name = EXCLUDED.name, type = EXCLUDED.type,
-           currency_code = EXCLUDED.currency_code, subtype = EXCLUDED.subtype,
-           parent_id = EXCLUDED.parent_id, active = EXCLUDED.active`,
-        [
-          tenant,
-          account.id,
-          account.code,
-          account.name,
-          account.type,
-          account.currency.code,
-          account.subtype ?? null,
-          account.parentId ?? null,
-          account.active ?? true,
-        ],
-      );
-    });
+    await this.withTenant(tenant, (db) => upsertOne(db, tenant, account));
   }
 
-  /** Persist every account in a chart (used to seed a tenant). */
+  /**
+   * Persist every account in a chart in ONE transaction (used to seed a tenant
+   * and by go-live). Atomic: either the whole chart is written or none of it,
+   * so a partially-written chart can never be observed. Implements the kernel's
+   * `ChartStore` contract.
+   */
   async saveChart(tenant: TenantId, coa: ChartOfAccounts): Promise<void> {
-    for (const account of coa.list()) await this.upsert(tenant, account);
+    await this.withTenant(tenant, async (db) => {
+      for (const account of coa.list()) await upsertOne(db, tenant, account);
+    });
   }
 
   /**
@@ -93,7 +80,9 @@ export class PgAccountStore {
     currency: Currency = USD,
   ): Promise<Account[]> {
     const accounts = templateAccounts(category, currency);
-    for (const account of accounts) await this.upsert(tenant, account);
+    await this.withTenant(tenant, async (db) => {
+      for (const account of accounts) await upsertOne(db, tenant, account);
+    });
     return accounts;
   }
 
@@ -120,6 +109,29 @@ export class PgAccountStore {
       await db.query("UPDATE account SET active = false WHERE tenant_id = $1 AND id = $2", [tenant, id]);
     });
   }
+}
+
+/** Upsert one account on an already-open (tenant-bound) connection. */
+async function upsertOne(db: Queryable, tenant: TenantId, account: Account): Promise<void> {
+  await db.query(
+    `INSERT INTO account (tenant_id, id, code, name, type, currency_code, subtype, parent_id, active)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+     ON CONFLICT (tenant_id, id) DO UPDATE SET
+       code = EXCLUDED.code, name = EXCLUDED.name, type = EXCLUDED.type,
+       currency_code = EXCLUDED.currency_code, subtype = EXCLUDED.subtype,
+       parent_id = EXCLUDED.parent_id, active = EXCLUDED.active`,
+    [
+      tenant,
+      account.id,
+      account.code,
+      account.name,
+      account.type,
+      account.currency.code,
+      account.subtype ?? null,
+      account.parentId ?? null,
+      account.active ?? true,
+    ],
+  );
 }
 
 function rowToAccount(r: Record<string, unknown>): Account {
