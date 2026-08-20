@@ -28,9 +28,10 @@ Commits `a708bbf`, `1cbbf1d`, `d00ae0e`, `d22b696`, `7ddc55b`.
 
 Test posture after Phase 2 (so far): ledger-service 427 · close 44 · web 591 · ops 118 (+1 PG) · qbo 31 · runtime 12 · mcp 6 — all green; mypy `--strict` + ruff + tsc + biome clean.
 
-## Phase 3 — accounting controls to system-of-record grade 🟩 7 of 8 COMPLETE (H3-5 core built, wiring pending)
+## Phase 3 — accounting controls to system-of-record grade ✅ COMPLETE (8 of 8)
 
-Commits `eb29a67`, `d279832`, `ad5bc16`, `e24fc99`, `1467218`, `8dd10bb`, `56a19b2`, `closeState`.
+Commits `eb29a67`, `d279832`, `ad5bc16`, `e24fc99`, `1467218`, `8dd10bb`, `56a19b2`,
+`27e8008`, `1386a46`, `47439c0`.
 - **H3-1 (A2)** atomic go-live that persists the chart. New `ChartStore` seam +
   `TransactionRunner`; chart written before the opening entry, all in one unit;
   worker + service handler persist it (no post-hoc save loop). `PgAccountStore`
@@ -60,19 +61,28 @@ Commits `eb29a67`, `d279832`, `ad5bc16`, `e24fc99`, `1467218`, `8dd10bb`, `56a19
   `FinancialPackage` — all three together. Separation of duties (publisher ≠
   preparer; reopen approver ≠ requester), a two-step approved reopen, and
   evidence preservation (the sealed package is never deleted; an append-only
-  transition history). Durable `CloseStateStore` seam (+ in-memory impl). 6 tests.
+  transition history). Durable `CloseStateStore` seam (in-memory + `SqlCloseStateStore`).
+  **Now wired live:** the ledger service hosts it over HTTP —
+  `POST /t/:tenant/close/publish` builds the package from the books, runs the
+  gate, and (only on pass) durably locks the period + persists the immutable
+  package; `POST /close/reopen/request|approve` drive the SoD-gated two-step
+  reopen; `GET /close/state` and `GET /packages[/:period]` read the durable
+  record. The `close_state` + `financial_package` tables join the governed
+  migration list (v23–24). The web `_close_publish` path now **delegates** to
+  this authoritative machine — threading the authenticated user as the SoD
+  publisher and the board tasks as gate controls — instead of flipping its
+  in-memory flag. Tests: 6 state-machine unit + 4 HTTP-level + 2 web-delegation.
 
-  **Remaining wiring (tracked):** route the running system through this machine —
-  a ledger-service `POST /close/publish|reopen` surface backed by durable
-  close-state + package stores (governed migrations), gate inputs derived from
-  the recon store + subledger control ties, and the web `_close_publish` path
-  delegating to it instead of flipping its in-memory `CloseBoard.sealed`. The
-  authoritative logic is done and tested; this is the integration to make it live.
+## Phase 2 remainder ✅ COMPLETE
+- **H2-2** provenance labels — a five-level trust ladder (FORECAST < IMPORTED <
+  POSTED < RECONCILED < SEALED) with a badge + legend; the books statements
+  screen tags figures POSTED / SEALED and the cash outlook carries the legend so
+  an owner can tell fact from forecast. Commit `a149cdd`.
 
-## Also outstanding
-- **H2-2** (provenance labels in the UI) — deferred Phase 2 UI feature.
-- **H3-5 live wiring** — see above; the state machine exists and is tested, the
-  HTTP/web integration is the next step.
+## What's left before Phase 4
+Nothing outstanding in Phases 0–3. Phase 4 is the strategic layer: **H4-1**
+narrow-v1 scope + feature flags, **H4-2** marketing-claims audit, **H4-3**
+independent re-verification of all P0/P1 findings.
 
 ## Push mechanics
 Cloud session holds no GitHub token; pushes go through a refreshed `~/Downloads/rgnr8-repo.bundle` that Jason fetches into his clone and pushes:
