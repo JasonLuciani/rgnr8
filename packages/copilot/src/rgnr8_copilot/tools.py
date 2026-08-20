@@ -179,6 +179,93 @@ def _account_register(ctx: AskContext, args: dict[str, object]) -> ToolResult:
     )
 
 
+# --- segment tools (contractors, ecommerce, multi-entity) --------------------
+
+def _job_profitability(ctx: AskContext, args: dict[str, object]) -> ToolResult:
+    job_id = str(args.get("job_id", "")).strip()
+    if job_id:
+        body = ctx.ledger.read(f"/jobs/{job_id}/cost", {})
+        cite = Citation(f"Job cost report — {job_id}", "report", f"/jobs/{job_id}/cost")
+        hint = f"Cost, billed and margin for job {job_id} (ties to the GL)."
+    else:
+        body = ctx.ledger.read("/jobs", {})
+        cite = Citation("Jobs", "report", "/jobs")
+        hint = "Active jobs — drill into one for its cost report."
+    return ToolResult(data=body, citations=(cite,), summary_hint=hint)
+
+
+def _wip_schedule(ctx: AskContext, args: dict[str, object]) -> ToolResult:
+    through = str(args.get("through", "")).strip()
+    body = ctx.ledger.read("/wip", {"through": through} if through else {})
+    return ToolResult(
+        data=body,
+        citations=(Citation("WIP schedule", "report", "/wip"),),
+        summary_hint="Work-in-progress: percent-complete, over/under billings.",
+    )
+
+
+def _committed_cost(ctx: AskContext, args: dict[str, object]) -> ToolResult:
+    job_id = str(args.get("job_id", "")).strip()
+    body = ctx.ledger.read("/purchase-orders/committed", {"job_id": job_id} if job_id else {})
+    return ToolResult(
+        data=body,
+        citations=(Citation("Committed cost (open POs)", "report", "/purchase-orders/committed"),),
+        summary_hint="Costs committed on open purchase orders but not yet received.",
+    )
+
+
+def _backlog(ctx: AskContext, args: dict[str, object]) -> ToolResult:
+    body = ctx.ledger.read("/sales-orders", {})
+    return ToolResult(
+        data=body,
+        citations=(Citation("Sales-order backlog", "report", "/sales-orders"),),
+        summary_hint="Work booked (sales orders) not yet invoiced.",
+    )
+
+
+def _consolidated_pnl(ctx: AskContext, args: dict[str, object]) -> ToolResult:
+    group = str(args.get("group", "")).strip()
+    if not group:
+        raise ToolError("a consolidation group id is required")
+    body = ctx.ledger.read(f"/consolidation/groups/{group}/report", _range(args))
+    return ToolResult(
+        data=body,
+        citations=(Citation(f"Consolidation — {group}", "report", f"/consolidation/groups/{group}/report"),),
+        summary_hint="Combined across entities, after intercompany eliminations "
+                     "(refuses to print a plug if they don't balance).",
+    )
+
+
+def _pipeline_value(ctx: AskContext, args: dict[str, object]) -> ToolResult:
+    body = ctx.ledger.read("/pipeline", {})
+    return ToolResult(
+        data=body,
+        citations=(Citation("Sales pipeline", "report", "/pipeline"),),
+        summary_hint="Weighted pipeline (value × probability) — not in the books.",
+    )
+
+
+def _inventory_valuation(ctx: AskContext, args: dict[str, object]) -> ToolResult:
+    body = ctx.ledger.read("/inventory", {})
+    return ToolResult(
+        data=body,
+        citations=(Citation("Inventory valuation", "report", "/inventory"),),
+        summary_hint="Stock value on the shelf and whether it ties to the balance sheet.",
+    )
+
+
+def _inventory_item(ctx: AskContext, args: dict[str, object]) -> ToolResult:
+    sku = str(args.get("sku", "")).strip()
+    if not sku:
+        raise ToolError("a SKU is required")
+    body = ctx.ledger.read(f"/inventory/items/{sku}", {})
+    return ToolResult(
+        data=body,
+        citations=(Citation(f"Item {sku}", "report", f"/inventory/items/{sku}"),),
+        summary_hint=f"On-hand quantity, cost and movements for {sku}.",
+    )
+
+
 def _asof(args: dict[str, object]) -> dict[str, str]:
     a = str(args.get("as_of", "")).strip()
     return {"as_of": a} if a else {}
@@ -235,6 +322,38 @@ def default_registry() -> ToolRegistry:
                  "from": {"type": "string"}, "to": {"type": "string"}},
               "required": ["code"]},
              "ledger:read", "exact", _account_register),
+        # --- contractors / trades ---
+        Tool("job_profitability", "Cost, billed and margin for one job (job_id) or all active "
+             "jobs. Use for 'which job/crew made money', 'is {job} profitable', 'job margins'.",
+             {"type": "object", "properties": {"job_id": {"type": "string"}}},
+             "jobs:read", "exact", _job_profitability),
+        Tool("wip_schedule", "Work-in-progress: percent-complete, over/under billings, cost to "
+             "complete. Use for 'what's my WIP', 'am I over/under billed'.",
+             {"type": "object", "properties": {"through": {"type": "string"}}},
+             "jobs:read", "exact", _wip_schedule),
+        Tool("committed_cost", "Costs committed on open purchase orders (optionally per job). "
+             "Use for 'what have I committed on POs'.",
+             {"type": "object", "properties": {"job_id": {"type": "string"}}},
+             "jobs:read", "exact", _committed_cost),
+        Tool("backlog", "Work booked (sales orders) not yet invoiced. Use for 'how much work is "
+             "booked', 'backlog'.", _EMPTY_SCHEMA, "jobs:read", "exact", _backlog),
+        # --- ecommerce / product ---
+        Tool("inventory_valuation", "Stock value on the shelf and whether it ties to the balance "
+             "sheet, plus low-stock items. Use for 'what's my inventory worth', 'does it tie'.",
+             _EMPTY_SCHEMA, "reports:read", "exact", _inventory_valuation),
+        Tool("inventory_item", "On-hand quantity, cost and movements for one SKU.",
+             {"type": "object", "properties": {"sku": {"type": "string"}}, "required": ["sku"]},
+             "ledger:read", "exact", _inventory_item),
+        # --- multi-entity / complex ---
+        Tool("consolidated_pnl", "Combined revenue/profit across entities in a consolidation "
+             "group, after intercompany eliminations. Use for 'consolidated profit', 'group P&L'.",
+             {"type": "object", "properties": {
+                 "group": {"type": "string"}, "from": {"type": "string"}, "to": {"type": "string"}},
+              "required": ["group"]},
+             "reports:read", "exact", _consolidated_pnl),
+        Tool("pipeline_value", "Weighted sales pipeline (value × probability); not in the books. "
+             "Use for 'what's in the pipeline', 'expected new business'.",
+             _EMPTY_SCHEMA, "reports:read", "projection", _pipeline_value),
     ])
 
 

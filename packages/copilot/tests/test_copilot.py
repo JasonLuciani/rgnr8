@@ -50,12 +50,36 @@ DEBT: dict[str, object] = {
 }
 
 
+JOB_COST: dict[str, object] = {
+    "job_id": "harper", "name": "Harper kitchen",
+    "billed_minor": "11800000", "cost_minor": "9240000", "margin_minor": "2560000",
+    "margin_pct": "21.70",
+}
+
+INVENTORY: dict[str, object] = {
+    "contract": "inventory-valuation/1",
+    "totals": {"items_value_minor": "9040000", "ledger_balance_minor": "9040000",
+               "difference_minor": "0", "ties_out": True},
+    "reorder": [{"sku": "PLY-34", "quantity_milli": "18000", "reorder_point_milli": "20000"}],
+}
+
+CONSOLIDATED: dict[str, object] = {
+    "group": {"id": "harper-holdings"}, "balanced": True,
+    "consolidated": {"revenue_minor": "16900000", "net_income_minor": "2480000"},
+    "eliminations": [{"account_code": "1900", "signed_minor": "-41000000"}],
+}
+
+
 def _reader() -> FakeLedgerReader:
     return (FakeLedgerReader()
             .on("/ratios", RATIOS)
             .on("/trial-balance", TRIAL_BALANCE)
             .on("/debt", DEBT)
-            .on("/aging", {"side": "ar", "buckets": []}))
+            .on("/aging", {"side": "ar", "buckets": []})
+            .on("/jobs/harper/cost", JOB_COST)
+            .on("/wip", {"rows": [], "totals": {"cost_to_date_minor": "9240000"}})
+            .on("/inventory", INVENTORY)
+            .on("/consolidation/groups/harper-holdings/report", CONSOLIDATED))
 
 
 def _ctx(perms: Sequence[str] = ("ledger:read", "reports:read")) -> AskContext:
@@ -148,6 +172,47 @@ def test_user_stated_amounts_may_be_echoed() -> None:
     ])
     ans = orch.answer(_ctx(), "can I afford an $8,000 hire?")
     assert ans.verified is True
+
+
+# --- segment tools (all five segments) ---------------------------------------
+
+def test_contractor_job_profitability_ties_out() -> None:
+    orch, _llm = _orch([
+        LLMTurn(tool_calls=(ToolCall("c1", "job_profitability", {"job_id": "harper"}),)),
+        LLMTurn(final_text="Harper kitchen: billed $118,000.00, cost $92,400.00 — margin 21.7%."),
+    ])
+    ans = orch.answer(_ctx(perms=("jobs:read", "reports:read")), "did the Harper job make money?")
+    assert ans.verified is True
+    assert "$118,000.00" in ans.text and "$92,400.00" in ans.text
+    assert ans.trace[0].tool == "job_profitability"
+
+
+def test_ecommerce_inventory_tie_out() -> None:
+    orch, _llm = _orch([
+        LLMTurn(tool_calls=(ToolCall("c1", "inventory_valuation", {}),)),
+        LLMTurn(final_text="Inventory is worth $90,400.00 and it ties to the balance sheet."),
+    ])
+    ans = orch.answer(_ctx(), "what's my inventory worth and does it match the books?")
+    assert ans.verified is True
+    assert "$90,400.00" in ans.text
+
+
+def test_multientity_consolidated_pnl() -> None:
+    orch, _llm = _orch([
+        LLMTurn(tool_calls=(ToolCall("c1", "consolidated_pnl", {"group": "harper-holdings"}),)),
+        LLMTurn(final_text="Consolidated revenue $169,000.00, net income $24,800.00 after eliminations."),
+    ])
+    ans = orch.answer(_ctx(), "what's our consolidated profit after eliminations?")
+    assert ans.verified is True
+    assert "$169,000.00" in ans.text and "$24,800.00" in ans.text
+
+
+def test_segment_tools_are_scope_gated() -> None:
+    reg = default_registry()
+    # a viewer with only reports:read gets inventory/consolidation but not job tools
+    names = {str(t["name"]) for t in reg.catalog(frozenset({"reports:read"}))}
+    assert "inventory_valuation" in names and "consolidated_pnl" in names
+    assert "job_profitability" not in names and "backlog" not in names  # need jobs:read
 
 
 # --- permissions & safety ----------------------------------------------------
