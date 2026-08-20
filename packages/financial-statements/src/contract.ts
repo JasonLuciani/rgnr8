@@ -34,6 +34,11 @@ export interface ContractIncomeStatement {
   readonly revenue: readonly ContractLine[];
   readonly expenses: readonly ContractLine[];
   readonly total_revenue: number;
+  readonly cost_of_goods_sold: number;
+  readonly gross_profit: number;
+  /** Gross profit ÷ revenue as a fraction (0..1), or null when revenue is zero. */
+  readonly gross_margin: number | null;
+  readonly operating_expenses: number;
   readonly total_expenses: number;
   readonly net_income: number;
 }
@@ -121,6 +126,10 @@ export function financialStatementsJson(
       revenue: linesOfClass(income.lines, "revenue"),
       expenses: linesOfClass(income.lines, "expense"),
       total_revenue: minorToNumber(income.revenue),
+      cost_of_goods_sold: minorToNumber(income.costOfGoodsSold),
+      gross_profit: minorToNumber(income.grossProfit),
+      gross_margin: income.grossMargin,
+      operating_expenses: minorToNumber(income.operatingExpenses),
       total_expenses: minorToNumber(income.expenses),
       net_income: minorToNumber(income.netIncome),
     },

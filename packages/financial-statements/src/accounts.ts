@@ -18,6 +18,7 @@ import { AccountType, Money, normalBalanceOf } from "@rgnr8/ledger-kernel";
 import type {
   Account,
   AccountId,
+  AccountSubtype,
   Currency,
   TrialBalance as KernelTrialBalance,
 } from "@rgnr8/ledger-kernel";
@@ -73,6 +74,9 @@ export interface TrialBalanceEntry {
   readonly code: string;
   readonly name: string;
   readonly accountClass: AccountClass;
+  /** QBO-style detail subtype when known — lets the P&L split COGS from
+   * operating expense within the expense class. */
+  readonly subtype?: AccountSubtype;
   /**
    * Signed net balance, debit-positive: a debit balance is positive, a credit
    * balance is negative. (Asset/expense normal-debit accounts read positive
@@ -106,6 +110,7 @@ export function fromKernelTrialBalance(ktb: KernelTrialBalance): TrialBalance {
     code: r.code,
     name: r.name,
     accountClass: classifyByType(r.type),
+    ...(r.subtype !== undefined ? { subtype: r.subtype } : {}),
     signed: r.debit.minus(r.credit),
   }));
   return { currency: ktb.currency, entries: entries.sort(byCode) };
@@ -132,6 +137,7 @@ export function fromAccountBalances(
       code: account.code,
       name: account.name,
       accountClass: classifyByType(account.type),
+      ...(account.subtype !== undefined ? { subtype: account.subtype } : {}),
       signed,
     });
   }

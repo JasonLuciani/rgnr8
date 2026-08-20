@@ -8,7 +8,7 @@
  * invariant, and `assert*` helpers throw when it is violated.
  */
 
-import { Money, asAccountId } from "@rgnr8/ledger-kernel";
+import { AccountSubtype, Money, asAccountId } from "@rgnr8/ledger-kernel";
 import type { AccountId, Currency } from "@rgnr8/ledger-kernel";
 import {
   entriesOfClass,
@@ -26,6 +26,7 @@ export interface StatementLine {
   readonly code: string;
   readonly name: string;
   readonly accountClass: AccountClass;
+  readonly subtype?: AccountSubtype;
   /** Positive-natural amount for the account's class. */
   readonly amount: Money;
 }
@@ -36,6 +37,7 @@ function toLine(e: TrialBalanceEntry): StatementLine {
     code: e.code,
     name: e.name,
     accountClass: e.accountClass,
+    ...(e.subtype !== undefined ? { subtype: e.subtype } : {}),
     amount: naturalAmount(e),
   };
 }
@@ -49,21 +51,50 @@ function byLineCode(a: StatementLine, b: StatementLine): number {
 export interface IncomeStatement {
   readonly currency: Currency;
   readonly revenue: Money;
+  /** Expense accounts subtyped Cost of Goods Sold. */
+  readonly costOfGoodsSold: Money;
+  /** Revenue − COGS. The margin left to cover operating expenses. */
+  readonly grossProfit: Money;
+  /**
+   * Gross profit as a fraction of revenue (0..1), or `null` when revenue is
+   * zero (undefined margin). Derived display ratio — the money totals above are
+   * the exact figures.
+   */
+  readonly grossMargin: number | null;
+  /** All expense accounts NOT subtyped COGS. */
+  readonly operatingExpenses: Money;
+  /** COGS + operating expenses (the full expense total, unchanged in meaning). */
   readonly expenses: Money;
   readonly lines: readonly StatementLine[];
   readonly netIncome: Money;
+}
+
+/** An expense entry counts as COGS when its account carries the COGS subtype. */
+function isCogs(e: TrialBalanceEntry): boolean {
+  return e.subtype === AccountSubtype.COST_OF_GOODS_SOLD;
 }
 
 /** Income statement for a period from its trial balance. */
 export function incomeStatement(tb: TrialBalance): IncomeStatement {
   const revLines = entriesOfClass(tb, "revenue");
   const expLines = entriesOfClass(tb, "expense");
+  const cogsLines = expLines.filter(isCogs);
+  const opexLines = expLines.filter((e) => !isCogs(e));
+
   const revenue = sumNatural(revLines, tb.currency);
-  const expenses = sumNatural(expLines, tb.currency);
+  const costOfGoodsSold = sumNatural(cogsLines, tb.currency);
+  const operatingExpenses = sumNatural(opexLines, tb.currency);
+  const expenses = costOfGoodsSold.plus(operatingExpenses);
+  const grossProfit = revenue.minus(costOfGoodsSold);
+
   const lines = [...revLines, ...expLines].map(toLine).sort(byLineCode);
   return {
     currency: tb.currency,
     revenue,
+    costOfGoodsSold,
+    grossProfit,
+    grossMargin: revenue.isZero() ? null : Number(grossProfit.minorUnits) / Number(revenue.minorUnits),
+    operatingExpenses,
     expenses,
     lines,
     netIncome: revenue.minus(expenses),

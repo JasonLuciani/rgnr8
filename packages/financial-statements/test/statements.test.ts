@@ -167,6 +167,53 @@ test("folding in beginning retained earnings keeps a mid-period sheet balanced",
     balanceSheet(endTb, cumulativeNetIncome).equity), true);
 });
 
+test("income statement exposes gross profit and margin, splitting COGS from opex (A7)", async () => {
+  const gpCoa = new ChartOfAccounts([
+    acct("cash", "1000", "Cash", AccountType.ASSET),
+    acct("cap", "3000", "Owner Capital", AccountType.EQUITY),
+    acct("sales", "4000", "Sales Revenue", AccountType.REVENUE),
+    { ...acct("cogs", "5000", "Cost of Goods Sold", AccountType.EXPENSE), subtype: AccountSubtype.COST_OF_GOODS_SOLD },
+    acct("rent", "6000", "Rent Expense", AccountType.EXPENSE),
+  ]);
+  const store = new InMemoryLedgerStore();
+  const engine = new PostingEngine(gpCoa, store);
+  const post = (k: string, lines: JournalLineInput[]) =>
+    engine.post(
+      { tenantId: tenant, idempotencyKey: asIdempotencyKey(k), periodKey: period, currency: USD, entryDate: "2026-08-15", lines, provenance: prov },
+      { postedAt: "2026-08-15T00:00:00Z" },
+    );
+  // Revenue 1,000; COGS 400; operating (rent) 100 → gross profit 600, margin 60%.
+  await post("s", [dr("cash", 100000n), cr("sales", 100000n)]);
+  await post("c", [dr("cogs", 40000n), cr("cash", 40000n)]);
+  await post("r", [dr("rent", 10000n), cr("cash", 10000n)]);
+
+  const is = incomeStatement(fromKernelTrialBalance(await computeTrialBalance(store, tenant, gpCoa, USD)));
+  assert.equal(is.revenue.toDecimalString(), "1000.00");
+  assert.equal(is.costOfGoodsSold.toDecimalString(), "400.00");
+  assert.equal(is.grossProfit.toDecimalString(), "600.00");
+  assert.equal(is.operatingExpenses.toDecimalString(), "100.00");
+  assert.equal(is.expenses.toDecimalString(), "500.00"); // COGS + opex, unchanged meaning
+  assert.equal(is.netIncome.toDecimalString(), "500.00");
+  assert.equal(is.grossMargin, 0.6);
+});
+
+test("gross margin is null when there is no revenue", async () => {
+  const gpCoa = new ChartOfAccounts([
+    acct("cash", "1000", "Cash", AccountType.ASSET),
+    acct("cap", "3000", "Owner Capital", AccountType.EQUITY),
+    { ...acct("cogs", "5000", "Cost of Goods Sold", AccountType.EXPENSE), subtype: AccountSubtype.COST_OF_GOODS_SOLD },
+  ]);
+  const store = new InMemoryLedgerStore();
+  const engine = new PostingEngine(gpCoa, store);
+  await engine.post(
+    { tenantId: tenant, idempotencyKey: asIdempotencyKey("c"), periodKey: period, currency: USD, entryDate: "2026-08-15", lines: [dr("cogs", 5000n), cr("cash", 5000n)], provenance: prov },
+    { postedAt: "2026-08-15T00:00:00Z" },
+  );
+  const is = incomeStatement(fromKernelTrialBalance(await computeTrialBalance(store, tenant, gpCoa, USD)));
+  assert.equal(is.grossMargin, null);
+  assert.equal(is.grossProfit.toDecimalString(), "-50.00");
+});
+
 test("depreciation is an operating add-back, not an investing flow (A5)", async () => {
   // A tiny chart with a proper accumulated-depreciation contra-asset.
   const depCoa = new ChartOfAccounts([

@@ -1,13 +1,22 @@
 import type { ChartOfAccounts } from "./chartOfAccounts.js";
 import type { LedgerStore } from "./ledgerStore.js";
 import { Money, type Currency } from "./money.js";
-import { normalBalanceOf, type AccountId, type AccountType, type TenantId } from "./types.js";
+import {
+  normalBalanceOf,
+  type AccountId,
+  type AccountSubtype,
+  type AccountType,
+  type TenantId,
+} from "./types.js";
 
 export interface TrialBalanceRow {
   readonly accountId: AccountId;
   readonly code: string;
   readonly name: string;
   readonly type: AccountType;
+  /** QBO-style detail subtype, when the account carries one. Lets downstream
+   * statements split within a type (e.g. COGS vs operating expense). */
+  readonly subtype?: AccountSubtype;
   /** Debit-column amount (zero if the account carries a credit balance). */
   readonly debit: Money;
   /** Credit-column amount (zero if the account carries a debit balance). */
@@ -104,6 +113,7 @@ export async function computeTrialBalance(
       code: account.code,
       name: account.name,
       type: account.type,
+      ...(account.subtype !== undefined ? { subtype: account.subtype } : {}),
       debit: Money.fromMinorUnits(debitMinor, currency),
       credit: Money.fromMinorUnits(creditMinor, currency),
     });

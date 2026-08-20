@@ -62,17 +62,39 @@ function totalRow(label: string, m: Money, strong = true): string {
 export function renderIncomeStatement(is: IncomeStatement): string {
   const rev = is.lines.filter((l) => l.accountClass === "revenue");
   const exp = is.lines.filter((l) => l.accountClass === "expense");
+  const cogs = exp.filter((l) => l.subtype === "COST_OF_GOODS_SOLD");
+  const opex = exp.filter((l) => l.subtype !== "COST_OF_GOODS_SOLD");
+  // Show the COGS block + gross-profit subtotal only when COGS is actually
+  // present, so a service business with no COGS reads the same as before.
+  const cogsBlock = cogs.length
+    ? '<tr><td colspan="3" class="rg-eyebrow">Cost of goods sold</td></tr>' +
+      lineRows(cogs) +
+      totalRow("Total cost of goods sold", is.costOfGoodsSold) +
+      grossProfitRow(is) +
+      '<tr><td colspan="3" class="rg-eyebrow">Operating expenses</td></tr>' +
+      lineRows(opex) +
+      totalRow("Total operating expenses", is.operatingExpenses)
+    : '<tr><td colspan="3" class="rg-eyebrow">Expenses</td></tr>' +
+      lineRows(exp) +
+      totalRow("Total expenses", is.expenses);
   const body =
     '<div class="table-scroll"><table><thead><tr><th>Code</th><th>Account</th><th class="num">Amount</th></tr></thead><tbody>' +
     '<tr><td colspan="3" class="rg-eyebrow">Revenue</td></tr>' +
     lineRows(rev) +
     totalRow("Total revenue", is.revenue) +
-    '<tr><td colspan="3" class="rg-eyebrow">Expenses</td></tr>' +
-    lineRows(exp) +
-    totalRow("Total expenses", is.expenses) +
+    cogsBlock +
     totalRow("Net income", is.netIncome) +
     "</tbody></table></div>";
   return card("Income Statement", body);
+}
+
+/** Gross profit total with the margin shown in the account column. */
+function grossProfitRow(is: IncomeStatement): string {
+  const margin =
+    is.grossMargin === null ? "" : ` (${(is.grossMargin * 100).toFixed(1)}% margin)`;
+  return `<tr><td colspan="2" style="font-weight:700">Gross profit${esc(margin)}</td>${fmt(
+    is.grossProfit,
+  )}</tr>`;
 }
 
 /** Render a balance sheet fragment. */
