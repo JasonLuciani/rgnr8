@@ -92,6 +92,8 @@ def _render_answer(question: str, answer: AskAnswer) -> str:
         )
         cites = f'<div style="margin-top:10px"><div class="muted" style="font-size:12px">Sources</div><ul>{items}</ul></div>'
 
+    work = _render_trace(answer)
+
     n_tools = sum(1 for s in answer.trace if s.ok)
     if answer.refused:
         footer_txt = "Couldn't verify against your books — no figure shown."
@@ -102,7 +104,25 @@ def _render_answer(question: str, answer: AskAnswer) -> str:
         )
     footer = f'<div class="muted" style="margin-top:12px;font-size:12px;border-top:1px solid var(--rg-line);padding-top:8px">{_esc(footer_txt)}</div>'
 
-    return _card("Answer", q + body + cites + footer)
+    return _card("Answer", q + body + cites + work + footer)
+
+
+def _render_trace(answer: AskAnswer) -> str:
+    """A collapsible "how I worked this out" — the exact tools the copilot ran, in
+    order, each marked ok/failed with its one-line summary. This is the audit trail
+    that an overlay on someone else's ledger can't honestly show."""
+    if not answer.trace:
+        return ""
+    rows = "".join(
+        f'<li>{"✓" if s.ok else "✕"} <code>{_esc(s.tool)}</code>'
+        f'{(" — " + _esc(s.summary)) if s.summary else ""}</li>'
+        for s in answer.trace
+    )
+    return (
+        '<details style="margin-top:10px"><summary class="muted" style="font-size:12px;cursor:pointer">'
+        "How I worked this out</summary>"
+        f'<ul style="font-size:13px;margin:8px 0 0">{rows}</ul></details>'
+    )
 
 
 def _url(s: str) -> str:

@@ -294,3 +294,11 @@ def test_a_started_thread_shows_a_clear_control() -> None:
     r = _req(app, "/t/acme/ask", method="POST", form={"q": "how much cash do I have?"})
     assert "Clear conversation" in r.body
     assert "/t/acme/ask/clear" in r.body
+
+
+def test_the_answer_shows_a_trace_of_the_tools_it_ran() -> None:
+    app, _t = _app(_cash_llm())
+    r = _req(app, "/t/acme/ask", method="POST", form={"q": "how much cash do I have?"})
+    assert "How I worked this out" in r.body
+    assert "cash_position" in r.body            # the tool the copilot actually ran
+    assert "Cash on hand" in r.body             # its one-line summary
