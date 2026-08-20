@@ -28,9 +28,29 @@ Commits `a708bbf`, `1cbbf1d`, `d00ae0e`, `d22b696`, `7ddc55b`.
 
 Test posture after Phase 2 (so far): ledger-service 427 · close 44 · web 591 · ops 118 (+1 PG) · qbo 31 · runtime 12 · mcp 6 — all green; mypy `--strict` + ruff + tsc + biome clean.
 
-## Next
-- Finish **H2-2** (provenance labels).
-- **Phase 3** — accounting controls to system-of-record grade: H3-1 atomic go-live incl. chart persistence · H3-2 cutover locks all prior periods · H3-3 idempotency fingerprint incl. dimensions/memo/provenance · H3-4 accumulated-depreciation cash-flow classification · H3-5 durable close state machine · H3-6 governed schema migrations · H3-7 first-class gross profit · H3-8 FX depth.
+## Phase 3 — accounting controls to system-of-record grade 🟩 3 of 8 COMPLETE
+
+Commits `eb29a67`, `d279832`, `ad5bc16`.
+- **H3-2 (A3)** cutover now freezes *every* period through the cutover month, not
+  just the cutover month. New `PeriodStore.lockThrough` high-water mark (in-memory
+  watermark + re-open exceptions; SQL `LOCKED_THROUGH` rows; `PeriodRegistry`
+  delegates). `executeCutover` calls it; docstring/`CutoverRecord` corrected.
+- **H3-3 (A4)** idempotency fingerprint now covers per-line dimensions, per-line
+  memo, and the full provenance record (post + reverse) — a materially changed
+  re-post under the same key raises `DuplicateIdempotencyKeyError` instead of
+  silently returning the original; identical retries still dedupe.
+- **H3-4 (A5)** accumulated depreciation reclassified from investing to an
+  operating non-cash add-back: new `ACCUMULATED_DEPRECIATION` subtype, subtype
+  classifier routes it to operating, code-based fallback detects it by name.
+
+Remaining Phase 3: **H3-1** atomic go-live incl. chart persistence (A2) ·
+**H3-5** durable close/lock/package/reopen state machine w/ SoD + evidence (A6) ·
+**H3-6** route all schema changes through the governed migration runner (A9) ·
+**H3-7** first-class gross profit (A7) · **H3-8** FX depth — average-rate P&L,
+carried-forward CTA (A8).
+
+## Also outstanding
+- **H2-2** (provenance labels in the UI) — deferred Phase 2 UI feature.
 
 ## Push mechanics
 Cloud session holds no GitHub token; pushes go through a refreshed `~/Downloads/rgnr8-repo.bundle` that Jason fetches into his clone and pushes:
