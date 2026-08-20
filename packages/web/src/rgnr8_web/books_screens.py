@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from .provenance_labels import Provenance, badge as prov_badge, legend as prov_legend
+
 
 def _esc(s: object) -> str:
     return (
@@ -249,11 +251,20 @@ def render_register(tenant: str, reg: Mapping[str, object]) -> str:
 
 # --- statements from the client's own books ----------------------------------
 
-def render_books_statements(period: str, data: Mapping[str, object]) -> str:
+def render_books_statements(
+    period: str, data: Mapping[str, object], *, sealed: bool = False,
+) -> str:
     ccy = str(data.get("currency", "USD"))
     income = data.get("income_statement")
     bs = data.get("balance_sheet")
-    out = f'<p class="sub">Computed from this business\'s posted journal — period {_esc(period)}.</p>'
+    # Every figure here is at least POSTED (built from the journal); once the
+    # period is published and locked it is SEALED and will not move.
+    level = Provenance.SEALED if sealed else Provenance.POSTED
+    tag = prov_badge(level)
+    out = (
+        f'<p class="sub">Computed from this business\'s posted journal — period {_esc(period)}.</p>'
+        + prov_legend((Provenance.POSTED, Provenance.RECONCILED, Provenance.SEALED))
+    )
 
     if isinstance(income, Mapping):
         def lines(key: str) -> str:
@@ -275,6 +286,7 @@ def render_books_statements(period: str, data: Mapping[str, object]) -> str:
             + '<tr style="font-weight:800"><td colspan="2">Net income</td>'
             + _num(_cents(income.get("net_income")), ccy) + "</tr>"
             "</tbody></table></div>",
+            actions=tag,
         )
 
     if isinstance(bs, Mapping):
@@ -305,6 +317,7 @@ def render_books_statements(period: str, data: Mapping[str, object]) -> str:
             + '<tr style="font-weight:700"><td colspan="2">Total equity</td>'
             + _num(_cents(bs.get("total_equity")), ccy) + "</tr>"
             "</tbody></table></div>",
+            actions=tag,
         )
     return out
 

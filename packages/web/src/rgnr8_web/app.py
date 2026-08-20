@@ -102,6 +102,8 @@ from .books_screens import (
 from .books_screens import (
     unavailable as render_books_unavailable,
 )
+from .provenance_labels import Provenance
+from .provenance_labels import legend as prov_legend
 from .consolidation_screens import (
     render_consolidation,
     render_consolidation_unavailable,
@@ -3982,8 +3984,12 @@ class WebApp:
         res = self._ledger.statements(t.tenant_id, frm, to)
         if not res.ok:
             return self._shell(subject, t, "books", render_books_unavailable(res.error()))
+        # If this window's period is sealed, the figures are final (SEALED), not
+        # merely posted — reflect that in their provenance label.
+        board = self._close.get(t.tenant_id)
+        sealed = bool(board and board.sealed and board.period == frm[:7])
         return self._shell(subject, t, "books",
-                           render_books_statements(f"{frm} to {to}", res.body))
+                           render_books_statements(f"{frm} to {to}", res.body, sealed=sealed))
 
     def _books_post_entry(self, subject: str, t: _Tenant, body: str) -> Response:
         """Post a journal entry from the owner form. Amounts are parsed exactly;
@@ -4625,7 +4631,13 @@ class WebApp:
         body = render_cash_body(forecast, t.name)
         facts = self._ledger_facts.get(t.tenant_id)
         if facts is not None:
-            body = _provenance_note(facts, provenance_split(self._effective_inputs(t))) + body
+            # The cash outlook mixes a FORECAST (weakest) with POSTED book facts;
+            # the legend gives the owner the key to read which is which.
+            body = (
+                _provenance_note(facts, provenance_split(self._effective_inputs(t)))
+                + prov_legend((Provenance.FORECAST, Provenance.POSTED, Provenance.RECONCILED))
+                + body
+            )
         return self._shell(subject, t, "cash", body)
 
     def _briefing_page(self, subject: str, t: _Tenant) -> Response:
