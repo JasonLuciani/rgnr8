@@ -224,6 +224,52 @@ class LedgerClient:
             payload["idempotency_key"] = idempotency_key
         return self._call("POST", f"/t/{tenant}/entries", payload)
 
+    # --- authoritative close / publish / reopen ------------------------------
+
+    def publish_close(
+        self,
+        tenant: str,
+        frm: str,
+        to: str,
+        *,
+        published_by: str,
+        period: str = "",
+        prepared_by: str = "",
+        controls: list[dict[str, object]] | None = None,
+        reconciliations: list[dict[str, object]] | None = None,
+        require_signoff: bool = False,
+    ) -> LedgerResponse:
+        """Seal a period through the ledger's authoritative close state machine:
+        it builds the package from the books, runs the gate, and only on pass
+        locks the period and persists the immutable package."""
+        payload: dict[str, object] = {
+            "from": frm, "to": to, "published_by": published_by,
+        }
+        if period:
+            payload["period"] = period
+        if prepared_by:
+            payload["prepared_by"] = prepared_by
+        if controls is not None:
+            payload["controls"] = controls
+        if reconciliations is not None:
+            payload["reconciliations"] = reconciliations
+        if require_signoff:
+            payload["require_signoff"] = True
+        return self._call("POST", f"/t/{tenant}/close/publish", payload)
+
+    def request_reopen(
+        self, tenant: str, period: str, *, requested_by: str, reason: str,
+    ) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/close/reopen/request",
+                          {"period": period, "requested_by": requested_by, "reason": reason})
+
+    def approve_reopen(self, tenant: str, period: str, *, approved_by: str) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/close/reopen/approve",
+                          {"period": period, "approved_by": approved_by})
+
+    def close_state(self, tenant: str, period: str) -> LedgerResponse:
+        return self._call("GET", f"/t/{tenant}/close/state?period={period}")
+
     def ingest(
         self,
         tenant: str,

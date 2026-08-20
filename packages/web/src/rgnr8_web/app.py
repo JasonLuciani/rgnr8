@@ -15,7 +15,7 @@ import secrets
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from html import escape
 from urllib.parse import parse_qs, urlsplit
 
@@ -134,7 +134,7 @@ from .inbox_screens import (
 from .integration_screens import render_integrations, render_integrations_unavailable
 from .inventory_screens import render_inventory, render_inventory_unavailable
 from .job_screens import render_job, render_jobs, render_jobs_unavailable
-from .ledger_client import LedgerClient
+from .ledger_client import LedgerClient, LedgerUnavailable
 from .ledger_forecast import LedgerFacts, forecast_from_ledger, provenance_split
 from .multipart import MultipartError, parse_multipart
 from .openapi import build_openapi
@@ -463,6 +463,14 @@ def _redirect(location: str, extra: "tuple[tuple[str, str], ...]" = ()) -> Respo
 
 def _json(status: int, payload: object) -> Response:
     return Response(status, json.dumps(payload), "application/json")
+
+
+def _month_bounds(period: str) -> "tuple[str, str]":
+    """The first and last calendar day of a ``YYYY-MM`` period, as ISO dates."""
+    year, month = int(period[:4]), int(period[5:7])
+    first = date(year, month, 1)
+    last = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+    return first.isoformat(), (last - timedelta(days=1)).isoformat()
 
 
 # Per-request "view as this role" for RGNR8 staff (see rgnr8_ops.PlatformAdmin.
@@ -1664,7 +1672,8 @@ class WebApp:
         # /api/<tenant>/close/publish  -> seal the period (PUBLISH_CLOSE)
         if (len(parts) == 4 and parts[0] == "api" and parts[2] == "close"
                 and parts[3] == "publish" and req.method == "POST"):
-            return self._require(subject, token_tenant, parts[1], P.PUBLISH_CLOSE, self._close_publish)
+            return self._require(subject, token_tenant, parts[1], P.PUBLISH_CLOSE,
+                                 lambda t: self._close_publish(subject, t))
 
         # /api/<tenant>/packages/<period>  -> published package JSON (verified)
         if len(parts) == 4 and parts[0] == "api" and parts[2] == "packages" and req.method == "GET":
@@ -5089,14 +5098,40 @@ class WebApp:
         return _json(200, {"id": key, "status": status, "done": board.done, "total": board.total,
                            "complete": board.complete})
 
-    def _close_publish(self, t: _Tenant) -> Response:
-        """Seal the period once every task is done (the publish gate)."""
+    def _close_publish(self, subject: str, t: _Tenant) -> Response:
+        """Seal the period once every task is done (the publish gate).
+
+        When a ledger service is wired, this DELEGATES to its authoritative close
+        state machine — which builds the package from the books, runs the gate,
+        and (only on pass) durably locks the period and persists the immutable
+        package. The local board flag is then a mirror of that authoritative
+        state, not the source of truth. With no ledger (pure-forecast dev mode)
+        it falls back to the local board seal so the screen still works."""
         board = self._close_board(t)
         if board.sealed:
             return _json(200, {"period": board.period, "sealed": True})
         if not board.complete:
             return _json(409, {"error": "every close task must be done before sealing",
                                "done": board.done, "total": board.total})
+
+        if self._ledger is not None:
+            frm, to = _month_bounds(board.period)
+            # The board's own tasks become the gate's control results, so an
+            # incomplete/failed board blocks the seal at the authoritative layer.
+            controls = [{"name": tk.label, "balanced": tk.status == "done"}
+                        for tk in board.tasks]
+            try:
+                res = self._ledger.publish_close(
+                    t.tenant_id, frm, to, published_by=subject or "owner",
+                    period=board.period, controls=controls,
+                )
+            except LedgerUnavailable:
+                return _json(503, {"error": "the ledger service is unreachable; try again"})
+            if not res.ok:
+                # Surface the authoritative gate/SoD/balance error to the UI.
+                return _json(res.status or 409, dict(res.body) if res.body
+                             else {"error": "close was refused by the ledger"})
+
         board = dataclasses.replace(board, sealed=True)
         self._close[t.tenant_id] = board
         t.state.decisions.append({"id": len(t.state.decisions) + 1, "kind": "close",

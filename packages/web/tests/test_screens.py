@@ -1,5 +1,6 @@
 """In-shell owner screens: cash, briefing, close (advance + seal gate), packages."""
 
+from collections.abc import Mapping
 from datetime import date
 
 from rgnr8_forecast import CashPosition, ForecastConfig, ForecastInputs, Money
@@ -14,6 +15,7 @@ from rgnr8_web import (
     WebApp,
     sign_jwt,
 )
+from rgnr8_web.ledger_client import LedgerClient, LedgerResponse
 
 SECRET = "screens-secret"
 NOW = 1_760_000_000
@@ -103,6 +105,59 @@ def test_publish_rejected_until_complete() -> None:
     ho = {**_h("owner@acme.com"), "content-type": "application/json"}
     r = app.handle(Request("POST", "/api/acme/close/publish", ho, "{}"))
     assert r.status == 409  # a task is still open
+
+
+class _FakeLedgerTransport:
+    """Records the last request and replays a scripted response."""
+
+    def __init__(self, status: int, body: dict[str, object]) -> None:
+        self.status = status
+        self.body = body
+        self.calls: list[tuple[str, str, str]] = []
+
+    def request(
+        self, method: str, path: str, body: str, headers: "Mapping[str, str]",
+    ) -> "LedgerResponse":
+        self.calls.append((method, path, body))
+        return LedgerResponse(self.status, self.body)
+
+
+def test_publish_delegates_to_the_authoritative_ledger_when_wired() -> None:
+    import json
+    app = _app()
+    app.add_close("acme", CloseBoard("2026-08", (CloseTask("only", "The one task", "done"),)))
+    fake = _FakeLedgerTransport(200, {"period": "2026-08", "status": "PUBLISHED"})
+    app.set_ledger(LedgerClient(fake))
+    ho = {**_h("owner@acme.com"), "content-type": "application/json"}
+
+    sealed = app.handle(Request("POST", "/api/acme/close/publish", ho, "{}"))
+    assert sealed.status == 200 and json.loads(sealed.body)["sealed"] is True
+    # It actually called the ledger's authoritative publish endpoint...
+    assert len(fake.calls) == 1
+    method, path, payload = fake.calls[0]
+    assert method == "POST" and path == "/t/acme/close/publish"
+    body = json.loads(payload)
+    assert body["from"] == "2026-08-01" and body["to"] == "2026-08-31"
+    assert body["published_by"] == "owner@acme.com"        # SoD identity threaded through
+    assert body["period"] == "2026-08"
+
+
+def test_publish_surfaces_the_ledger_gate_rejection() -> None:
+    import json
+    app = _app()
+    app.add_close("acme", CloseBoard("2026-08", (CloseTask("only", "The one task", "done"),)))
+    # The authoritative ledger refuses (e.g. trial balance doesn't tie).
+    fake = _FakeLedgerTransport(409, {"error": "close is blocked: Trial balance is in balance"})
+    app.set_ledger(LedgerClient(fake))
+    ho = {**_h("owner@acme.com"), "content-type": "application/json"}
+
+    r = app.handle(Request("POST", "/api/acme/close/publish", ho, "{}"))
+    assert r.status == 409
+    assert "blocked" in json.loads(r.body)["error"]
+    # The local board is NOT sealed when the authoritative layer refuses.
+    state = json.loads(app.handle(Request("GET", "/api/acme/close",
+                       {**_h("owner@acme.com")})).body)
+    assert state["sealed"] is False
 
 
 def test_viewer_cannot_reach_close() -> None:
