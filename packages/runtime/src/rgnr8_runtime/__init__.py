@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .manager import SubscriptionManager
+from .rls import apply_tenant
 from .runtime import DeliveryRuntime
 from .serve import serve
 from .subscriptions import (
@@ -24,4 +25,5 @@ __all__ = [
     "TenantSource",
     "InMemoryTenantSource",
     "RuntimeTenant",
+    "apply_tenant",
 ]

@@ -18,13 +18,13 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src", "../forecast/src", "../briefing/src", "../obs/src", "../scenario/src", "../ar/src", "../categorize/src", "../reports/src", "../recon-monitor/src", "../billing/src", "../qbo/src", "../ocr/src", "../copilot/src"]
+pythonpath = ["src", "../forecast/src", "../briefing/src", "../obs/src", "../scenario/src", "../ar/src", "../categorize/src", "../reports/src", "../recon-monitor/src", "../billing/src", "../qbo/src", "../ocr/src", "../runtime/src", "../copilot/src"]
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
 files = ["src", "tests"]
-mypy_path = "src:../forecast/src:../briefing/src:../obs/src:../scenario/src:../ar/src:../categorize/src:../reports/src:../recon-monitor/src:../billing/src:../qbo/src:../ocr/src:../copilot/src"
+mypy_path = "src:../forecast/src:../briefing/src:../obs/src:../scenario/src:../ar/src:../categorize/src:../reports/src:../recon-monitor/src:../billing/src:../qbo/src:../ocr/src:../runtime/src:../copilot/src"
 
 # reportlab / openpyxl (pulled in transitively via rgnr8-reports' export
 # renderers) ship no type information.

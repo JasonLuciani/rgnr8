@@ -46,13 +46,35 @@ class Migration:
 
 
 def _rls_policy(table: str) -> tuple[str, ...]:
-    """Enable RLS on a tenant-scoped table with a GUC-keyed policy (Postgres)."""
+    """Enable RLS on a tenant-scoped table with a GUC-keyed policy (Postgres).
+
+    Strict: a row is visible only when `app.tenant_id` is set to its tenant. Use
+    for tables read inside a tenant-scoped request, where the store sets the GUC
+    before every query (web_tenant_state, rgnr8_membership)."""
     return (
         f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY",
         f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY",
         f"DROP POLICY IF EXISTS {table}_tenant_isolation ON {table}",
         f"CREATE POLICY {table}_tenant_isolation ON {table} "
         f"USING (tenant_id = current_setting('app.tenant_id', true))",
+    )
+
+
+def _rls_policy_backend(table: str) -> tuple[str, ...]:
+    """Relax a platform-operational table's policy so a trusted backend job that
+    reads it CROSS-tenant (no GUC set → sees all rows) keeps working, while a
+    request that DOES set the tenant GUC is still scoped to its own tenant.
+
+    fleet_tenant (the fleet loader registers every tenant at boot) and
+    briefing_subscription (the worker iterates all due subscriptions) are read by
+    trusted backends across tenants; a strict FORCE'd policy silently returned
+    zero rows and broke them. This keeps FORCE on (still applies to any request
+    that sets a tenant) without breaking the cross-tenant reader."""
+    return (
+        f"DROP POLICY IF EXISTS {table}_tenant_isolation ON {table}",
+        f"CREATE POLICY {table}_tenant_isolation ON {table} "
+        f"USING (coalesce(current_setting('app.tenant_id', true), '') = '' "
+        f"OR tenant_id = current_setting('app.tenant_id', true))",
     )
 
 
@@ -100,6 +122,20 @@ PYTHON_MIGRATIONS: tuple[Migration, ...] = (
         version=4,
         name="rbac_row_level_security",
         statements=(*_rls_policy("rgnr8_membership"),),  # scope memberships per tenant
+        dialects=frozenset({"postgres"}),
+    ),
+    Migration(
+        version=5,
+        name="backend_operational_rls_relax",
+        # fleet_tenant + briefing_subscription are read cross-tenant by trusted
+        # backends (fleet load, briefing delivery). The strict v2 policies broke
+        # those reads (GUC never set → zero rows). Relax to "all rows when no
+        # tenant context, else scoped" so the backends work and a tenant-scoped
+        # request is still isolated. FORCE (from v2) stays on.
+        statements=(
+            *_rls_policy_backend("fleet_tenant"),
+            *_rls_policy_backend("briefing_subscription"),
+        ),
         dialects=frozenset({"postgres"}),
     ),
 )

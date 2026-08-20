@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol
 
+from rgnr8_runtime import apply_tenant
+
 
 class Permission(str, Enum):
     # owner-facing (read)
@@ -280,6 +282,7 @@ class SqlUserDirectory:
         p = self._ph
         cur = self._conn.cursor()
         try:
+            apply_tenant(cur, tenant_id, placeholder=self._ph)
             cur.execute(
                 f"INSERT INTO {self._mt} (user_id, tenant_id, role) VALUES ({p}, {p}, {p}) "
                 "ON CONFLICT (user_id, tenant_id) DO UPDATE SET role=excluded.role",
@@ -293,21 +296,30 @@ class SqlUserDirectory:
         p = self._ph
         cur = self._conn.cursor()
         try:
+            apply_tenant(cur, tenant_id, placeholder=self._ph)
             cur.execute(f"DELETE FROM {self._mt} WHERE user_id={p} AND tenant_id={p}", (user_id, tenant_id))
         finally:
             cur.close()
         self._conn.commit()
 
     def membership(self, user_id: str, tenant_id: str) -> Membership | None:
-        r = self._one(
-            f"SELECT role FROM {self._mt} WHERE user_id={self._ph} AND tenant_id={self._ph}",
-            (user_id, tenant_id),
-        )
+        cur = self._conn.cursor()
+        try:
+            apply_tenant(cur, tenant_id, placeholder=self._ph)
+            cur.execute(
+                f"SELECT role FROM {self._mt} WHERE user_id={self._ph} AND tenant_id={self._ph}",
+                (user_id, tenant_id),
+            )
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+        r = rows[0] if rows else None
         return Membership(user_id, tenant_id, Role(str(r[0]))) if r else None
 
     def members(self, tenant_id: str) -> list[Membership]:
         cur = self._conn.cursor()
         try:
+            apply_tenant(cur, tenant_id, placeholder=self._ph)
             cur.execute(
                 f"SELECT user_id, role FROM {self._mt} WHERE tenant_id={self._ph} ORDER BY user_id",
                 (tenant_id,),

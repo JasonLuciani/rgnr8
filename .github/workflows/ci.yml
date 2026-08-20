@@ -52,6 +52,21 @@ jobs:
   python:
     name: Python (ruff, mypy, pytest)
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: rgnr8
+          POSTGRES_PASSWORD: rgnr8
+          POSTGRES_DB: rgnr8_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U rgnr8"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      # Lets the Python-side row-level-security test (packages/ops) run against a
+      # real Postgres instead of skipping; sqlite has no RLS.
+      RGNR8_TEST_DATABASE_URL: postgres://rgnr8:rgnr8@localhost:5432/rgnr8_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -63,7 +78,7 @@ jobs:
         # openpyxl (the rgnr8-reports PDF/XLSX export renderers, pulled in by the
         # web suite too). The rgnr8-* packages themselves are resolved via each
         # pyproject's pythonpath, so only their external deps need installing here.
-        run: python -m pip install --upgrade pytest mypy ruff cryptography reportlab openpyxl
+        run: python -m pip install --upgrade pytest mypy ruff cryptography reportlab openpyxl "psycopg[binary]"
       - name: Lint (ruff)
         run: ruff check packages/*/src packages/*/tests
       - name: Type-check (mypy)

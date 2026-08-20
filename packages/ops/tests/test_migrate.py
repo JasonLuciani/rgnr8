@@ -22,7 +22,7 @@ def test_migrations_apply_once_and_are_idempotent() -> None:
     conn = sqlite3.connect(":memory:")
     r1 = run_migrations(conn, dialect="sqlite", applied_at=AT)
     assert r1.applied == (1, 3)  # core tables + rbac tables (both portable)
-    assert r1.skipped == (2, 4)  # RLS migrations are postgres-only, skipped on sqlite
+    assert r1.skipped == (2, 4, 5)  # RLS migrations are postgres-only, skipped on sqlite
     assert {"web_tenant_state", "briefing_subscription", "fleet_tenant",
             "rgnr8_user", "rgnr8_membership"} <= _tables(conn)
     assert r1.current_version == 3
@@ -58,7 +58,7 @@ def test_rls_migration_runs_under_postgres_dialect() -> None:
             pass
 
     result = run_migrations(FakeConn(), dialect="postgres", placeholder="%s", applied_at=AT)  # type: ignore[arg-type]
-    assert result.applied == (1, 2, 3, 4)
+    assert result.applied == (1, 2, 3, 4, 5)
     joined = "\n".join(executed)
     assert "ENABLE ROW LEVEL SECURITY" in joined
     assert "current_setting('app.tenant_id'" in joined  # unified GUC name across TS + Python

@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 from typing import Protocol
 
+from rgnr8_runtime import apply_tenant
+
 from .store import TenantState
 
 
@@ -64,6 +66,7 @@ class SqlTenantStore:
     def load(self, tenant_id: str) -> TenantState:
         cur = self._conn.cursor()
         try:
+            apply_tenant(cur, tenant_id, placeholder=self._ph)
             cur.execute(
                 f"SELECT state_json FROM {self._table} WHERE tenant_id = {self._ph}",
                 (tenant_id,),
@@ -79,6 +82,7 @@ class SqlTenantStore:
         payload = json.dumps(state.to_dict(), sort_keys=True)
         cur = self._conn.cursor()
         try:
+            apply_tenant(cur, tenant_id, placeholder=self._ph)
             cur.execute(
                 f"INSERT INTO {self._table} (tenant_id, state_json) "
                 f"VALUES ({self._ph}, {self._ph}) "
