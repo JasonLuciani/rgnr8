@@ -24,7 +24,7 @@ test("governed migrations apply, record schema_migrations, and are idempotent on
     skipped: number;
   };
   assert.equal(first.applied.length, migs.length, "every migration applied on a fresh DB");
-  assert.equal(await currentVersion(db), 22);
+  assert.equal(await currentVersion(db), 24);
 
   // A second run applies nothing (all versions recorded) and does not error.
   const second = (await migrateLedgerSchema(db, { enforceRls: false, appliedAt: APPLIED_AT })) as {
@@ -67,14 +67,14 @@ test("a column ALTER ships as a NEW governed migration and applies once", async 
   // …then evolve it with an appended migration (the governed ALTER path).
   const withAlter = [
     ...ledgerMigrations({ enforceRls: false }),
-    { version: 23, name: "account_add_note", sql: "ALTER TABLE account ADD COLUMN note text" },
+    { version: 25, name: "account_add_note", sql: "ALTER TABLE account ADD COLUMN note text" },
   ];
   const report = (await runMigrations(db, withAlter, { appliedAt: APPLIED_AT })) as {
     applied: { version: number }[];
   };
-  assert.deepEqual(report.applied.map((a) => a.version), [23], "only the new migration runs");
-  assert.equal(await currentVersion(db), 23);
-  assert.ok(base < 23);
+  assert.deepEqual(report.applied.map((a) => a.version), [25], "only the new migration runs");
+  assert.equal(await currentVersion(db), 25);
+  assert.ok(base < 25);
 
   // The new column exists and accepts writes.
   await db.query("INSERT INTO account (tenant_id, id, code, name, type, currency_code, note) VALUES ('t','a','1000','Cash','ASSET','USD','hi')");

@@ -36,6 +36,23 @@ import {
   incomeStatement,
   subtypeCashFlowClassifier,
 } from "@rgnr8/financial-statements";
+import {
+  CloseGateError,
+  CloseStateError,
+  SeparationOfDutiesError,
+  UnbalancedPackageError,
+  PackagePublishedError,
+  approveReopen,
+  buildFinancialPackage,
+  closeStateJson,
+  publishClose,
+  requestReopen,
+  type ControlLike,
+  type CloseGateInputs,
+  type ReconLike,
+  type CloseEngineDeps,
+  type FinancialPackageInput,
+} from "@rgnr8/close";
 import type { LedgerBackend } from "./backend.js";
 import { ingestTransactions, type IngestRequest } from "./ingest.js";
 import {
@@ -533,6 +550,30 @@ export class LedgerService {
       if (rest[0] === "periods" && rest.length === 3 && rest[2] === "lock" && req.method === "POST") {
         await this.backend.periods(tenant).lock(tenant, asPeriodKey(rest[1]!));
         return ok({ tenant, period: rest[1], locked: true });
+      }
+      // --- authoritative close / publish / reopen ------------------------
+      if (rest[0] === "close") {
+        if (rest.length === 2 && rest[1] === "publish" && req.method === "POST") {
+          return await this.closePublish(tenant, req.body);
+        }
+        if (rest.length === 3 && rest[1] === "reopen" && rest[2] === "request" && req.method === "POST") {
+          return await this.closeReopenRequest(tenant, req.body);
+        }
+        if (rest.length === 3 && rest[1] === "reopen" && rest[2] === "approve" && req.method === "POST") {
+          return await this.closeReopenApprove(tenant, req.body);
+        }
+        if (rest.length === 2 && rest[1] === "state" && req.method === "GET") {
+          return await this.closeStateGet(tenant, req.query);
+        }
+      }
+      if (rest[0] === "packages" && req.method === "GET") {
+        if (rest.length === 1) {
+          return ok({ tenant, periods: await this.backend.packages().list(String(tenant)) });
+        }
+        if (rest.length === 2) {
+          const pkg = await this.backend.packages().get(String(tenant), rest[1]!);
+          return pkg ? ok(pkg) : notFound(`no sealed package for ${rest[1]}`);
+        }
       }
       // --- AR / AP -------------------------------------------------------
       if (rest[0] === "customers" || rest[0] === "vendors") {
@@ -1894,6 +1935,172 @@ export class LedgerService {
         cashFlow: cf,
       }),
     );
+  }
+
+  // --- authoritative close / publish / reopen -------------------------------
+
+  private closeDeps(tenant: TenantId): CloseEngineDeps {
+    return {
+      periods: this.backend.periods(tenant),
+      packages: this.backend.packages(),
+      states: this.backend.closeStates(),
+    };
+  }
+
+  /** Build the sealable package input for a period from the tenant's own books. */
+  private async buildPackageInput(
+    tenant: TenantId, from: string, to: string, period: string,
+  ): Promise<FinancialPackageInput> {
+    const chart = await this.backend.chart(tenant);
+    const store = this.backend.store(tenant);
+    const tbK = await computeTrialBalance(store, tenant, chart, this.currency, { from, to });
+    const periodTb = fromKernelTrialBalance(tbK);
+    const endTb = fromKernelTrialBalance(
+      await computeTrialBalance(store, tenant, chart, this.currency, { to }),
+    );
+    const startTb = fromKernelTrialBalance(
+      await computeTrialBalance(store, tenant, chart, this.currency, { to: previousDay(from) }),
+    );
+    const income = incomeStatement(periodTb);
+    const beginningRetained = incomeStatement(startTb).netIncome;
+    const bs = balanceSheet(endTb, income.netIncome, beginningRetained);
+    return {
+      periodKey: period,
+      currency: this.currency.code,
+      trialBalance: {
+        rows: tbK.rows.map((r) => ({
+          code: r.code,
+          name: r.name,
+          debitMinor: r.debit.minorUnits.toString(),
+          creditMinor: r.credit.minorUnits.toString(),
+        })),
+        totalDebitMinor: tbK.totalDebit.minorUnits.toString(),
+        totalCreditMinor: tbK.totalCredit.minorUnits.toString(),
+        inBalance: tbK.inBalance,
+      },
+      incomeStatement: {
+        revenueMinor: income.revenue.minorUnits.toString(),
+        expensesMinor: income.expenses.minorUnits.toString(),
+        netIncomeMinor: income.netIncome.minorUnits.toString(),
+      },
+      balanceSheet: {
+        totalAssetsMinor: bs.assets.minorUnits.toString(),
+        totalLiabilitiesAndEquityMinor: bs.liabilities.plus(bs.equity).minorUnits.toString(),
+        netIncomeMinor: income.netIncome.minorUnits.toString(),
+        balances: bs.balanced,
+      },
+    };
+  }
+
+  /**
+   * Publish (seal) a period through the authoritative close state machine: build
+   * the package from the books, run the close gate, and — only if it passes —
+   * durably lock the period and persist the immutable package, atomically in
+   * intent. Separation of duties and the balance gate are enforced here.
+   */
+  private async closePublish(tenant: TenantId, body: string): Promise<ServiceResponse> {
+    const data = parseJson(body);
+    if (!data) return bad("invalid JSON body");
+    const from = str(data["from"]);
+    const to = str(data["to"]);
+    if (!from || !to) return bad("close publish needs from and to (YYYY-MM-DD)");
+    const publishedBy = str(data["published_by"]).trim();
+    if (!publishedBy) return bad("published_by is required");
+    const preparedBy = str(data["prepared_by"]).trim();
+    const period = str(data["period"]).trim() || to.slice(0, 7);
+    const now = this.opts.now();
+
+    const input = await this.buildPackageInput(tenant, from, to, period);
+    let pkg;
+    try {
+      pkg = buildFinancialPackage(input, { closedBy: publishedBy, closedAt: now, packagedAt: now });
+    } catch (err) {
+      if (err instanceof UnbalancedPackageError) return conflict(err.message);
+      throw err;
+    }
+
+    const reconciliations = Array.isArray(data["reconciliations"])
+      ? (data["reconciliations"] as ReconLike[])
+      : [];
+    const controls = Array.isArray(data["controls"]) ? (data["controls"] as ControlLike[]) : [];
+    const inputs: CloseGateInputs = {
+      reconciliations,
+      controls,
+      trialBalanceBalanced: input.trialBalance.inBalance,
+      ...(data["require_signoff"] ? { requireSignOff: true } : {}),
+    };
+
+    try {
+      const state = await publishClose(this.closeDeps(tenant), {
+        tenantId: String(tenant),
+        inputs,
+        pkg,
+        ...(preparedBy ? { preparedBy } : {}),
+        publishedBy,
+        at: now,
+      });
+      return ok(closeStateJson(state));
+    } catch (err) {
+      if (
+        err instanceof CloseGateError ||
+        err instanceof SeparationOfDutiesError ||
+        err instanceof PackagePublishedError ||
+        err instanceof CloseStateError
+      ) {
+        return conflict(err.message);
+      }
+      throw err;
+    }
+  }
+
+  private async closeReopenRequest(tenant: TenantId, body: string): Promise<ServiceResponse> {
+    const data = parseJson(body);
+    if (!data) return bad("invalid JSON body");
+    const period = str(data["period"]).trim();
+    const requestedBy = str(data["requested_by"]).trim();
+    const reason = str(data["reason"]).trim();
+    if (!period) return bad("period is required");
+    if (!requestedBy) return bad("requested_by is required");
+    if (!reason) return bad("reason is required");
+    try {
+      const state = await requestReopen(this.closeDeps(tenant), {
+        tenantId: String(tenant), periodKey: period, requestedBy, reason, at: this.opts.now(),
+      });
+      return ok(closeStateJson(state));
+    } catch (err) {
+      if (err instanceof CloseStateError) return conflict(err.message);
+      throw err;
+    }
+  }
+
+  private async closeReopenApprove(tenant: TenantId, body: string): Promise<ServiceResponse> {
+    const data = parseJson(body);
+    if (!data) return bad("invalid JSON body");
+    const period = str(data["period"]).trim();
+    const approvedBy = str(data["approved_by"]).trim();
+    if (!period) return bad("period is required");
+    if (!approvedBy) return bad("approved_by is required");
+    try {
+      const state = await approveReopen(this.closeDeps(tenant), {
+        tenantId: String(tenant), periodKey: period, approvedBy, at: this.opts.now(),
+      });
+      return ok(closeStateJson(state));
+    } catch (err) {
+      if (err instanceof CloseStateError || err instanceof SeparationOfDutiesError) {
+        return conflict(err.message);
+      }
+      throw err;
+    }
+  }
+
+  private async closeStateGet(
+    tenant: TenantId, query: Readonly<Record<string, string>>,
+  ): Promise<ServiceResponse> {
+    const period = query["period"];
+    if (!period) return bad("close state needs ?period=YYYY-MM");
+    const state = await this.backend.closeStates().get(String(tenant), period);
+    if (!state) return notFound(`no close state for ${period}`);
+    return ok(closeStateJson(state));
   }
 
   /** One account's register (GL detail with a running balance). */

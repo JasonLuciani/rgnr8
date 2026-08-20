@@ -56,6 +56,14 @@ import { InMemoryFixedAssetStore, PgFixedAssetStore, type FixedAssetStore } from
 import {
   InMemoryConsolidationStore, PgConsolidationStore, type ConsolidationStore,
 } from "./consolidation.js";
+import {
+  InMemoryCloseStateStore,
+  InMemoryFinancialPackageStore,
+  SqlCloseStateStore,
+  SqlFinancialPackageStore,
+  type CloseStateStore,
+  type FinancialPackageStore,
+} from "@rgnr8/close";
 import { migrateLedgerSchema } from "./migrations.js";
 
 /**
@@ -128,6 +136,10 @@ export interface LedgerBackend {
   debt(): DebtStore;
   /** Fixed assets and their depreciation schedules. */
   fixedAssets(): FixedAssetStore;
+  /** The immutable sealed financial packages, keyed by (tenant, period). */
+  packages(): FinancialPackageStore;
+  /** The authoritative close/publish/reopen state, keyed by (tenant, period). */
+  closeStates(): CloseStateStore;
   /** Create/verify schema. Safe to run repeatedly. */
   migrate(): Promise<void>;
   /** A readiness probe: true when the store is reachable (for /ready). */
@@ -156,6 +168,8 @@ export class InMemoryBackend implements LedgerBackend {
   private readonly settingsStore = new InMemorySettingsStore();
   private readonly debtStore = new InMemoryDebtStore();
   private readonly fixedAssetStore = new InMemoryFixedAssetStore();
+  private readonly packageStore = new InMemoryFinancialPackageStore();
+  private readonly closeStateStore = new InMemoryCloseStateStore();
   private readonly accounts = new Map<string, Map<string, Account>>();
   private readonly stores = new Map<string, InMemoryLedgerStore>();
   private readonly periodStores = new Map<string, InMemoryPeriodStore>();
@@ -292,6 +306,14 @@ export class InMemoryBackend implements LedgerBackend {
     return this.fixedAssetStore;
   }
 
+  packages(): FinancialPackageStore {
+    return this.packageStore;
+  }
+
+  closeStates(): CloseStateStore {
+    return this.closeStateStore;
+  }
+
   async migrate(): Promise<void> {
     await this.docs.migrate();
     await this.reconStore.migrate();
@@ -349,6 +371,8 @@ export class PostgresBackend implements LedgerBackend {
   private readonly settingsStore: PgSettingsStore;
   private readonly debtStore: PgDebtStore;
   private readonly fixedAssetStore: PgFixedAssetStore;
+  private readonly packageStore: SqlFinancialPackageStore;
+  private readonly closeStateStore: SqlCloseStateStore;
 
   /**
    * @param pool     a connection pool.
@@ -386,6 +410,8 @@ export class PostgresBackend implements LedgerBackend {
     this.settingsStore = new PgSettingsStore(pool);
     this.debtStore = new PgDebtStore(pool);
     this.fixedAssetStore = new PgFixedAssetStore(pool);
+    this.packageStore = new SqlFinancialPackageStore(pool);
+    this.closeStateStore = new SqlCloseStateStore(pool);
   }
 
   async migrate(): Promise<void> {
@@ -510,6 +536,14 @@ export class PostgresBackend implements LedgerBackend {
 
   fixedAssets(): FixedAssetStore {
     return this.fixedAssetStore;
+  }
+
+  packages(): FinancialPackageStore {
+    return this.packageStore;
+  }
+
+  closeStates(): CloseStateStore {
+    return this.closeStateStore;
   }
 
   async ping(): Promise<boolean> {

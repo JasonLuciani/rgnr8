@@ -67,6 +67,8 @@ export {
   approveReopen,
   closeStateJson,
   InMemoryCloseStateStore,
+  SqlCloseStateStore,
+  CLOSE_STATE_MIGRATIONS,
   CloseStateError,
   CloseGateError,
   SeparationOfDutiesError,

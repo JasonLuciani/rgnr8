@@ -4,6 +4,7 @@ import {
   type PeriodKey,
   type PeriodStore,
 } from "@rgnr8/ledger-kernel";
+import type { Migration, SqlExecutor } from "@rgnr8/migrations";
 import { buildCloseChecklist, type CloseGateInputs, type CloseTask } from "./close.js";
 import type { FinancialPackage } from "./financialPackage.js";
 import type { FinancialPackageStore } from "./packageStore.js";
@@ -104,6 +105,58 @@ export class InMemoryCloseStateStore implements CloseStateStore {
         a.periodKey.localeCompare(b.periodKey),
       ),
     );
+  }
+}
+
+/** Table for the durable SQL close-state store — register through @rgnr8/migrations. */
+export const CLOSE_STATE_MIGRATIONS: readonly Migration[] = [
+  {
+    version: 1,
+    name: "close_state",
+    sql: `CREATE TABLE close_state (
+      tenant_id  text NOT NULL,
+      period_key text NOT NULL,
+      status     text NOT NULL,
+      state_json text NOT NULL,
+      CONSTRAINT close_state_pk PRIMARY KEY (tenant_id, period_key)
+    );`,
+  },
+];
+
+/**
+ * PostgreSQL close-state store. The authoritative close state must outlive the
+ * process, so a period sealed before a deploy is still sealed after it. The full
+ * state (checklist evidence + transition history) is stored as JSON, with the
+ * status mirrored to a column for querying.
+ */
+export class SqlCloseStateStore implements CloseStateStore {
+  constructor(private readonly db: SqlExecutor) {}
+
+  async get(tenantId: string, periodKey: string): Promise<CloseState | null> {
+    const res = await this.db.query(
+      "SELECT state_json FROM close_state WHERE tenant_id = $1 AND period_key = $2",
+      [tenantId, periodKey],
+    );
+    const row = res.rows[0];
+    return row === undefined ? null : (JSON.parse(String(row["state_json"])) as CloseState);
+  }
+
+  async put(state: CloseState): Promise<void> {
+    await this.db.query(
+      `INSERT INTO close_state (tenant_id, period_key, status, state_json)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (tenant_id, period_key)
+       DO UPDATE SET status = EXCLUDED.status, state_json = EXCLUDED.state_json`,
+      [state.tenantId, state.periodKey, state.status, JSON.stringify(state)],
+    );
+  }
+
+  async list(tenantId: string): Promise<readonly CloseState[]> {
+    const res = await this.db.query(
+      "SELECT state_json FROM close_state WHERE tenant_id = $1 ORDER BY period_key",
+      [tenantId],
+    );
+    return res.rows.map((r) => JSON.parse(String(r["state_json"])) as CloseState);
   }
 }
 

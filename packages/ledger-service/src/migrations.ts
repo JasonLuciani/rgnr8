@@ -22,6 +22,7 @@
  */
 
 import { runMigrations, type Migration, type SqlExecutor } from "@rgnr8/migrations";
+import { CLOSE_STATE_MIGRATIONS, FINANCIAL_PACKAGE_MIGRATIONS } from "@rgnr8/close";
 import { ACCOUNT_DDL, CORE_DDL } from "@rgnr8/ledger-postgres";
 import { DOCUMENT_DDL } from "./documents.js";
 import { RECON_DDL } from "./reconcile.js";
@@ -78,6 +79,10 @@ export function ledgerMigrations(opts: { enforceRls: boolean }): Migration[] {
     { version: 20, name: "settings", sql: SETTINGS_DDL },
     { version: 21, name: "debt", sql: DEBT_DDL },
     { version: 22, name: "fixed_assets", sql: FIXED_ASSET_DDL },
+    // Close / publication records (from @rgnr8/close). Their own version numbers
+    // are re-based here into this service's single sequence.
+    { version: 23, name: "financial_package", sql: FINANCIAL_PACKAGE_MIGRATIONS[0]!.sql },
+    { version: 24, name: "close_state", sql: CLOSE_STATE_MIGRATIONS[0]!.sql },
   ];
   // RLS policies key on every tenant table, so they migrate last.
   if (opts.enforceRls) {
