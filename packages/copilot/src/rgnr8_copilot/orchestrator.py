@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass, field
 
 from .llm import LLMProvider, Msg
 from .model import AskAnswer, AskContext, Citation, TraceStep
@@ -61,20 +62,50 @@ def _verified(value: int, allowed: set[int]) -> bool:
     return any(abs(value - a) <= 1 for a in allowed)
 
 
+@dataclass(frozen=True)
+class Conversation:
+    """The carried state of a multi-turn thread. `messages` is the CLEAN transcript
+    (user/assistant only — tool call/result traffic is turn-local scratch and never
+    persisted). `verified_minor` is every dollar figure already tied to the books in
+    an earlier turn, so a follow-up may legitimately reference "still $50,000"
+    without re-running the tool, while a *new* figure the books don't back is still
+    refused. Frozen and self-contained — safe to stash per (tenant, caller)."""
+
+    messages: tuple[Msg, ...] = ()
+    verified_minor: frozenset[int] = field(default_factory=frozenset)
+
+    @staticmethod
+    def empty() -> "Conversation":
+        return Conversation()
+
+
 class AskOrchestrator:
     def __init__(
-        self, llm: LLMProvider, registry: ToolRegistry, *, max_steps: int = 6
+        self, llm: LLMProvider, registry: ToolRegistry, *, max_steps: int = 6, max_turns: int = 8
     ) -> None:
         self._llm = llm
         self._registry = registry
         self._max_steps = max_steps
+        # cap the carried transcript at this many turns (each = one user+assistant
+        # pair) so a long-running thread can't grow the prompt without bound.
+        self._max_turns = max_turns
 
     def answer(self, ctx: AskContext, question: str) -> AskAnswer:
+        """Single-turn: ask one question, get one answer. Unchanged public API."""
+        return self.converse(ctx, Conversation.empty(), question)[0]
+
+    def converse(
+        self, ctx: AskContext, conversation: Conversation, question: str
+    ) -> tuple[AskAnswer, Conversation]:
+        """Answer `question` in the context of `conversation`, returning the answer
+        and the updated conversation to carry into the next turn."""
         catalog = self._registry.catalog(ctx.permissions)
-        messages: list[Msg] = [Msg("user", question)]
-        # A dollar figure is "allowed" in the answer if a tool returned it, or the
-        # user stated it in the question (fair to echo their own number back).
-        allowed: set[int] = set(extract_money_minor(question))
+        # Seed the working messages with the prior CLEAN transcript, then this turn's
+        # question. Tool traffic below is appended to `messages` for this turn only.
+        messages: list[Msg] = [*conversation.messages, Msg("user", question)]
+        # A dollar figure is "allowed" in the answer if a tool returned it this turn,
+        # the user stated it, or it was verified in an earlier turn of this thread.
+        allowed: set[int] = set(conversation.verified_minor) | extract_money_minor(question)
         citations: list[Citation] = []
         trace: list[TraceStep] = []
         retried = False
@@ -91,9 +122,11 @@ class AskOrchestrator:
                     messages.append(Msg("user", _CORRECTION))
                     continue
                 if unverified:
-                    return AskAnswer(_FALLBACK, tuple(citations), tuple(trace),
-                                     verified=False, refused=True)
-                return AskAnswer(final, tuple(citations), tuple(trace), verified=True)
+                    ans = AskAnswer(_FALLBACK, tuple(citations), tuple(trace),
+                                    verified=False, refused=True)
+                    return ans, self._commit(conversation, question, _FALLBACK, allowed)
+                ans = AskAnswer(final, tuple(citations), tuple(trace), verified=True)
+                return ans, self._commit(conversation, question, final, allowed)
 
             for call in turn.tool_calls:
                 if not self._registry.permitted(call.name, ctx.permissions):
@@ -117,7 +150,18 @@ class AskOrchestrator:
                 })))
                 trace.append(TraceStep(call.name, call.args, True, result.summary_hint))
 
-        return AskAnswer(_FALLBACK, tuple(citations), tuple(trace), verified=False, refused=True)
+        ans = AskAnswer(_FALLBACK, tuple(citations), tuple(trace), verified=False, refused=True)
+        return ans, self._commit(conversation, question, _FALLBACK, allowed)
+
+    def _commit(
+        self, conversation: Conversation, question: str, answer_text: str, allowed: set[int]
+    ) -> Conversation:
+        """Fold this turn into the carried state: append the clean Q/A pair, trim to
+        the last `max_turns`, and keep the accumulated set of book-tied figures."""
+        transcript = (*conversation.messages, Msg("user", question), Msg("assistant", answer_text))
+        if self._max_turns > 0:
+            transcript = transcript[-2 * self._max_turns:]
+        return Conversation(messages=transcript, verified_minor=frozenset(allowed))
 
 
-__all__ = ["AskOrchestrator", "extract_money_minor", "SYSTEM_PROMPT"]
+__all__ = ["AskOrchestrator", "Conversation", "extract_money_minor", "SYSTEM_PROMPT"]

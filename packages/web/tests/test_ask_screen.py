@@ -223,3 +223,74 @@ def test_a_viewer_can_ask_and_read_the_books() -> None:
     assert r.status == 200
     assert "$50,000.00" in r.body
     assert ("GET", "/t/acme/trial-balance", "") in transport.calls
+
+
+# --- multi-turn conversation -------------------------------------------------
+
+def _thread_llm() -> FakeLLM:
+    """Turn 1 reads cash; turn 2 answers a follow-up by re-using the figure that
+    tied out last turn — no second ledger read."""
+    return FakeLLM(turns=[
+        LLMTurn(tool_calls=(ToolCall("c1", "cash_position", {}),)),
+        LLMTurn(final_text="You have $50,000.00 in operating cash."),
+        LLMTurn(final_text="Yes — $50,000.00 is a comfortable cushion."),
+    ])
+
+
+def test_the_thread_accumulates_and_follow_ups_carry_context() -> None:
+    app, transport = _app(_thread_llm())
+    _req(app, "/t/acme/ask", method="POST", form={"q": "how much cash do I have?"})
+    r = _req(app, "/t/acme/ask", method="POST", form={"q": "is that healthy?"})
+    assert r.status == 200
+    # both exchanges are rendered in the thread
+    assert "how much cash do I have?" in r.body
+    assert "is that healthy?" in r.body
+    assert "comfortable cushion" in r.body
+    assert r.body.count("You asked:") == 2
+    # the follow-up re-used the verified figure without a second ledger read
+    reads = [c for c in transport.calls if c[1].startswith("/t/acme/trial-balance")]
+    assert len(reads) == 1
+
+
+def test_follow_up_planning_sees_the_prior_transcript() -> None:
+    llm = _thread_llm()
+    app, _t = _app(llm)
+    _req(app, "/t/acme/ask", method="POST", form={"q": "how much cash do I have?"})
+    _req(app, "/t/acme/ask", method="POST", form={"q": "is that healthy?"})
+    # the last plan() call carried the prior question + answer as context
+    seeded = llm.seen[-1][1]
+    pairs = [(m.role, m.content) for m in seeded]
+    assert ("user", "how much cash do I have?") in pairs
+    assert any(m.role == "assistant" and "$50,000.00" in m.content for m in seeded)
+    assert (seeded[-1].role, seeded[-1].content) == ("user", "is that healthy?")
+
+
+def test_threads_are_isolated_per_caller() -> None:
+    app, _t = _app(FakeLLM(turns=[
+        LLMTurn(tool_calls=(ToolCall("c1", "cash_position", {}),)),
+        LLMTurn(final_text="You have $50,000.00 in operating cash."),
+    ]))
+    # the owner asks; the viewer's thread must not show the owner's exchange
+    _req(app, "/t/acme/ask", method="POST", sub="u-owner", form={"q": "owner cash?"})
+    r = _req(app, "/t/acme/ask", sub="u-view")
+    assert "owner cash?" not in r.body
+    assert "You asked:" not in r.body
+
+
+def test_clearing_the_conversation_starts_fresh() -> None:
+    app, _t = _app(_thread_llm())
+    _req(app, "/t/acme/ask", method="POST", form={"q": "how much cash do I have?"})
+    cleared = _req(app, "/t/acme/ask/clear", method="POST")
+    assert cleared.status in (302, 303)
+    r = _req(app, "/t/acme/ask")
+    assert "You asked:" not in r.body
+    assert "how much cash do I have?" not in r.body
+    # a cleared, non-empty thread still offers the prompt + chips
+    assert "Ask RGNR8" in r.body
+
+
+def test_a_started_thread_shows_a_clear_control() -> None:
+    app, _t = _app(_cash_llm())
+    r = _req(app, "/t/acme/ask", method="POST", form={"q": "how much cash do I have?"})
+    assert "Clear conversation" in r.body
+    assert "/t/acme/ask/clear" in r.body

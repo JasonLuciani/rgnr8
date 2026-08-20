@@ -14,7 +14,7 @@ from .http import HttpError, UrllibHttpClient
 from .ledger import FakeLedgerReader, LedgerReadError, LedgerReader
 from .llm import FakeLLM, HttpLLM, LLMProvider, LLMTurn, Msg, ToolCall
 from .model import AskAnswer, AskContext, Citation, ToolResult, TraceStep
-from .orchestrator import SYSTEM_PROMPT, AskOrchestrator, extract_money_minor
+from .orchestrator import SYSTEM_PROMPT, AskOrchestrator, Conversation, extract_money_minor
 from .tools import Tool, ToolError, ToolRegistry, collect_minor_figures, default_registry
 
 __all__ = [
@@ -41,6 +41,7 @@ __all__ = [
     "default_registry",
     "collect_minor_figures",
     "AskOrchestrator",
+    "Conversation",
     "extract_money_minor",
     "SYSTEM_PROMPT",
 ]

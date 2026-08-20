@@ -16,6 +16,7 @@ from rgnr8_copilot import (
     AskAnswer,
     AskContext,
     AskOrchestrator,
+    Conversation,
     LedgerReadError,
     LLMProvider,
     default_registry,
@@ -72,6 +73,21 @@ class AskService:
     ) -> AskAnswer:
         ctx = AskContext(tenant=tenant, permissions=scopes, ledger=reader, hints=hints)
         return self._orch.answer(ctx, question)
+
+    def converse(
+        self,
+        *,
+        tenant: str,
+        scopes: frozenset[str],
+        reader: LedgerReaderAdapter,
+        hints: dict[str, object],
+        conversation: Conversation,
+        question: str,
+    ) -> tuple[AskAnswer, Conversation]:
+        """Multi-turn: answer `question` in the context of `conversation`, returning
+        the answer and the conversation to carry into the next turn."""
+        ctx = AskContext(tenant=tenant, permissions=scopes, ledger=reader, hints=hints)
+        return self._orch.converse(ctx, conversation, question)
 
 
 __all__ = ["LedgerReaderAdapter", "copilot_scopes", "AskService"]

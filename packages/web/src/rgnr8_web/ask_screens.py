@@ -1,12 +1,15 @@
 """Ask RGNR8 — the chat surface.
 
-Server-rendered and single-turn per request (v1): the owner asks, the copilot
-answers with numbers computed from the books, and the answer carries its
-citations and a trust footer. The differentiator, made visible: every answer
-says "computed from your books" and lists what it read — because it can.
+Server-rendered and multi-turn: the owner asks, the copilot answers with numbers
+computed from the books, and the thread accumulates so follow-ups ("and last
+quarter?") carry context. Every answer carries its citations and a trust footer.
+The differentiator, made visible: every answer says "computed from your books"
+and lists what it read — because it can.
 """
 
 from __future__ import annotations
+
+from collections.abc import Sequence
 
 from rgnr8_copilot import AskAnswer
 
@@ -21,6 +24,9 @@ _CHIPS = [
     "What's my inventory worth — does it tie?",
 ]
 
+# One exchange in the thread: the owner's question and the copilot's answer.
+AskTurn = tuple[str, AskAnswer]
+
 
 def render_ask_unavailable(detail: str = "") -> str:
     extra = f'<p class="muted">{_esc(detail)}</p>' if detail else ""
@@ -34,31 +40,46 @@ def render_ask_unavailable(detail: str = "") -> str:
 
 
 def render_ask(
-    tenant: str, *, question: str = "", answer: AskAnswer | None = None, error: str = "",
+    tenant: str,
+    *,
+    turns: Sequence[AskTurn] = (),
+    question: str = "",
+    error: str = "",
 ) -> str:
     base = f"/t/{_esc(tenant)}/ask"
 
     chips = "".join(
         f'<a class="chip" href="{base}?q={_esc(_url(c))}">{_esc(c)}</a>' for c in _CHIPS
     )
+    placeholder = (
+        "e.g. and how does that compare to last quarter?" if turns
+        else "e.g. which job made money last quarter?"
+    )
+    clear = (
+        f'<form method="post" action="{base}/clear" style="margin:0">'
+        '<button type="submit" class="btn ghost" style="font-size:12px;padding:6px 12px">Clear conversation</button>'
+        "</form>"
+        if turns else ""
+    )
     form = (
         f'<form method="post" action="{base}" class="grid">'
         '<label style="grid-column:1/-1">Ask about your money'
-        f'<textarea name="q" rows="2" placeholder="e.g. which job made money last quarter?">{_esc(question)}</textarea></label>'
+        f'<textarea name="q" rows="2" placeholder="{placeholder}">{_esc(question)}</textarea></label>'
         '<div style="grid-column:1/-1;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
         '<button type="submit">Ask</button>'
-        f'<span class="muted" style="font-size:12px">or try:</span>{chips}</div>'
+        f'<span class="muted" style="font-size:12px">or try:</span>{chips}'
+        f'<span style="flex:1"></span>{clear}</div>'
         "</form>"
     )
     sections = [_card("Ask RGNR8", form)]
     if error:
         sections.append(_banner("warn", error))
-    if answer is not None:
-        sections.append(_render_answer(tenant, question, answer))
+    for q, answer in turns:
+        sections.append(_render_answer(q, answer))
     return "".join(sections)
 
 
-def _render_answer(tenant: str, question: str, answer: AskAnswer) -> str:
+def _render_answer(question: str, answer: AskAnswer) -> str:
     q = f'<p class="muted" style="margin:0 0 8px">You asked: <em>{_esc(question)}</em></p>' if question else ""
     body_text = _esc(answer.text).replace("\n", "<br>")
     body = f'<div style="font:15px/1.5 var(--rg-sans)">{body_text}</div>'
@@ -88,4 +109,4 @@ def _url(s: str) -> str:
     return s.replace(" ", "+").replace("?", "%3F").replace("&", "%26")
 
 
-__all__ = ["render_ask", "render_ask_unavailable"]
+__all__ = ["render_ask", "render_ask_unavailable", "AskTurn"]

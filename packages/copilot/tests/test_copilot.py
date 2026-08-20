@@ -12,6 +12,7 @@ from typing import Sequence
 from rgnr8_copilot import (
     AskContext,
     AskOrchestrator,
+    Conversation,
     FakeLedgerReader,
     FakeLLM,
     HttpError,
@@ -285,6 +286,82 @@ def test_httpllm_parses_a_final_text_response() -> None:
     http = _FakeHttp({"content": [{"type": "text", "text": "You're healthy."}]})
     turn = HttpLLM(http, "sk-test").plan("sys", [Msg("user", "?")], [])
     assert turn.is_final and turn.final_text == "You're healthy."
+
+
+# --- multi-turn conversation -------------------------------------------------
+# TRIAL_BALANCE cash codes 1000 ($200,000.00) + 1010 ($5,000.00) → $205,000.00.
+
+_CASH = "$205,000.00"
+
+
+def test_converse_threads_the_prior_transcript_into_the_next_turn() -> None:
+    orch, llm = _orch([
+        LLMTurn(tool_calls=(ToolCall("c1", "cash_position", {}),)),
+        LLMTurn(final_text=f"You have {_CASH} on hand."),
+        LLMTurn(final_text=f"Yes — {_CASH} is a comfortable cushion."),
+    ])
+    ans1, conv1 = orch.converse(_ctx(), Conversation.empty(), "how much cash do I have?")
+    ans2, conv2 = orch.converse(_ctx(), conv1, "is that healthy?")
+
+    assert ans1.verified and _CASH in ans1.text
+    # the follow-up re-uses a figure verified last turn — no tool call this turn —
+    # and is accepted because the carried state remembers it tied to the books.
+    assert ans2.verified and not ans2.refused and _CASH in ans2.text
+
+    # the prior clean transcript was seeded into the follow-up's planning context
+    seeded = llm.seen[-1][1]
+    pairs = [(m.role, m.content) for m in seeded]
+    assert ("user", "how much cash do I have?") in pairs
+    assert any(m.role == "assistant" and _CASH in m.content for m in seeded)
+    assert (seeded[-1].role, seeded[-1].content) == ("user", "is that healthy?")
+
+    # the carried transcript holds both clean turns and no tool traffic
+    assert [m.role for m in conv2.messages] == ["user", "assistant", "user", "assistant"]
+    assert all(m.role != "tool" for m in conv2.messages)
+
+
+def test_a_new_unverified_figure_is_refused_even_inside_a_thread() -> None:
+    orch, _llm = _orch([
+        LLMTurn(tool_calls=(ToolCall("c1", "cash_position", {}),)),
+        LLMTurn(final_text=f"You have {_CASH} on hand."),
+        LLMTurn(final_text="Next year you'll have $999,999.00."),
+        LLMTurn(final_text="Definitely $999,999.00."),
+    ])
+    _ans1, conv1 = orch.converse(_ctx(), Conversation.empty(), "how much cash?")
+    ans2, conv2 = orch.converse(_ctx(), conv1, "what will it be next year?")
+
+    assert ans2.refused and not ans2.verified
+    assert "$999,999.00" not in ans2.text
+    # the refusal is still recorded in the thread, and the fabricated figure never
+    # enters the carried set of book-tied figures.
+    assert conv2.messages[-1].role == "assistant"
+    assert conv2.verified_minor == conv1.verified_minor
+
+
+def test_the_carried_transcript_is_trimmed_to_max_turns() -> None:
+    llm = FakeLLM(turns=[
+        LLMTurn(tool_calls=(ToolCall("c1", "cash_position", {}),)),
+        LLMTurn(final_text=f"You have {_CASH}."),
+        LLMTurn(final_text=f"Still {_CASH}."),
+    ])
+    orch = AskOrchestrator(llm, default_registry(), max_turns=1)
+    _a1, conv1 = orch.converse(_ctx(), Conversation.empty(), "cash now?")
+    ans2, conv2 = orch.converse(_ctx(), conv1, "cash still?")
+
+    assert ans2.verified and _CASH in ans2.text
+    # only the most recent turn is retained (2 messages = 1 user+assistant pair)…
+    assert [m.content for m in conv2.messages] == ["cash still?", f"Still {_CASH}."]
+    # …but a figure verified in the trimmed-away turn stays quotable.
+    assert 20_500_000 in conv2.verified_minor
+
+
+def test_answer_is_still_single_turn_and_stateless() -> None:
+    orch, _llm = _orch([
+        LLMTurn(tool_calls=(ToolCall("c1", "cash_position", {}),)),
+        LLMTurn(final_text=f"You have {_CASH}."),
+    ])
+    ans = orch.answer(_ctx(), "cash?")
+    assert ans.verified and _CASH in ans.text
 
 
 # --- the concrete urllib client + env factory --------------------------------

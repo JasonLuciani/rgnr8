@@ -172,7 +172,7 @@ from .asset_screens import render_asset_detail, render_assets, render_assets_una
 from .health_screens import render_health, render_health_unavailable
 from .ask_screens import render_ask, render_ask_unavailable
 from .copilot_bridge import AskService, LedgerReaderAdapter, copilot_scopes
-from rgnr8_copilot import LLMProvider
+from rgnr8_copilot import AskAnswer, Conversation, LLMProvider
 from .shell import (
     render_app_home,
     render_audit_log,
@@ -261,6 +261,16 @@ class Response:
         if isinstance(self.body, bytes):
             return self.body
         return self.body.encode("utf-8")
+
+
+@dataclass(slots=True)
+class _AskThread:
+    """One owner's live Ask RGNR8 conversation. `conversation` is the copilot's
+    carried state (clean transcript + book-tied figures); `turns` is the rendered
+    history (question + full answer, with citations) shown on the screen."""
+
+    conversation: Conversation = field(default_factory=Conversation.empty)
+    turns: list[tuple[str, AskAnswer]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -571,6 +581,9 @@ class WebApp:
         # compute from this tenant's books (every figure verified, cited, RBAC-scoped).
         # None → the surface renders "not configured" rather than 404 (back-compat).
         self._ask_svc = AskService(ask_llm) if ask_llm is not None else None
+        # Live Ask RGNR8 conversations, keyed (tenant, caller) so follow-ups carry
+        # context per owner. In-memory for this cut (a redeploy clears threads).
+        self._ask_threads: dict[tuple[str, str], _AskThread] = {}
 
     def add_tenant(
         self,
@@ -1046,6 +1059,10 @@ class WebApp:
                                  lambda t: self._health_page(subject, t, req.query))
 
         # --- Ask RGNR8 (conversational finance, read-only) ---
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "ask"
+                and parts[3] == "clear" and req.method == "POST"):
+            return self._require(subject, token_tenant, parts[1], P.ASK_CFO,
+                                 lambda t: self._ask_clear(subject, t))
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "ask":
             if req.method == "POST":
                 return self._require(subject, token_tenant, parts[1], P.ASK_CFO,
@@ -4394,42 +4411,68 @@ class WebApp:
         return self._shell(subject, t, "health", render_health(t.tenant_id, res.body))
 
     # --- Ask RGNR8 (conversational finance) ---------------------------------
+    # Display cap: how many past exchanges to render (the copilot separately trims
+    # the context window it carries to the model).
+    _ASK_DISPLAY_TURNS = 12
+
     def _ask_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
-        if self._ask_svc is None:
-            return self._shell(subject, t, "ask", render_ask_unavailable())
-        if self._ledger is None:
-            return self._shell(subject, t, "ask",
-                               render_ask_unavailable("No ledger service is configured."))
+        detail = self._ask_unavailable_detail()
+        if detail is not None:
+            return self._shell(subject, t, "ask", render_ask_unavailable(detail))
         question = query.get("q", "").strip()
         if not question:
-            return self._shell(subject, t, "ask", render_ask(t.tenant_id))
-        return self._shell(subject, t, "ask", self._ask_run(subject, t, question))
+            thread = self._ask_threads.get((t.tenant_id, subject))
+            turns = list(thread.turns) if thread is not None else []
+            return self._shell(subject, t, "ask", render_ask(t.tenant_id, turns=turns))
+        return self._shell(subject, t, "ask", self._ask_turn(subject, t, question))
 
     def _ask_answer(self, subject: str, t: _Tenant, body: str) -> Response:
-        if self._ask_svc is None:
-            return self._shell(subject, t, "ask", render_ask_unavailable())
-        if self._ledger is None:
-            return self._shell(subject, t, "ask",
-                               render_ask_unavailable("No ledger service is configured."))
+        detail = self._ask_unavailable_detail()
+        if detail is not None:
+            return self._shell(subject, t, "ask", render_ask_unavailable(detail))
         question = str(self._form_or_json(body).get("q", "")).strip()
         if not question:
+            thread = self._ask_threads.get((t.tenant_id, subject))
+            turns = list(thread.turns) if thread is not None else []
             return self._shell(subject, t, "ask",
-                               render_ask(t.tenant_id, error="Ask a question first."))
-        return self._shell(subject, t, "ask", self._ask_run(subject, t, question))
+                               render_ask(t.tenant_id, turns=turns, error="Ask a question first."))
+        return self._shell(subject, t, "ask", self._ask_turn(subject, t, question))
 
-    def _ask_run(self, subject: str, t: _Tenant, question: str) -> str:
-        """Answer one question. The copilot reads only through a tenant-pinned
-        adapter over the same ledger client every screen uses, and only the tools
-        the caller's role permits — RBAC is enforced twice, here and in the DB."""
+    def _ask_clear(self, subject: str, t: _Tenant) -> Response:
+        """Forget this owner's conversation and return to a blank slate."""
+        self._ask_threads.pop((t.tenant_id, subject), None)
+        return _redirect(f"/t/{t.tenant_id}/ask")
+
+    def _ask_unavailable_detail(self) -> str | None:
+        """None when Ask can run; otherwise the reason to show instead."""
+        if self._ask_svc is None:
+            return ""
+        if self._ledger is None:
+            return "No ledger service is configured."
+        return None
+
+    def _ask_turn(self, subject: str, t: _Tenant, question: str) -> str:
+        """Answer one question in the context of the owner's running thread. The
+        copilot reads only through a tenant-pinned adapter over the same ledger
+        client every screen uses, and only the tools the caller's role permits —
+        RBAC is enforced twice, here and in the DB."""
         assert self._ask_svc is not None and self._ledger is not None
+        key = (t.tenant_id, subject)
+        thread = self._ask_threads.setdefault(key, _AskThread())
         perms, _role = self._perms_role(subject, t.tenant_id)
         scopes = copilot_scopes(perms, rbac_on=self._policy is not None)
         reader = LedgerReaderAdapter(self._ledger, t.tenant_id)
         hints: dict[str, object] = {"today": self._today(t), "business": t.name}
-        answer = self._ask_svc.answer(
-            tenant=t.tenant_id, scopes=scopes, reader=reader, hints=hints, question=question,
+        answer, conversation = self._ask_svc.converse(
+            tenant=t.tenant_id, scopes=scopes, reader=reader, hints=hints,
+            conversation=thread.conversation, question=question,
         )
-        return render_ask(t.tenant_id, question=question, answer=answer)
+        thread.conversation = conversation
+        thread.turns.append((question, answer))
+        # keep the rendered history bounded
+        if len(thread.turns) > self._ASK_DISPLAY_TURNS:
+            thread.turns = thread.turns[-self._ASK_DISPLAY_TURNS:]
+        return render_ask(t.tenant_id, turns=thread.turns)
 
     # --- receipt capture (OCR → drafted bill) -------------------------------
     def _capture_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
