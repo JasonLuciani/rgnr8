@@ -25,6 +25,7 @@
   "dependencies": {
     "@rgnr8/ledger-kernel": "^0.1.0",
     "@rgnr8/ledger-postgres": "^0.1.0",
+    "@rgnr8/migrations": "^0.1.0",
     "@rgnr8/financial-statements": "^0.1.0",
     "pg": "^8.13.1",
     "@rgnr8/ingestion": "^0.1.0",

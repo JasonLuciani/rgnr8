@@ -56,7 +56,7 @@ import { InMemoryFixedAssetStore, PgFixedAssetStore, type FixedAssetStore } from
 import {
   InMemoryConsolidationStore, PgConsolidationStore, type ConsolidationStore,
 } from "./consolidation.js";
-import { rlsDdl } from "./security.js";
+import { migrateLedgerSchema } from "./migrations.js";
 
 /**
  * A fixed key for the Postgres advisory lock that serializes schema migration.
@@ -421,34 +421,15 @@ export class PostgresBackend implements LedgerBackend {
   }
 
   private async migrateAll(): Promise<void> {
-    await this.ledger.migrate();
-    await this.accounts.migrate();
-    await this.docs.migrate();
-    await this.reconStore.migrate();
-    await this.feedStore.migrate();
-    await this.payrollStore.migrate();
-    await this.budgetStore.migrate();
-    await this.dimensionStore.migrate();
-    await this.attachmentStore.migrate();
-    await this.recurringStore.migrate();
-    await this.jobStore.migrate();
-    await this.estimateStore.migrate();
-    await this.salesOrderStore.migrate();
-    await this.workOrderStore.migrate();
-    await this.purchasingStore.migrate();
-    await this.billingStore.migrate();
-    await this.inventoryStore.migrate();
-    await this.crmStore.migrate();
-    await this.consolidationStore.migrate();
-    await this.settingsStore.migrate();
-    await this.debtStore.migrate();
-    await this.fixedAssetStore.migrate();
-    // Last, once every table exists: make the database itself enforce tenant
-    // isolation, so a query that forgets its tenant filter returns nothing
-    // rather than everything.
-    if (this.options.enforceRls !== false) {
-      await this.pool.query(rlsDdl());
-    }
+    // Governed migrations only: every table (and the RLS policies) goes through
+    // the versioned, checksum-tracked runner instead of per-store raw DDL, so a
+    // schema change ships as a new migration and drift is caught. The store
+    // `migrate()` methods remain for direct/test use but are no longer the boot
+    // path.
+    await migrateLedgerSchema(this.pool, {
+      enforceRls: this.options.enforceRls !== false,
+      appliedAt: new Date().toISOString(),
+    });
   }
 
   documents(): DocumentStore {
