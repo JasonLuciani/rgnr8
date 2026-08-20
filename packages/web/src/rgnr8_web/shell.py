@@ -21,6 +21,7 @@ from rgnr8_forecast.brand import IVORY, RG_BASE_CSS, RG_TOKENS_CSS, mark_svg
 
 from .audit import AuditEvent
 from .rbac import Membership, Permission, Role, User
+from .scope import PROVISIONAL_NOTE, is_provisional
 
 # nav item → (path suffix, label, permission required)
 _NAV: list[tuple[str, str, Permission]] = [
@@ -57,6 +58,7 @@ _SHELL_CSS = f"""<style>
   .rg-nav{{display:flex;gap:2px;flex-wrap:wrap}}
   .rg-nav a{{color:#CBD8CC;text-decoration:none;padding:8px 12px;border-radius:8px;font-size:13px;font-weight:600;letter-spacing:.02em}}
   .rg-nav a.active,.rg-nav a:hover{{background:rgba(255,255,255,.10);color:#fff}}
+  .rg-beta{{color:var(--rg-watch,#e0a600);margin-left:3px;font-size:14px;line-height:0;vertical-align:middle}}
   .rg-who{{display:flex;align-items:center;gap:10px;color:#DDE6DD;font-size:13px}}
   .rg-rolechip{{background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.16);border-radius:999px;
     padding:3px 10px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--rg-sage)}}
@@ -126,15 +128,33 @@ def render_login_html(*, action: str = "/login", sso: bool = False, error: str |
     return _doc("RGNR8 — sign in", body)
 
 
-def _nav_html(tenant: str, permissions: frozenset[Permission], active: str) -> str:
+def _nav_html(
+    tenant: str, permissions: frozenset[Permission], active: str, *, hide_provisional: bool = False,
+) -> str:
     links = []
     for suffix, label, perm in _NAV:
         if perm not in permissions:
             continue
+        provisional = is_provisional(suffix)
+        if provisional and hide_provisional:
+            continue
         href = f"/t/{escape(tenant)}" + (f"/{suffix}" if suffix else "")
         cls = "active" if active == (suffix or "cash") else ""
-        links.append(f'<a class="{cls}" href="{href}">{escape(label)}</a>')
+        # A small dot marks a provisional item so the nav shows, at a glance,
+        # which surfaces are production and which are not.
+        mark = '<span class="rg-beta" title="Provisional — not production-grade">•</span>' if provisional else ""
+        links.append(f'<a class="{cls}" href="{href}">{escape(label)}{mark}</a>')
     return '<nav class="rg-nav">' + "".join(links) + "</nav>"
+
+
+def _provisional_banner() -> str:
+    """The in-app disclosure prepended to every provisional screen's body."""
+    return (
+        '<div class="banner" role="note" style="background:#FBF3E0;border:1px solid #E8D9A8;'
+        'color:#6a5400;border-radius:10px;padding:10px 12px;margin:0 0 14px;font-size:13px">'
+        '<strong style="text-transform:uppercase;letter-spacing:.06em;font-size:11px">Provisional</strong>'
+        f'<span style="margin-left:8px">{escape(PROVISIONAL_NOTE)}</span></div>'
+    )
 
 
 def render_shell(
@@ -146,22 +166,31 @@ def render_shell(
     active: str,
     body_html: str,
     subject: str = "",
+    hide_provisional: bool = False,
 ) -> str:
-    """Wrap a screen body in the role-aware app shell (top bar + nav + identity)."""
+    """Wrap a screen body in the role-aware app shell (top bar + nav + identity).
+
+    Provisional (non-v1) surfaces are badged in the nav and their body is topped
+    with a provisional disclosure, so an owner never mistakes an immature screen
+    for a system of record. `hide_provisional=True` removes them from the nav
+    entirely (a deployment that wants only the v1 surface visible)."""
     role_label = role.value.capitalize() if role is not None else "—"
     bar = (
         '<header class="rg-bar">'
         '<span class="rg-lockup">'
         f"{mark_svg(20, IVORY)}"
         '<span class="rg-wordmark" style="font-size:16px">RGNR<span class="rg-8">8</span></span></span>'
-        f"{_nav_html(tenant, permissions, active)}"
+        f"{_nav_html(tenant, permissions, active, hide_provisional=hide_provisional)}"
         '<span class="rg-who">'
         f'<span>{escape(subject or display_name)}</span>'
         f'<span class="rg-rolechip">{escape(role_label)}</span>'
         '<a href="/logout">Sign out</a></span>'
         "</header>"
     )
-    return _doc(f"RGNR8 — {display_name}", bar + f'<div class="shell">{body_html}</div>')
+    # The Cash home is active == "cash"; the nav suffix for it is "".
+    active_suffix = "" if active == "cash" else active
+    body = (_provisional_banner() + body_html) if is_provisional(active_suffix) else body_html
+    return _doc(f"RGNR8 — {display_name}", bar + f'<div class="shell">{body}</div>')
 
 
 def render_app_home(
