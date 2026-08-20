@@ -5,23 +5,32 @@ _Companion to `RGNR8-hardening-plan.md` (the ticket list) and `RGNR8-review-veri
 ## Phase 0 — one deployable, bootable topology ✅ COMPLETE
 
 All 10 tickets (H0-1…H0-10). Commit `0d9905f`.
-- Image boots: `_pathsetup` globs every package; Dockerfile copies all packages + installs requirements (psycopg, cryptography). `entry:application` imports and `/ready`→200.
-- One composition (`render_app.py` → thin alias of `entry.py`); browser login wired (session_secret + credential AuthService); ledger client wired from env; worker email transport real; onboarding persisted (`SqlOnboardingRegistry`).
-- Ledger service image (`Dockerfile.ledger`) + compose topology `db → ledger(healthy) → web`; ledger migrates on boot.
-- CI: `docker-smoke` job (build + boot + `/ready` + web↔ledger + pg_dump→restore drill); `npm ci`; advisory dependency-audit.
+- Image boots; one env-gated composition; browser login, ledger client, worker email, onboarding persistence wired; ledger service image + compose topology; CI docker-smoke + migration/restore drill.
 
 ## Phase 1 — security & isolation ✅ COMPLETE
 
-All 8 tickets + the CSP follow-up. Commits `0a86deb`, `5a8a23b`, `5e9ce38`, `c99408d`, `b01625e`.
-- **H1-1 (P0)** ledger boundary: per-tenant HMAC tokens (`tenantAuthToken`), auth mandatory (refuse start without token). Client derives the per-tenant token per path.
-- **H1-8 (P0)** Python web-DB RLS made real: per-request `app.tenant_id` GUC (`rgnr8_runtime.apply_tenant`) wired into `SqlTenantStore` + membership; migration v5 relaxes the cross-tenant backend tables (fleet_tenant, briefing_subscription); Postgres-gated isolation test runs in CI (Python job now has a Postgres service).
-- **H1-2** ledger internal-only (no published port). **H1-3** fail-closed secret key (QBO+DB requires `RGNR8_SECRET_KEY`). **H1-4** atomic single-use tokens (`consume()` conditional UPDATE). **H1-5** Secure cookies + **H1-5b** CSP script nonces (no `unsafe-inline`). **H1-6** rate limiter hashes credentials + ignores untrusted XFF. **H1-7** one scoped API-key model (per-key scopes on the web keys; standalone `rgnr8_apikeys` marked superseded).
+All 8 tickets + CSP follow-up. Commits `0a86deb`, `5a8a23b`, `5e9ce38`, `c99408d`, `b01625e`.
+- **H1-1 (P0)** per-tenant HMAC ledger auth, mandatory. **H1-8 (P0)** real web-DB RLS (per-request GUC + migration v5 + CI Postgres isolation test).
+- H1-2 ledger internal-only · H1-3 fail-closed secret key · H1-4 atomic single-use tokens · H1-5 Secure cookies + H1-5b CSP nonces · H1-6 rate-limiter hashing + XFF · H1-7 one scoped API-key model.
 
-Test posture after Phase 1: TS ledger-service 422 · web 583 · ops 118 (+1 PG-gated) · runtime 12 · mcp 6 — all green; mypy `--strict` + ruff + biome + tsc clean. RLS enforcement + Docker boot verified in CI (no Postgres/Docker-registry in the build sandbox).
+## Phase 2 — truth-in-UI & data lifecycle 🟩 7 of 8 COMPLETE
 
-## Next: Phase 2 — truth-in-UI & data lifecycle (not started)
+Commits `a708bbf`, `1cbbf1d`, `d00ae0e`, `d22b696`, `7ddc55b`.
+- **H2-1** publication validity gate: `buildFinancialPackage` refuses to seal books that don't tie out (explicit auditable override only); store rejects invalid content too.
+- **H2-3** honest "erase": relabeled "reset owner-held data"; dropped the GDPR/CCPA claim; response + UI disclose exactly what is retained (ledger, tax IDs, tokens, users, keys, billing, audit).
+- **H2-4** vendor TIN: AES-256-GCM encryption at rest (keyed from `RGNR8_SECRET_KEY`) + last-4 masking on screen.
+- **H2-5** retention exempts control/close evidence (protected prefixes) + a 90-day floor.
+- **H2-6** webhook SSRF: DNS resolution + block private/metadata; no-follow redirects; signing secret encrypted at rest.
+- **H2-7** upload content-scanner seam (quarantine-by-rejection; default allow-all, real AV injected in prod).
+- **H2-8** one-time, replay-proof QBO OAuth state (nonce + injectable store).
 
-Per the plan: H2-1 statement/publication validity gate (block sealing an unbalanced package), H2-2 number-provenance labels (forecast/imported/posted/reconciled/sealed), H2-3 honest "erase" (real cross-store deletion or rename), H2-4 encrypt/mask vendor TIN/EIN, H2-5 retention exempts close/admin evidence, H2-6 webhook SSRF (DNS + redirect hops) + encrypt secrets, H2-7 upload malware scan, H2-8 one-time session-bound QBO OAuth state.
+**Remaining: H2-2** — number-provenance labels in the UI (tag each figure forecast / imported / posted / reconciled / sealed so an owner knows which number is safe to act on). This is a broad, cross-cutting UI feature rather than a security/correctness fix; deferred for focused design.
+
+Test posture after Phase 2 (so far): ledger-service 427 · close 44 · web 591 · ops 118 (+1 PG) · qbo 31 · runtime 12 · mcp 6 — all green; mypy `--strict` + ruff + tsc + biome clean.
+
+## Next
+- Finish **H2-2** (provenance labels).
+- **Phase 3** — accounting controls to system-of-record grade: H3-1 atomic go-live incl. chart persistence · H3-2 cutover locks all prior periods · H3-3 idempotency fingerprint incl. dimensions/memo/provenance · H3-4 accumulated-depreciation cash-flow classification · H3-5 durable close state machine · H3-6 governed schema migrations · H3-7 first-class gross profit · H3-8 FX depth.
 
 ## Push mechanics
 Cloud session holds no GitHub token; pushes go through a refreshed `~/Downloads/rgnr8-repo.bundle` that Jason fetches into his clone and pushes:
