@@ -30,6 +30,11 @@ from rgnr8_web.webhooks_out import HttpResponse
 NOW = 1_760_000_000
 
 
+
+def _resolve(_host: str) -> list[str]:
+    return ["93.184.216.34"]  # public IP; offline tests skip real DNS
+
+
 def _app() -> tuple[WebApp, ApiKeyService]:
     users = InMemoryUserDirectory()
     users.upsert_user(User("owner@acme.com", "owner@acme.com", "Ada"))
@@ -163,7 +168,7 @@ def test_outbound_webhook_signs_and_delivers() -> None:
             sent.append((url, body, headers))
             return HttpResponse(200)
 
-    disp = WebhookDispatcher(store, OkHttp(), clock=lambda: NOW)
+    disp = WebhookDispatcher(store, OkHttp(), clock=lambda: NOW, resolver=_resolve)
     results = disp.dispatch(close_sealed_event("evt_1", "acme", NOW, period="2026-08"))
     assert len(results) == 1 and results[0].ok and results[0].attempts == 1
     url, body, headers = sent[0]
@@ -183,7 +188,7 @@ def test_outbound_webhook_retries_then_reports_failure() -> None:
             attempts["n"] += 1
             return HttpResponse(503)
 
-    disp = WebhookDispatcher(store, FailHttp(), clock=lambda: NOW, max_attempts=3)
+    disp = WebhookDispatcher(store, FailHttp(), clock=lambda: NOW, max_attempts=3, resolver=_resolve)
     r = disp.dispatch(close_sealed_event("e", "acme", NOW, period="2026-08"))[0]
     assert r.ok is False and r.attempts == 3 and attempts["n"] == 3
 
@@ -204,7 +209,7 @@ def _dispatch_one(url: str, *, allow_hosts: list[str] | None = None) -> tuple[An
     store = InMemoryWebhookEndpointStore()
     store.save(WebhookEndpoint("ep1", "acme", url, "whsec", events=("close.sealed",)))
     http = _RecordingHttp()
-    disp = WebhookDispatcher(store, http, clock=lambda: NOW, allow_hosts=allow_hosts)
+    disp = WebhookDispatcher(store, http, clock=lambda: NOW, allow_hosts=allow_hosts, resolver=_resolve)
     res = disp.dispatch(close_sealed_event("evt", "acme", NOW, period="2026-08"))[0]
     return res, http.calls
 
@@ -254,7 +259,7 @@ def test_webhook_dedupe_within_and_across_runs() -> None:
             return [ep, ep]  # same endpoint returned twice in one run
 
     http = _RecordingHttp()
-    disp = WebhookDispatcher(DupStore(), http, clock=lambda: NOW)
+    disp = WebhookDispatcher(DupStore(), http, clock=lambda: NOW, resolver=_resolve)
     evt = close_sealed_event("evt_1", "acme", NOW, period="2026-08")
     first = disp.dispatch(evt)
     assert len(first) == 1 and len(http.calls) == 1     # deduped within the run

@@ -26,6 +26,7 @@ from typing import Callable, Protocol, Sequence
 from .webhooks_out import (
     HttpClient,
     PlatformEvent,
+    Resolver,
     WebhookEndpoint,
     WebhookEndpointStore,
     sign,
@@ -253,6 +254,7 @@ class DurableWebhookDispatcher:
         clock: Callable[[], int] | None = None,
         max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
         allow_hosts: "Sequence[str] | None" = None,
+        resolver: "Resolver | None" = None,
     ) -> None:
         self._outbox = outbox
         self._endpoints = endpoints
@@ -260,6 +262,7 @@ class DurableWebhookDispatcher:
         self._clock = clock if clock is not None else (lambda: int(time.time()))
         self._max = max_attempts
         self._allow_hosts = tuple(allow_hosts) if allow_hosts is not None else None
+        self._resolver = resolver
 
     def enqueue(self, event: PlatformEvent) -> int:
         """Persist one PENDING delivery per subscribed endpoint. Returns how many
@@ -314,7 +317,7 @@ class DurableWebhookDispatcher:
         attempts = d.attempts + 1
         if ep is None:
             return self._fail(d, attempts, 0, "endpoint no longer registered")
-        blocked = validate_target(ep.url, allow_hosts=self._allow_hosts)
+        blocked = validate_target(ep.url, allow_hosts=self._allow_hosts, resolver=self._resolver)
         if blocked is not None:
             return self._fail(d, attempts, 0, blocked)
         headers = {"content-type": "application/json",

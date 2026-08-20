@@ -41,6 +41,10 @@ def _clock(t: list[int]):
     return lambda: t[0]
 
 
+def _resolve(_host: str) -> list[str]:
+    return ["93.184.216.34"]  # a public IP; offline tests skip real DNS
+
+
 def _ep(*, url: str = "https://hooks.example.com/x", **kw: object) -> WebhookEndpoint:
     return WebhookEndpoint(id="ep1", tenant_id="acme", url=url, secret="shh", **kw)  # type: ignore[arg-type]
 
@@ -54,7 +58,7 @@ def test_enqueue_is_idempotent_and_fans_out_per_endpoint() -> None:
     eps.save(_ep())
     box = InMemoryWebhookOutbox()
     t = [1000]
-    disp = DurableWebhookDispatcher(box, eps, _FakeHttp(), clock=_clock(t))
+    disp = DurableWebhookDispatcher(box, eps, _FakeHttp(), resolver=_resolve, clock=_clock(t))
     assert disp.enqueue(_event()) == 1
     # re-enqueueing the same event queues nothing new (durable dedupe)
     assert disp.enqueue(_event()) == 0
@@ -67,7 +71,7 @@ def test_a_successful_delivery_signs_and_marks_delivered() -> None:
     box = InMemoryWebhookOutbox()
     http = _FakeHttp()
     t = [1000]
-    disp = DurableWebhookDispatcher(box, eps, http, clock=_clock(t))
+    disp = DurableWebhookDispatcher(box, eps, http, clock=_clock(t), resolver=_resolve)
     disp.enqueue(_event())
     summary = disp.deliver_due()
     assert (summary.delivered, summary.retried, summary.dead) == (1, 0, 0)
@@ -85,7 +89,7 @@ def test_failure_backs_off_then_eventually_dead_letters_never_dropping() -> None
     box = InMemoryWebhookOutbox()
     http = _FakeHttp()
     t = [1000]
-    disp = DurableWebhookDispatcher(box, eps, http, clock=_clock(t), max_attempts=3)
+    disp = DurableWebhookDispatcher(box, eps, http, clock=_clock(t), resolver=_resolve, max_attempts=3)
     disp.enqueue(_event())
 
     # attempt 1: server 500 → reschedule with backoff, still pending, not dropped
@@ -121,7 +125,7 @@ def test_a_dead_letter_can_be_replayed() -> None:
     box = InMemoryWebhookOutbox()
     http = _FakeHttp()
     t = [1000]
-    disp = DurableWebhookDispatcher(box, eps, http, clock=_clock(t), max_attempts=1)
+    disp = DurableWebhookDispatcher(box, eps, http, clock=_clock(t), resolver=_resolve, max_attempts=1)
     disp.enqueue(_event())
     http.script = [HttpResponse(500, "")]
     disp.deliver_due()
@@ -140,7 +144,7 @@ def test_an_ssrf_or_http_target_is_refused_without_a_request() -> None:
     eps.save(_ep(url="http://169.254.169.254/latest/meta-data"))  # link-local, non-https
     box = InMemoryWebhookOutbox()
     http = _FakeHttp()
-    disp = DurableWebhookDispatcher(box, eps, http, clock=_clock([1000]), max_attempts=2)
+    disp = DurableWebhookDispatcher(box, eps, http, clock=_clock([1000]), resolver=_resolve, max_attempts=2)
     disp.enqueue(_event())
     disp.deliver_due()
     assert http.calls == [], "no request is made to a blocked target"
@@ -156,12 +160,12 @@ def test_delivery_survives_a_restart_via_the_sql_outbox() -> None:
         # instance #1 enqueues, then "crashes" (we drop the dispatcher)
         box1 = SqlWebhookOutbox(conn)
         box1.create_schema()
-        DurableWebhookDispatcher(box1, eps, _FakeHttp(), clock=_clock([1000])).enqueue(_event())
+        DurableWebhookDispatcher(box1, eps, _FakeHttp(), resolver=_resolve, clock=_clock([1000])).enqueue(_event())
 
         # instance #2 boots against the same database and finds the pending work
         box2 = SqlWebhookOutbox(conn)
         http = _FakeHttp()
-        disp2 = DurableWebhookDispatcher(box2, eps, http, clock=_clock([2000]))
+        disp2 = DurableWebhookDispatcher(box2, eps, http, clock=_clock([2000]), resolver=_resolve)
         s = disp2.deliver_due()
         assert s.delivered == 1, "the queued delivery outlived the restart"
         assert box2.get("ep1:e1").status == DELIVERED  # type: ignore[union-attr]

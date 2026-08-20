@@ -63,7 +63,8 @@ def main() -> int:
         UrllibHttpClient,
     )
 
-    endpoints = SqlWebhookEndpointStore(conn, placeholder=ph)
+    from rgnr8_qbo import cipher_from_env
+    endpoints = SqlWebhookEndpointStore(conn, placeholder=ph, cipher=cipher_from_env(os.environ))
     outbox = SqlWebhookOutbox(conn, placeholder=ph)
     dispatcher = DurableWebhookDispatcher(outbox, endpoints, UrllibHttpClient())
     summary = dispatcher.deliver_due(limit=500)
