@@ -470,6 +470,14 @@ def _json(status: int, payload: object) -> Response:
 # resets it on each request; only a real platform user's token can set it.
 _VIEW_AS: contextvars.ContextVar[Role | None] = contextvars.ContextVar("rgnr8_view_as", default=None)
 
+# The scopes of the API key that authenticated this request, or None when the
+# caller is not an API key (or the key inherits its subject's full role). When
+# set, it NARROWS the effective permissions to role-perms ∩ scopes — a leaked
+# integration key can do only what it was scoped for. `handle` resets it per
+# request; `_principal` sets it when a scoped key authenticates.
+_KEY_SCOPES: contextvars.ContextVar[frozenset[str] | None] = contextvars.ContextVar(
+    "rgnr8_key_scopes", default=None)
+
 
 class WebApp:
     def __init__(
@@ -815,9 +823,12 @@ class WebApp:
                 if auth0.lower().startswith("bearer "):
                     presented = auth0[7:].strip()
             if presented.startswith("rgk_"):
-                resolved = self._api_keys.verify(presented)
+                resolved = self._api_keys.resolve(presented)
                 if resolved is not None:
-                    return resolved
+                    tenant_id, subject_id, scopes = resolved
+                    # Narrow this request to the key's scopes (None = full role).
+                    _KEY_SCOPES.set(frozenset(scopes) if scopes is not None else None)
+                    return (tenant_id, subject_id)
         # 1) Authorization header via the configured authenticator
         if self._auth is not None and req.headers.get("authorization"):
             pf = getattr(self._auth, "principal_for", None)
@@ -919,6 +930,7 @@ class WebApp:
     def handle(self, req: Request) -> Response:
         route = req.route
         _VIEW_AS.set(None)  # reset per request; only a platform token re-sets it
+        _KEY_SCOPES.set(None)  # reset per request; only a scoped API key re-sets it
 
         if route == "/health":
             return _json(200, {"status": "ok"})
@@ -1710,6 +1722,12 @@ class WebApp:
             subject, wanted, permission, view_as=_VIEW_AS.get()
         ):
             return _json(403, {"error": "insufficient role", "need": permission.value})
+        # Per-key scope gate: a scoped API key may exercise only its scopes, even
+        # if the subject's role would allow more. Independent of RBAC above, so it
+        # also constrains the no-directory (dev) path.
+        key_scopes = _KEY_SCOPES.get()
+        if key_scopes is not None and permission.value not in key_scopes:
+            return _json(403, {"error": "api key scope insufficient", "need": permission.value})
         return fn(self._tenants[wanted])
 
     # --- RBAC handlers -------------------------------------------------------
@@ -1794,12 +1812,16 @@ class WebApp:
     def _perms_role(self, subject: str, tenant: str) -> tuple[frozenset[Permission], Role | None]:
         if self._policy is not None:
             va = _VIEW_AS.get()
-            return (
-                self._policy.permissions(subject, tenant, view_as=va),
-                self._policy.role_in(subject, tenant, view_as=va),
-            )
-        # no RBAC directory → tenant-scoped access = full owner-equivalent view
-        return frozenset(Permission), None
+            perms = self._policy.permissions(subject, tenant, view_as=va)
+            role = self._policy.role_in(subject, tenant, view_as=va)
+        else:
+            # no RBAC directory → tenant-scoped access = full owner-equivalent view
+            perms, role = frozenset(Permission), None
+        # A scoped API key narrows what this request can do (and see) to its scopes.
+        key_scopes = _KEY_SCOPES.get()
+        if key_scopes is not None:
+            perms = frozenset(p for p in perms if p.value in key_scopes)
+        return perms, role
 
 
 

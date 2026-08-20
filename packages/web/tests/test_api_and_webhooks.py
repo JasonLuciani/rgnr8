@@ -261,3 +261,44 @@ def test_webhook_dedupe_within_and_across_runs() -> None:
     # re-dispatching the same event delivers nothing new (idempotent)
     second = disp.dispatch(evt)
     assert second == [] and len(http.calls) == 1
+
+
+# --- H1-7: per-key scopes narrow an API key below its subject's role ----------
+
+def test_scoped_key_is_limited_to_its_scopes_even_for_an_owner() -> None:
+    app, keys = _app()
+    # An owner-subject key scoped to view_cash only.
+    _rec, k = keys.issue("acme", "owner@acme.com", name="readonly", scopes=["view_cash"])
+    # in-scope route works
+    assert app.handle(Request("GET", "/api/acme/today", {"x-api-key": k})).status == 200
+    # out-of-scope route is refused with a scope error, though the OWNER role allows it
+    r = app.handle(Request("GET", "/api/acme/transactions", {"x-api-key": k}))
+    assert r.status == 403
+    assert "scope" in json.loads(r.body)["error"]
+
+
+def test_unscoped_key_still_inherits_the_full_role() -> None:
+    app, keys = _app()
+    _rec, k = keys.issue("acme", "owner@acme.com")   # scopes=None → full role
+    assert app.handle(Request("GET", "/api/acme/today", {"x-api-key": k})).status == 200
+    assert app.handle(Request("GET", "/api/acme/transactions", {"x-api-key": k})).status == 200
+
+
+def test_resolve_returns_scopes_and_verify_stays_two_tuple() -> None:
+    keys = ApiKeyService(InMemoryApiKeyStore(), clock=lambda: NOW, secret_factory=lambda: "s3cret")
+    _rec, k = keys.issue("acme", "owner@acme.com", scopes=["view_cash", "view_transactions"])
+    assert keys.verify(k) == ("acme", "owner@acme.com")            # back-compat shape
+    tenant, subject, scopes = keys.resolve(k)                       # type: ignore[misc]
+    assert tenant == "acme" and subject == "owner@acme.com"
+    assert scopes == ("view_cash", "view_transactions")
+
+
+def test_sql_store_round_trips_scopes() -> None:
+    conn = sqlite3.connect(":memory:")
+    store = SqlApiKeyStore(cast("Any", conn), placeholder="?")
+    store.create_schema()
+    svc = ApiKeyService(store, clock=lambda: NOW, secret_factory=lambda: "abc")
+    _rec, k = svc.issue("acme", "owner@acme.com", name="ci", scopes=["view_cash"])
+    # a fresh service over the same DB resolves the persisted scopes
+    svc2 = ApiKeyService(SqlApiKeyStore(cast("Any", conn), placeholder="?"))
+    assert svc2.resolve(k) == ("acme", "owner@acme.com", ("view_cash",))

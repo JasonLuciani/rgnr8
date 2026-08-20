@@ -19,7 +19,7 @@ import hashlib
 import hmac
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -40,6 +40,11 @@ class ApiKey:
     created_at: int = 0
     expires_at: int = 0  # epoch seconds; 0 means the key never expires
     revoked: bool = False
+    # Per-key scopes: a subset of Permission values this key may exercise. None
+    # means "inherit the subject's full role" (back-compat); a set NARROWS the
+    # effective permission to role-perms ∩ scopes, so a leaked integration key
+    # can't do more than the one job it was minted for.
+    scopes: tuple[str, ...] | None = None
 
 
 class ApiKeyStore(Protocol):
@@ -79,22 +84,24 @@ class ApiKeyService:
         self._secret = secret_factory if secret_factory is not None else (lambda: secrets.token_urlsafe(32))
         self._ttl_days = ttl_days
 
-    def issue(self, tenant_id: str, subject: str, name: str = "") -> tuple[ApiKey, str]:
+    def issue(self, tenant_id: str, subject: str, name: str = "",
+              *, scopes: "Sequence[str] | None" = None) -> tuple[ApiKey, str]:
         """Create a key; returns (record, plaintext). The plaintext is shown ONCE.
         With a non-zero ``ttl_days`` the key expires ``ttl_days`` after issue;
-        the default (0) issues a non-expiring key."""
+        the default (0) issues a non-expiring key. ``scopes`` (Permission values)
+        NARROWS the key to a subset of the subject's role; None inherits the full
+        role."""
         key_id = secrets.token_hex(6)
         raw = self._secret()
         now = self._clock()
         expires_at = now + self._ttl_days * 86_400 if self._ttl_days > 0 else 0
         key = ApiKey(key_id=key_id, secret_hash=_hash(raw), tenant_id=tenant_id,
-                     subject=subject, name=name, created_at=now, expires_at=expires_at)
+                     subject=subject, name=name, created_at=now, expires_at=expires_at,
+                     scopes=tuple(scopes) if scopes is not None else None)
         self._store.save(key)
         return key, f"{_PREFIX}_{key_id}_{raw}"
 
-    def verify(self, presented: str) -> tuple[str, str] | None:
-        """Verify a presented key → (tenant, subject), or None. Constant-time on the
-        secret; rejects revoked and expired keys."""
+    def _resolve_record(self, presented: str) -> ApiKey | None:
         parts = presented.split("_", 2)
         if len(parts) != 3 or parts[0] != _PREFIX:
             return None
@@ -108,7 +115,19 @@ class ApiKeyService:
         # perturb the constant-time compare above. 0 means never-expiring.
         if rec.expires_at != 0 and self._clock() >= rec.expires_at:
             return None
-        return (rec.tenant_id, rec.subject)
+        return rec
+
+    def verify(self, presented: str) -> tuple[str, str] | None:
+        """Verify a presented key → (tenant, subject), or None. Constant-time on the
+        secret; rejects revoked and expired keys."""
+        rec = self._resolve_record(presented)
+        return (rec.tenant_id, rec.subject) if rec is not None else None
+
+    def resolve(self, presented: str) -> "tuple[str, str, tuple[str, ...] | None] | None":
+        """Like `verify`, but also returns the key's scopes → (tenant, subject,
+        scopes). `scopes` is None when the key inherits the subject's full role."""
+        rec = self._resolve_record(presented)
+        return (rec.tenant_id, rec.subject, rec.scopes) if rec is not None else None
 
     def revoke(self, key_id: str) -> bool:
         rec = self._store.get(key_id)
@@ -148,21 +167,29 @@ class SqlApiKeyStore:
                 f"CREATE TABLE IF NOT EXISTS {self._t} "
                 "(key_id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL, tenant_id TEXT NOT NULL, "
                 "subject TEXT NOT NULL, name TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL DEFAULT 0, "
-                "expires_at INTEGER NOT NULL DEFAULT 0, revoked INTEGER NOT NULL DEFAULT 0)")
+                "expires_at INTEGER NOT NULL DEFAULT 0, revoked INTEGER NOT NULL DEFAULT 0, "
+                "scopes TEXT NOT NULL DEFAULT '')")
+            # Upgrade path for a table created before per-key scopes existed.
+            try:
+                cur.execute(f"ALTER TABLE {self._t} ADD COLUMN scopes TEXT NOT NULL DEFAULT ''")
+            except Exception:  # noqa: BLE001 - column already exists → nothing to do
+                pass
         finally:
             cur.close()
         self._conn.commit()
 
     def save(self, key: ApiKey) -> None:
         p = self._ph
+        # "" encodes "inherit the full role" (scopes=None); a CSV encodes a narrowed set.
+        scopes = "" if key.scopes is None else ",".join(key.scopes)
         cur = self._conn.cursor()
         try:
             cur.execute(
-                f"INSERT INTO {self._t} (key_id, secret_hash, tenant_id, subject, name, created_at, expires_at, revoked) "
-                f"VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}) "
-                "ON CONFLICT (key_id) DO UPDATE SET revoked=excluded.revoked, name=excluded.name",
+                f"INSERT INTO {self._t} (key_id, secret_hash, tenant_id, subject, name, created_at, expires_at, revoked, scopes) "
+                f"VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}) "
+                "ON CONFLICT (key_id) DO UPDATE SET revoked=excluded.revoked, name=excluded.name, scopes=excluded.scopes",
                 (key.key_id, key.secret_hash, key.tenant_id, key.subject, key.name,
-                 key.created_at, key.expires_at, 1 if key.revoked else 0))
+                 key.created_at, key.expires_at, 1 if key.revoked else 0, scopes))
         finally:
             cur.close()
         self._conn.commit()
@@ -176,17 +203,19 @@ class SqlApiKeyStore:
             cur.close()
 
     def _to_key(self, r: tuple[object, ...]) -> ApiKey:
+        raw_scopes = str(r[8]) if len(r) > 8 and r[8] is not None else ""
+        scopes = tuple(raw_scopes.split(",")) if raw_scopes else None
         return ApiKey(str(r[0]), str(r[1]), str(r[2]), str(r[3]), str(r[4]),
-                      int(str(r[5])), int(str(r[6])), bool(int(str(r[7]))))
+                      int(str(r[5])), int(str(r[6])), bool(int(str(r[7]))), scopes)
+
+    _COLS = ("key_id, secret_hash, tenant_id, subject, name, created_at, expires_at, revoked, scopes")
 
     def get(self, key_id: str) -> ApiKey | None:
         rows = self._rows(
-            f"SELECT key_id, secret_hash, tenant_id, subject, name, created_at, expires_at, revoked "
-            f"FROM {self._t} WHERE key_id={self._ph}", (key_id,))
+            f"SELECT {self._COLS} FROM {self._t} WHERE key_id={self._ph}", (key_id,))
         return self._to_key(rows[0]) if rows else None
 
     def list_for_tenant(self, tenant_id: str) -> list[ApiKey]:
         rows = self._rows(
-            f"SELECT key_id, secret_hash, tenant_id, subject, name, created_at, expires_at, revoked "
-            f"FROM {self._t} WHERE tenant_id={self._ph} ORDER BY created_at", (tenant_id,))
+            f"SELECT {self._COLS} FROM {self._t} WHERE tenant_id={self._ph} ORDER BY created_at", (tenant_id,))
         return [self._to_key(r) for r in rows]
