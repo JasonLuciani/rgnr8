@@ -17,6 +17,7 @@ import {
   type PostCommand,
   type Provenance,
 } from "@rgnr8/ledger-kernel";
+import { AccountSubtype } from "@rgnr8/ledger-kernel";
 import {
   assertBalanceSheetBalances,
   assertCashFlowReconciles,
@@ -24,6 +25,7 @@ import {
   cashFlow,
   fromKernelTrialBalance,
   incomeStatement,
+  subtypeCashFlowClassifier,
 } from "../src/index.js";
 
 // --- fixture chart of accounts ----------------------------------------------
@@ -163,6 +165,60 @@ test("folding in beginning retained earnings keeps a mid-period sheet balanced",
   // total equity carries booked equity + prior retained + current period NI
   assert.equal(bs.equity.equals(
     balanceSheet(endTb, cumulativeNetIncome).equity), true);
+});
+
+test("depreciation is an operating add-back, not an investing flow (A5)", async () => {
+  // A tiny chart with a proper accumulated-depreciation contra-asset.
+  const depCoa = new ChartOfAccounts([
+    acct("cash", "1000", "Cash", AccountType.ASSET),
+    { ...acct("equip", "1500", "Equipment", AccountType.ASSET), subtype: AccountSubtype.FIXED_ASSET },
+    {
+      ...acct("accumdep", "1510", "Accumulated Depreciation", AccountType.ASSET),
+      subtype: AccountSubtype.ACCUMULATED_DEPRECIATION,
+    },
+    acct("capital", "3000", "Owner Capital", AccountType.EQUITY),
+    acct("depexp", "6900", "Depreciation Expense", AccountType.EXPENSE),
+  ]);
+  const run = async (entries: readonly { key: string; lines: JournalLineInput[] }[]) => {
+    const store = new InMemoryLedgerStore();
+    const engine = new PostingEngine(depCoa, store);
+    for (const e of entries) {
+      await engine.post(
+        {
+          tenantId: tenant, idempotencyKey: asIdempotencyKey(e.key), periodKey: period,
+          currency: USD, entryDate: "2026-08-15", lines: e.lines, provenance: prov,
+        },
+        { postedAt: "2026-08-15T00:00:00Z" },
+      );
+    }
+    return computeTrialBalance(store, tenant, depCoa, USD);
+  };
+
+  // Opening: $1,000 cash + $1,000 equipment already on the books.
+  const open = [
+    { key: "d0", lines: [dr("cash", 100000n), cr("capital", 100000n)] },
+    { key: "d1", lines: [dr("equip", 100000n), cr("cash", 100000n)] },
+  ];
+  // Period: only depreciation — a pure non-cash charge (Dr Dep Exp / Cr Accum Dep).
+  const depreciation = [{ key: "d2", lines: [dr("depexp", 25000n), cr("accumdep", 25000n)] }];
+
+  const tbStart = fromKernelTrialBalance(await run(open));
+  const tbEnd = fromKernelTrialBalance(await run([...open, ...depreciation]));
+  const netIncome = incomeStatement(tbEnd).netIncome; // -250 (the depreciation expense)
+
+  for (const [label, classifier] of [
+    ["default (name-based)", undefined],
+    ["subtype-driven", subtypeCashFlowClassifier(depCoa)],
+  ] as const) {
+    const cf = cashFlow(tbStart, tbEnd, netIncome, classifier);
+    // No cash moved this period, so operating must net to zero: the -250 net
+    // income is exactly offset by the +250 depreciation add-back.
+    assert.equal(cf.operating.toDecimalString(), "0.00", `operating (${label})`);
+    // Investing must NOT absorb the depreciation — no capex happened.
+    assert.equal(cf.investing.toDecimalString(), "0.00", `investing (${label})`);
+    assert.equal(cf.netChange.toDecimalString(), "0.00", `netChange (${label})`);
+    assert.equal(cf.reconciled, true, `reconciled (${label})`);
+  }
 });
 
 test("cash flow net change equals the cash-account delta between two periods", async () => {

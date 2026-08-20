@@ -51,6 +51,9 @@ export enum AccountSubtype {
   INVENTORY = "INVENTORY",
   OTHER_CURRENT_ASSET = "OTHER_CURRENT_ASSET",
   FIXED_ASSET = "FIXED_ASSET",
+  /** Contra-asset: accumulated depreciation. Its movement is a non-cash
+   * depreciation add-back (operating), NOT a capex flow (investing). */
+  ACCUMULATED_DEPRECIATION = "ACCUMULATED_DEPRECIATION",
   OTHER_ASSET = "OTHER_ASSET",
   // LIABILITY
   ACCOUNTS_PAYABLE = "ACCOUNTS_PAYABLE",
@@ -77,6 +80,7 @@ const SUBTYPE_TYPE: Readonly<Record<AccountSubtype, AccountType>> = {
   [AccountSubtype.INVENTORY]: AccountType.ASSET,
   [AccountSubtype.OTHER_CURRENT_ASSET]: AccountType.ASSET,
   [AccountSubtype.FIXED_ASSET]: AccountType.ASSET,
+  [AccountSubtype.ACCUMULATED_DEPRECIATION]: AccountType.ASSET,
   [AccountSubtype.OTHER_ASSET]: AccountType.ASSET,
   [AccountSubtype.ACCOUNTS_PAYABLE]: AccountType.LIABILITY,
   [AccountSubtype.CREDIT_CARD]: AccountType.LIABILITY,

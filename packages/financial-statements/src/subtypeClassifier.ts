@@ -18,6 +18,12 @@ import type { TrialBalanceEntry } from "./accounts.js";
 
 function sectionForSubtype(subtype: AccountSubtype): CashFlowSection {
   switch (subtype) {
+    // Accumulated depreciation is a contra-asset: its period movement IS the
+    // depreciation expense, a non-cash charge already inside net income. It must
+    // land in operating as the add-back — not investing, which is reserved for
+    // actual capex (the gross fixed-asset accounts).
+    case AccountSubtype.ACCUMULATED_DEPRECIATION:
+      return "operating";
     case AccountSubtype.FIXED_ASSET:
     case AccountSubtype.OTHER_ASSET:
       return "investing";

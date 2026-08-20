@@ -183,14 +183,22 @@ export interface CashFlowClassifier {
 /**
  * Sensible defaults over a standard chart:
  *  - cash: asset accounts coded 10xx,
+ *  - operating: accumulated depreciation (a contra-asset whose movement is the
+ *    non-cash depreciation add-back) — detected by name so it isn't swept into
+ *    investing with the gross PP&E accounts,
  *  - investing: long-lived asset accounts coded 15xx–19xx (PP&E),
  *  - financing: long-term liabilities coded 25xx–29xx (debt) and all equity,
  *  - everything else (AR, AP, other working capital): operating.
  */
+const ACCUMULATED_DEPRECIATION_NAME = /accumulated deprec|accum\.?\s*deprec/i;
+
 export const defaultCashFlowClassifier: CashFlowClassifier = {
   isCash: (e) => e.accountClass === "asset" && /^10/.test(e.code),
   section: (e) => {
     if (e.accountClass === "equity") return "financing";
+    // Accumulated depreciation is a contra-asset: keep its depreciation add-back
+    // in operating even though it sits in the PP&E code range.
+    if (e.accountClass === "asset" && ACCUMULATED_DEPRECIATION_NAME.test(e.name)) return "operating";
     if (e.accountClass === "asset" && /^1[5-9]/.test(e.code)) return "investing";
     if (e.accountClass === "liability" && /^2[5-9]/.test(e.code)) return "financing";
     return "operating";

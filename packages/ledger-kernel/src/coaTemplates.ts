@@ -57,7 +57,7 @@ const BASE: readonly TemplateLine[] = [
   { code: "1200", name: "Accounts Receivable", subtype: S.ACCOUNTS_RECEIVABLE },
   { code: "1400", name: "Prepaid Expenses", subtype: S.OTHER_CURRENT_ASSET },
   { code: "1500", name: "Equipment", subtype: S.FIXED_ASSET },
-  { code: "1510", name: "Accumulated Depreciation", subtype: S.FIXED_ASSET },
+  { code: "1510", name: "Accumulated Depreciation", subtype: S.ACCUMULATED_DEPRECIATION },
   // Liabilities (2xxx)
   { code: "2000", name: "Accounts Payable", subtype: S.ACCOUNTS_PAYABLE },
   { code: "2100", name: "Credit Card", subtype: S.CREDIT_CARD },
