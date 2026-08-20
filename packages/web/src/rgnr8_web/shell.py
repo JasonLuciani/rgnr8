@@ -11,6 +11,8 @@ owner lands on cash by default.
 
 from __future__ import annotations
 
+from .csp import script_open
+
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from html import escape
@@ -244,7 +246,7 @@ def render_users_admin(tenant: str, members: Sequence[tuple[Membership, User | N
       <button id="invBtn" class="btn" onclick="invite()">Send invite</button></div>
       <p class="muted" style="font-size:12px;margin-top:10px">Owner &amp; Controller can publish the close · Bookkeeper reconciles but can't seal · Accountant is your external CPA · Viewer is read-only.</p>
     </div>
-    <script>
+    {script_open()}
       const T={tenant!r};
       function rgErr(m){{ var b=document.getElementById('rgErr'); if(b){{ b.textContent=m||''; b.style.display=m?'block':'none'; }} }}
       function rgBusy(el,on,label){{ if(!el)return; el.disabled=on; if(el.tagName==='BUTTON'){{ if(on){{ el.dataset.rgPrev=el.dataset.rgPrev||el.textContent; el.textContent=label||'Working…'; }} else if(el.dataset.rgPrev!=null){{ el.textContent=el.dataset.rgPrev; }} }} }}

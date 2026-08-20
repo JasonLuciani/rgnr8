@@ -14,6 +14,8 @@ Money is signed: positive = money **in** (a deposit/received), negative = money
 
 from __future__ import annotations
 
+from .csp import script_open
+
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from html import escape
@@ -165,7 +167,7 @@ def render_transactions(
     )
     err_block = ('<div id="rgErr" class="banner warn" role="alert" style="display:none;margin:12px 0"></div>'
                  if can_categorize else "")
-    js = f"""<script>
+    js = f"""{script_open()}
       const T={tenant!r};
       function rgErr(m){{ var b=document.getElementById('rgErr'); if(b){{ b.textContent=m||''; b.style.display=m?'block':'none'; }} }}
       function rgBusy(el,on,label){{ if(!el)return; el.disabled=on; if(el.tagName==='BUTTON'){{ if(on){{ el.dataset.rgPrev=el.dataset.rgPrev||el.textContent; el.textContent=label||'Saving…'; }} else if(el.dataset.rgPrev!=null){{ el.textContent=el.dataset.rgPrev; }} }} }}

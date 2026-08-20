@@ -37,6 +37,7 @@ from rgnr8_obs import (
 )
 
 from .app import Request, Response
+from .csp import csp_value
 
 __all__ = [
     "RateLimiter",
@@ -165,24 +166,27 @@ class RateLimiter:
 
 # --- security headers -------------------------------------------------------
 
-# The app is self-contained and serves its own inline styles/scripts, so the CSP
-# allows 'self' plus inline style/script but nothing remote. X-Content-Type-Options
-# is intentionally omitted here — Response.headers already sets it.
-SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
+# Static hardening headers (X-Content-Type-Options is omitted here — Response.headers
+# already sets it). The CSP is built per request so it can carry this request's
+# script nonce instead of 'unsafe-inline' (see csp.py).
+_BASE_HEADERS: tuple[tuple[str, str], ...] = (
     ("X-Frame-Options", "DENY"),
     ("Referrer-Policy", "no-referrer"),
-    (
-        "Content-Security-Policy",
-        "default-src 'self'; style-src 'self' 'unsafe-inline'; "
-        "script-src 'self' 'unsafe-inline'",
-    ),
     ("Strict-Transport-Security", "max-age=63072000; includeSubDomains"),
+)
+
+# Back-compat export: the base headers plus a no-nonce CSP (scripts limited to
+# 'self'). The live per-request policy comes from `security_headers()`.
+SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
+    *_BASE_HEADERS,
+    ("Content-Security-Policy", csp_value()),
 )
 
 
 def security_headers() -> tuple[tuple[str, str], ...]:
-    """The standard hardening headers to merge onto responses."""
-    return SECURITY_HEADERS
+    """The hardening headers to merge onto a response, with this request's CSP
+    (carrying its script nonce)."""
+    return (*_BASE_HEADERS, ("Content-Security-Policy", csp_value()))
 
 
 def with_security_headers(resp: Response) -> Response:
@@ -194,7 +198,7 @@ def with_security_headers(resp: Response) -> Response:
     """
     present = {name.lower() for name in resp.headers}
     additions = tuple(
-        (name, value) for name, value in SECURITY_HEADERS if name.lower() not in present
+        (name, value) for name, value in security_headers() if name.lower() not in present
     )
     if not additions:
         return resp

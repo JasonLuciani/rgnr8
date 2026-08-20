@@ -301,3 +301,28 @@ def test_wsgi_body_cap_still_enforced_when_hardened() -> None:
     assert status.startswith("413")
     assert json.loads(body)["error"] == "request body too large"
     assert headers["X-Frame-Options"] == "DENY"
+
+
+# --- H1-5b: CSP script nonce replaces 'unsafe-inline' ------------------------
+
+def test_csp_nonce_binds_script_tag_and_header_no_unsafe_inline() -> None:
+    from rgnr8_web import Response, with_security_headers
+    from rgnr8_web.csp import csp_value, new_nonce, script_open
+
+    n = new_nonce()
+    # the inline-script opener carries this request's nonce
+    assert script_open() == f'<script nonce="{n}">'
+    # the policy allows exactly that nonce and does NOT allow inline scripts
+    csp = csp_value()
+    assert f"script-src 'self' 'nonce-{n}'" in csp
+    script_part = csp.split("script-src", 1)[1]
+    assert "unsafe-inline" not in script_part
+    # the header merged onto a response reflects the same nonce
+    resp = with_security_headers(Response(200, "<html></html>"))
+    hdr = dict(resp.extra_headers)["Content-Security-Policy"]
+    assert f"'nonce-{n}'" in hdr
+
+
+def test_each_request_gets_a_fresh_nonce() -> None:
+    from rgnr8_web.csp import new_nonce
+    assert new_nonce() != new_nonce()

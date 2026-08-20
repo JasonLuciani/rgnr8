@@ -92,6 +92,7 @@ from .arap_screens import render_documents
 from .attachment_screens import render_attachments, render_attachments_unavailable
 from .audit import AuditSink
 from .auth import Authenticator, JwtError, StaticTokenAuthenticator, sign_jwt, verify_jwt
+from .csp import new_nonce as _csp_new_nonce
 from .books_screens import (
     render_books_home,
     render_books_statements,
@@ -931,6 +932,7 @@ class WebApp:
         route = req.route
         _VIEW_AS.set(None)  # reset per request; only a platform token re-sets it
         _KEY_SCOPES.set(None)  # reset per request; only a scoped API key re-sets it
+        _csp_new_nonce()  # fresh CSP script nonce for this request's inline scripts
 
         if route == "/health":
             return _json(200, {"status": "ok"})

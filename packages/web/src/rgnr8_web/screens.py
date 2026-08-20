@@ -13,6 +13,8 @@ same audit the other renderers pass.
 
 from __future__ import annotations
 
+from .csp import script_open
+
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -169,7 +171,7 @@ def render_briefing_body(forecast: ForecastResult, display_name: str) -> str:
     <div class="card"><div class="row">{chips}</div>
       <div id="answer" class="banner" style="display:none;margin-top:14px;background:var(--rg-ivory);color:var(--rg-ink);border-color:var(--rg-line)">
         <div id="aq" class="muted" style="font-size:12px"></div><div id="at" style="font-weight:400"></div></div></div>
-    <script>
+    {script_open()}
       const A={answers_json};
       function ans(k){{const a=A[k];const box=document.getElementById('answer');
         document.getElementById('aq').textContent=a.q;document.getElementById('at').textContent=a.t;
@@ -270,7 +272,7 @@ def render_close_body(board: CloseBoard, tenant: str, *, can_manage: bool, can_p
             seal = '<span class="muted">Finish every task to seal the period.</span>'
     err_block = ('<div id="rgErr" class="banner warn" role="alert" style="display:none;margin:12px 0"></div>'
                  if (can_manage or can_publish) else "")
-    js = f"""<script>
+    js = f"""{script_open()}
       const T={tenant!r};
       function rgErr(m){{ var b=document.getElementById('rgErr'); if(b){{ b.textContent=m||''; b.style.display=m?'block':'none'; }} }}
       function rgBusy(el,on,label){{ if(!el)return; el.disabled=on; if(el.tagName==='BUTTON'){{ if(on){{ el.dataset.rgPrev=el.dataset.rgPrev||el.textContent; el.textContent=label||'Working…'; }} else if(el.dataset.rgPrev!=null){{ el.textContent=el.dataset.rgPrev; }} }} }}
@@ -579,7 +581,7 @@ def render_scenario_body(tenant: str, display_name: str) -> str:
     <div id="rgErr" class="banner warn" role="alert" style="display:none">Something went wrong.</div>
     <div id="scnResult" style="display:none"></div>
     <div class="tiles" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">{cards}</div>
-    <script>
+    {script_open()}
       const T={tenant!r};
       function rgErr(m){{ var b=document.getElementById('rgErr'); if(b){{ b.textContent=m||''; b.style.display=m?'block':'none'; }} }}
       function fmtWeek(w){{ return (w===null||w===undefined) ? 'no breach' : ('week '+w); }}
