@@ -5131,14 +5131,14 @@ class WebApp:
 
         if self._ledger is not None:
             frm, to = _month_bounds(board.period)
-            # The board's own tasks become the gate's control results, so an
-            # incomplete/failed board blocks the seal at the authoritative layer.
-            controls = [{"name": tk.label, "balanced": tk.status == "done"}
-                        for tk in board.tasks]
+            # The board's completeness is a local UX pre-gate; the AUTHORITATIVE
+            # gate lives in the ledger, which computes the real controls itself
+            # (bank reconciled-through dates, AR/AP subledger ties, trial balance
+            # in balance) — not these self-reported task flags.
             try:
                 res = self._ledger.publish_close(
                     t.tenant_id, frm, to, published_by=subject or "owner",
-                    period=board.period, controls=controls,
+                    period=board.period,
                     # Separation of duties: whoever prepared the close (advanced
                     # the tasks) may not also publish it.
                     prepared_by=board.prepared_by,
