@@ -13,7 +13,8 @@ from __future__ import annotations
 import secrets
 import sys
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from typing import Any
 
 from rgnr8_obs import (
@@ -64,6 +65,47 @@ from .config import ConfigError, Settings
 from .fleet import Fleet
 from .provisioning import Provisioning, build_provisioning
 from .store import SqlFleetStore
+
+
+# Arbitrary but stable 64-bit key; only this bootstrap uses it.
+_DDL_BOOTSTRAP_LOCK_KEY = 8273419006512337201
+
+
+@contextmanager
+def _ddl_bootstrap_lock(conn: Any, placeholder: str) -> Iterator[None]:
+    """Serialize boot-time DDL across processes.
+
+    `CREATE TABLE IF NOT EXISTS` is NOT concurrency-safe on Postgres: two sessions
+    issuing it at the same instant race inside the system catalogs and the loser
+    dies with `duplicate key value violates unique constraint
+    "pg_type_typname_nsp_index"`. gunicorn boots several workers which each build
+    the application at import time, so on a cold database that race is the NORMAL
+    path, not an edge case -- every worker died and the container never reached
+    /ready.
+
+    A session-level advisory lock makes the bootstrap single-file, and committing
+    before release means the next worker in finds the table already there. sqlite
+    has no advisory locks and is single-writer anyway, so it is skipped
+    (``placeholder`` is this codebase's dialect signal: "%s" psycopg, "?" sqlite).
+    """
+    if placeholder != "%s":
+        yield
+        return
+
+    def _call(sql: str) -> None:
+        cur = conn.cursor()
+        try:
+            cur.execute(sql)
+            cur.fetchall()
+        finally:
+            cur.close()
+
+    _call(f"SELECT pg_advisory_lock({_DDL_BOOTSTRAP_LOCK_KEY})")
+    try:
+        yield
+        conn.commit()  # publish the DDL before the gate opens for the next worker
+    finally:
+        _call(f"SELECT pg_advisory_unlock({_DDL_BOOTSTRAP_LOCK_KEY})")
 
 
 def build_authenticator(settings: Settings, *, clock: Callable[[], int] | None = None) -> Any:
@@ -125,7 +167,8 @@ def build_web_app(
             if conn is not None else InMemoryCredentialStore()
         )
         if isinstance(credentials, SqlCredentialStore):
-            credentials.create_schema()
+            with _ddl_bootstrap_lock(conn, settings.placeholder):
+                credentials.create_schema()
         auth_service = AuthService(credentials=credentials)
 
     # --- QuickBooks Online connect (optional) ----------------------------
