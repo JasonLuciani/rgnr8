@@ -141,6 +141,12 @@ PYTHON_MIGRATIONS: tuple[Migration, ...] = (
 )
 
 
+_MIGRATIONS_TABLE_DDL = (
+    "CREATE TABLE schema_migrations_py "
+    "(version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)"
+)
+
+
 def _ensure_migrations_table(conn: DbApiConnection) -> None:
     cur = conn.cursor()
     try:
@@ -150,10 +156,22 @@ def _ensure_migrations_table(conn: DbApiConnection) -> None:
             return
         except Exception:  # noqa: BLE001 - table absent → create it
             pass
-        cur.execute(
-            "CREATE TABLE schema_migrations_py "
-            "(version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)"
-        )
+    finally:
+        cur.close()
+
+    # Postgres aborts the WHOLE transaction as soon as any statement fails, so once
+    # the probe above 404s every later statement raises InFailedSqlTransaction --
+    # including the CREATE below. Catching the Python exception is not enough; the
+    # server-side transaction has to be discarded. sqlite has no such behaviour, so
+    # this is a harmless no-op there.
+    #
+    # This is safe unconditionally: _ensure_migrations_table runs before
+    # run_migrations() has applied anything, so there is never real work to lose.
+    conn.rollback()
+
+    cur = conn.cursor()
+    try:
+        cur.execute(_MIGRATIONS_TABLE_DDL)
     finally:
         cur.close()
     conn.commit()
