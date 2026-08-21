@@ -14,6 +14,13 @@ from collections.abc import Mapping
 
 from .attachment_screens import attachment_link
 from .books_screens import _card, _esc, _minor, _num, _seq, money
+from .provenance_labels import Provenance
+from .provenance_labels import badge as prov_badge
+from .provenance_labels import legend as prov_legend
+
+# AR/AP figures: an open-item is a POSTED journal entry; once a payment is matched
+# to the bank it is RECONCILED. Nothing here is a forecast.
+_ARAP_PROV = (Provenance.IMPORTED, Provenance.POSTED, Provenance.RECONCILED)
 
 
 def _banner(kind: str, text: str) -> str:
@@ -210,7 +217,8 @@ def render_documents(
         + "</p>"
     )
 
-    out = head + summary + _card(title, table)
+    out = head + summary + prov_legend(_ARAP_PROV) + _card(
+        title, table, actions=prov_badge(Provenance.POSTED))
     if can_post:
         out += _render_new_form(tenant, kind, parties, today)
     return out

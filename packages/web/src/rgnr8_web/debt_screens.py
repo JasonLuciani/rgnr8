@@ -11,6 +11,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from .books_screens import _banner, _card, _esc, _seq, money
+from .provenance_labels import Provenance
+from .provenance_labels import badge as prov_badge
+from .provenance_labels import legend as prov_legend
+
+# Loan balances post to the general ledger (POSTED) and reconcile against the
+# lender's statement (RECONCILED).
+_DEBT_PROV = (Provenance.POSTED, Provenance.RECONCILED)
 
 _KINDS = [
     ("TERM", "Term loan"),
@@ -101,7 +108,8 @@ def render_debt(
         + "</tbody></table>"
     )
 
-    sections = [_banners(done, error), _card("What you owe", tiles + table)]
+    sections = [_banners(done, error), prov_legend(_DEBT_PROV),
+                _card("What you owe", tiles + table, actions=prov_badge(Provenance.POSTED))]
 
     if can_write:
         sections.append(_card("Add a loan", _add_loan_form(tenant)))

@@ -17,6 +17,15 @@ from collections.abc import Mapping
 
 from .books_screens import _card, _esc, _minor, _num, _seq, money
 from .job_screens import _milli, _pct, _plain
+from .provenance_labels import Provenance
+from .provenance_labels import badge as prov_badge
+from .provenance_labels import legend as prov_legend
+
+# An estimate is a proposal — FORECAST — until it is accepted and invoiced, when
+# it becomes a POSTED ledger figure. A sales pipeline is entirely FORECAST:
+# weighted expected value, not money in the books.
+_ESTIMATE_PROV = (Provenance.FORECAST, Provenance.POSTED)
+_PIPELINE_PROV = (Provenance.FORECAST,)
 
 
 def _banner(kind: str, text: str) -> str:
@@ -88,7 +97,8 @@ def render_estimates(
             f"<tbody>{cells}</tbody></table>"
         )
 
-    out = head + _card(f"Estimates ({len(rows)})", body)
+    out = head + prov_legend(_ESTIMATE_PROV) + _card(
+        f"Estimates ({len(rows)})", body, actions=prov_badge(Provenance.FORECAST))
     if can_edit:
         out += _builder(tenant, customers, cost_codes, accounts)
     return out
@@ -334,7 +344,8 @@ def render_pipeline(
         f'<p class="muted">Won {_esc(totals.get("won_count"))} · lost '
         f'{_esc(totals.get("lost_count"))} · win rate {_pct(totals.get("win_rate_ppm"))}.</p>'
     )
-    out = head + _card("Pipeline", body)
+    out = head + prov_legend(_PIPELINE_PROV) + _card(
+        "Pipeline", body, actions=prov_badge(Provenance.FORECAST))
 
     opportunities = [
         o for o in _seq(pipeline.get("opportunities")) if isinstance(o, Mapping)
