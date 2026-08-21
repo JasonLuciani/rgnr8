@@ -12,7 +12,7 @@ import os
 
 import _pathsetup  # noqa: F401
 
-from rgnr8_ops import Settings, create_application, rls_bypass_warnings
+from rgnr8_ops import Settings, check_rls_posture, create_application
 from db import open_connection
 
 
@@ -24,8 +24,15 @@ def _build():  # pragma: no cover - exercised in deployment, not unit tests
     conn, _dialect, ph = open_connection(settings.database_url)
     # RLS is silently inert for superuser / BYPASSRLS roles. Say so at boot rather
     # than letting a tested-and-passing isolation policy do nothing in production.
-    for w in rls_bypass_warnings(conn, ph):
-        print(f"[security] warning: {w}")
+    # RGNR8_REQUIRE_RLS=1 turns that from a log line into a refusal to start.
+    posture, fatal = check_rls_posture(conn, ph, os.environ)
+    for w in posture:
+        print(f"[security] {'FATAL' if fatal else 'warning'}: {w}")
+    if fatal:
+        raise SystemExit(
+            "[security] refusing to boot: RGNR8_REQUIRE_RLS=1 and this connection "
+            "cannot enforce row-level security (see above)."
+        )
     return create_application(os.environ, conn=conn if settings.is_production_db else None)
 
 
