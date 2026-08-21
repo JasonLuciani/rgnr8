@@ -5,8 +5,13 @@ turned into an internal `Request` against the same `WebApp` a browser hits, so i
 flows through the identical auth + RBAC + tenant-scoping. An agent (Claude or
 otherwise) presents the caller's credential (a session JWT or an ``rgk_`` partner
 API key) and gets exactly the access that principal has — no privileged side-door.
-The tool catalog covers the owner's core questions: where's my cash, this week's
-briefing, what needs review, close status, and ask-your-CFO.
+The tool catalog covers the owner's core questions (where's my cash, this week's
+briefing, what needs review, close status, ask-your-CFO) AND the agent-native
+accounting pipeline — parse/ingest → match/categorize → post a balanced journal
+→ report the statements → export the sealed package. Every write flows through
+the same RBAC + scoped credential + tenant isolation as the browser, and the
+ledger enforces balance and period locks, so an agent can run the books without a
+privileged side-door.
 
 The server speaks a minimal MCP-shaped JSON-RPC: ``tools/list`` and ``tools/call``.
 Wiring it to a real stdio/SSE transport is a few lines around ``handle`` — the
@@ -66,6 +71,49 @@ def _ask(app: WebApp, tenant: str, args: dict[str, Any], headers: dict[str, str]
     return app.handle(Request("POST", f"/api/{tenant}/ask", h, body))
 
 
+# --- agent-native accounting pipeline: parse → match/post → report -----------
+
+def _parse_ingest(app: WebApp, tenant: str, args: dict[str, Any], headers: dict[str, str]) -> Response:
+    """PARSE step: ingest a batch of parsed feed transactions into the review
+    queue. The ledger de-duplicates by transaction id."""
+    payload = {"transactions": args.get("transactions", []),
+               "source": str(args.get("source", "feed"))}
+    h = {**headers, "content-type": "application/json"}
+    return app.handle(Request("POST", f"/api/{tenant}/ingest", h, json.dumps(payload)))
+
+
+def _categorize(app: WebApp, tenant: str, args: dict[str, Any], headers: dict[str, str]) -> Response:
+    """MATCH step: categorize / accept for-review transactions."""
+    h = {**headers, "content-type": "application/json"}
+    return app.handle(Request("POST", f"/api/{tenant}/transactions", h,
+                              json.dumps(args.get("actions", args))))
+
+
+def _post_entry(app: WebApp, tenant: str, args: dict[str, Any], headers: dict[str, str]) -> Response:
+    """POST step: post a balanced journal entry. Balance + period locks are
+    enforced by the ledger; a scope-insufficient credential is refused."""
+    payload = {"date": str(args.get("date", "")), "memo": str(args.get("memo", "")),
+               "lines": args.get("lines", [])}
+    h = {**headers, "content-type": "application/json"}
+    return app.handle(Request("POST", f"/api/{tenant}/entries", h, json.dumps(payload)))
+
+
+def _report(app: WebApp, tenant: str, args: dict[str, Any], headers: dict[str, str]) -> Response:
+    """REPORT step: the three statements for a period, every figure traceable to
+    the posted ledger."""
+    frm = str(args.get("from", "")).strip()
+    to = str(args.get("to", "")).strip()
+    qs = f"?from={frm}&to={to}" if frm and to else ""
+    return app.handle(Request("GET", f"/api/{tenant}/statements{qs}", headers))
+
+
+def _package(app: WebApp, tenant: str, args: dict[str, Any], headers: dict[str, str]) -> Response:
+    """EXPORT step: the sealed, fingerprinted financial package for a period (the
+    accountant handoff), verified on read."""
+    period = str(args.get("period", "")).strip()
+    return app.handle(Request("GET", f"/api/{tenant}/packages/{period}", headers))
+
+
 TOOLS: list[Tool] = [
     Tool("rgnr8_cash_position",
          "The business's verified cash today, the minimum-cash floor, the 13-week trough, and whether/when it breaches.",
@@ -84,6 +132,48 @@ TOOLS: list[Tool] = [
          {"type": "object",
           "properties": _tenant_prop({"question": {"type": "string", "description": "The question to ask."}}),
           "required": ["tenant", "question"]}, _ask),
+    # --- agent-native accounting pipeline (parse → match/post → report → export)
+    Tool("rgnr8_ingest_transactions",
+         "PARSE: ingest a batch of parsed feed transactions into the review queue "
+         "(the ledger de-duplicates by id). Requires POST_JOURNAL scope.",
+         {"type": "object",
+          "properties": _tenant_prop({
+              "transactions": {"type": "array", "description": "Parsed transactions to ingest.",
+                               "items": {"type": "object"}},
+              "source": {"type": "string", "description": "Feed source label (default 'feed')."}}),
+          "required": ["tenant", "transactions"]}, _parse_ingest),
+    Tool("rgnr8_categorize",
+         "MATCH: categorize / accept for-review transactions. Requires CATEGORIZE_TXNS scope.",
+         {"type": "object",
+          "properties": _tenant_prop({
+              "actions": {"type": "array", "description": "Categorize/accept actions.",
+                          "items": {"type": "object"}}}),
+          "required": ["tenant"]}, _categorize),
+    Tool("rgnr8_post_entry",
+         "POST: post a balanced journal entry {date, memo?, lines:[{code, side, amount_minor, dimensions?}]}. "
+         "Balance and period locks are enforced by the ledger. Requires POST_JOURNAL scope.",
+         {"type": "object",
+          "properties": _tenant_prop({
+              "date": {"type": "string", "description": "Entry date YYYY-MM-DD."},
+              "memo": {"type": "string"},
+              "lines": {"type": "array", "items": {"type": "object"},
+                        "description": "At least two balanced lines."}}),
+          "required": ["tenant", "date", "lines"]}, _post_entry),
+    Tool("rgnr8_report_statements",
+         "REPORT: the P&L, balance sheet, and cash flow for a period — every figure "
+         "traceable to the posted ledger. Requires VIEW_TRANSACTIONS scope.",
+         {"type": "object",
+          "properties": _tenant_prop({
+              "from": {"type": "string", "description": "Period start YYYY-MM-DD."},
+              "to": {"type": "string", "description": "Period end YYYY-MM-DD."}}),
+          "required": ["tenant"]}, _report),
+    Tool("rgnr8_financial_package",
+         "EXPORT: the sealed, fingerprinted financial package for a period (the "
+         "accountant handoff), verified on read. Requires VIEW_PACKAGE scope.",
+         {"type": "object",
+          "properties": _tenant_prop({
+              "period": {"type": "string", "description": "Period YYYY-MM."}}),
+          "required": ["tenant", "period"]}, _package),
 ]
 
 _BY_NAME = {t.name: t for t in TOOLS}

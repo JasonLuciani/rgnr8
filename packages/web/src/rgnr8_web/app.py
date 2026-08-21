@@ -1633,6 +1633,21 @@ class WebApp:
             if resource == "transactions" and req.method == "POST":
                 return self._require(subject, token_tenant, tenant, P.CATEGORIZE_TXNS,
                                      lambda t: self._categorize(t, req.body))
+            # --- agent-native pipeline (JSON): post / report / ingest ----------
+            # A journal post (balanced-journal + period-lock enforcement live in
+            # the ledger service; RBAC/scopes gate the caller here).
+            if resource == "entries" and req.method == "POST":
+                return self._require(subject, token_tenant, tenant, P.POST_JOURNAL,
+                                     lambda t: self._post_entry_json(subject, t, req.body))
+            # The three statements for a period as JSON (report step).
+            if resource == "statements" and req.method == "GET":
+                return self._require(subject, token_tenant, tenant, P.VIEW_TRANSACTIONS,
+                                     lambda t: self._statements_json(t, req.query))
+            # Ingest a batch of parsed feed transactions (parse/match step); the
+            # ledger de-duplicates by transaction id.
+            if resource == "ingest" and req.method == "POST":
+                return self._require(subject, token_tenant, tenant, P.POST_JOURNAL,
+                                     lambda t: self._ingest_json(t, req.body))
             if resource == "scenario" and req.method == "POST":
                 return self._require(subject, token_tenant, tenant, P.VIEW_CASH,
                                      lambda t: self._scenario(t, req.body))
@@ -4030,6 +4045,74 @@ class WebApp:
             self._audit.record(subject, "journal.posted", self._session_clock(),
                                tenant_id=t.tenant_id, detail=f"{date} {memo}".strip())
         return _redirect(f"/t/{t.tenant_id}/books?posted={_qs_escape('Entry posted')}")
+
+    # --- agent-native pipeline (JSON) ---------------------------------------
+    def _post_entry_json(self, subject: str, t: _Tenant, body: str) -> Response:
+        """Post a balanced journal entry from a JSON body:
+        {date, memo?, lines:[{code, side:"DEBIT"|"CREDIT", amount_minor, dimensions?}]}.
+        Balance and period locks are enforced by the ledger; this returns the
+        ledger's JSON verbatim so an agent sees the posted entry or the error."""
+        if self._ledger is None:
+            return _json(503, {"error": "no ledger service configured"})
+        try:
+            data = json.loads(body or "{}")
+        except json.JSONDecodeError:
+            return _json(400, {"error": "invalid JSON body"})
+        if not isinstance(data, dict):
+            return _json(400, {"error": "expected a JSON object"})
+        date = str(data.get("date", "")).strip()
+        memo = str(data.get("memo", "")).strip()
+        raw_lines = data.get("lines")
+        if not date or not isinstance(raw_lines, list) or len(raw_lines) < 2:
+            return _json(400, {"error": "date and at least two lines are required"})
+        lines: list[dict[str, object]] = []
+        for ln in raw_lines:
+            if not isinstance(ln, dict):
+                return _json(400, {"error": "each line must be an object"})
+            side = str(ln.get("side", "")).upper()
+            if side not in ("DEBIT", "CREDIT"):
+                return _json(400, {"error": "each line needs side DEBIT or CREDIT"})
+            line: dict[str, object] = {
+                "code": str(ln.get("code", "")).strip(),
+                "side": side,
+                "amount_minor": str(ln.get("amount_minor", "")).strip(),
+            }
+            if isinstance(ln.get("dimensions"), dict):
+                line["dimensions"] = ln["dimensions"]
+            lines.append(line)
+        res = self._ledger.post_entry(t.tenant_id, date, lines, memo=memo, source="agent")
+        if res.ok and self._audit is not None:
+            self._audit.record(subject, "journal.posted", self._session_clock(),
+                               tenant_id=t.tenant_id, detail=f"{date} {memo}".strip())
+        return _json(res.status, dict(res.body) if res.body else {"ok": res.ok})
+
+    def _statements_json(self, t: _Tenant, query: "dict[str, str]") -> Response:
+        """The three statements for a period as JSON (the report step)."""
+        if self._ledger is None:
+            return _json(503, {"error": "no ledger service configured"})
+        frm = query.get("from", "")
+        to = query.get("to", "")
+        if not frm or not to:
+            as_of = t.inputs.opening.as_of.isoformat()
+            frm = frm or f"{as_of[:7]}-01"
+            to = to or as_of
+        res = self._ledger.statements(t.tenant_id, frm, to)
+        return _json(res.status, dict(res.body) if res.body else {"ok": res.ok})
+
+    def _ingest_json(self, t: _Tenant, body: str) -> Response:
+        """Ingest a batch of parsed feed transactions (the parse/match step). The
+        ledger de-duplicates by transaction id, so re-ingesting overlaps is safe."""
+        if self._ledger is None:
+            return _json(503, {"error": "no ledger service configured"})
+        try:
+            data = json.loads(body or "{}")
+        except json.JSONDecodeError:
+            return _json(400, {"error": "invalid JSON body"})
+        if not isinstance(data, dict) or not isinstance(data.get("transactions"), list):
+            return _json(400, {"error": "a 'transactions' array is required"})
+        source = str(data.get("source", "feed")).strip() or "feed"
+        res = self._ledger.ingest(t.tenant_id, list(data["transactions"]), source=source)
+        return _json(res.status, dict(res.body) if res.body else {"ok": res.ok})
 
     def _latest_period(self, tenant: str) -> str | None:
         if self._packages is None:
