@@ -16,7 +16,7 @@ import psycopg  # noqa: E402
 
 from rgnr8_web import SqlTenantStore  # noqa: E402
 from rgnr8_web.store import TenantState  # noqa: E402
-from rgnr8_ops import run_migrations  # noqa: E402
+from rgnr8_ops import rls_bypass_warnings, run_migrations  # noqa: E402
 
 DSN = os.environ.get("RGNR8_TEST_DATABASE_URL", "")
 pytestmark = pytest.mark.skipif(not DSN, reason="RGNR8_TEST_DATABASE_URL not set (needs real Postgres)")
@@ -134,3 +134,19 @@ def test_backend_tables_readable_cross_tenant_but_scoped_when_context_set(
     _set_guc(conn, "acme")
     scoped = conn.execute("SELECT tenant_id FROM fleet_tenant").fetchall()
     assert {r[0] for r in scoped} == {"acme"}
+
+
+def test_posture_check_flags_a_connection_that_cannot_enforce_rls(
+    conn: "psycopg.Connection[object]",
+) -> None:
+    """The deployment mistake this check exists to catch, exercised for real: CI
+    connects as POSTGRES_USER, which the postgres image creates as a superuser."""
+    warned = rls_bypass_warnings(conn, "%s")
+    assert warned, "a superuser connection must be flagged"
+    assert "SUPERUSER" in warned[0]
+    assert "inert" in warned[0]
+
+    # ...and stays quiet once the connection is what production should look like.
+    run_migrations(conn, dialect="postgres", placeholder="%s", applied_at="now")
+    _as_unprivileged_tenant_role(conn)
+    assert rls_bypass_warnings(conn, "%s") == []
