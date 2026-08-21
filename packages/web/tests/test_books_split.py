@@ -1,8 +1,9 @@
 """The guided commingled-account split screen (A-2).
 
-The screen is a thin renderer over the same split engine the JSON/MCP path uses:
-GET shows a prefilled form; POST runs the split and renders the proposed books
-plus a per-transaction audit. Nothing is posted to the ledger.
+The screen reads the tenant's imported bank feed and lets the owner author routing
+rules in a form (no JSON). GET shows the statement + an empty rule builder; POST
+runs the split and renders the proposed books plus a per-transaction audit.
+Nothing is posted to the ledger.
 """
 
 from datetime import date
@@ -18,12 +19,24 @@ from rgnr8_web import (
     WebApp,
     sign_jwt,
 )
+from rgnr8_web.transactions import BankTransaction
 
 SECRET = "split-secret"
 NOW = 1_760_000_000
 
 
-def _app() -> WebApp:
+def _txns() -> list[BankTransaction]:
+    return [
+        BankTransaction("t1", "2026-08-03", "STRIPE PAYOUT", Money.from_decimal("2500.00"),
+                        counterparty="STRIPE"),
+        BankTransaction("t2", "2026-08-05", "GUSTO PAYROLL", Money.from_decimal("-1200.00"),
+                        counterparty="GUSTO"),
+        BankTransaction("t3", "2026-08-07", "WHOLE FOODS", Money.from_decimal("-80.00"),
+                        counterparty="WHOLEFOODS"),
+    ]
+
+
+def _app(with_feed: bool = True) -> WebApp:
     users = InMemoryUserDirectory()
     users.upsert_user(User("u-owner", "owner@acme.com", "Owner"))
     users.set_membership("u-owner", "acme", Role.OWNER)
@@ -32,6 +45,8 @@ def _app() -> WebApp:
                    ForecastInputs(opening=CashPosition(as_of=date(2026, 8, 31),
                                   available=Money.from_decimal("0.00"))),
                    ForecastConfig(minimum_cash=Money.from_decimal("0.00")), token="unused")
+    if with_feed:
+        app.add_transactions("acme", _txns())
     return app
 
 
@@ -45,40 +60,75 @@ def _req(app: WebApp, path: str, method: str = "GET", form: dict | None = None):
     return app.handle(Request(method, path, headers, body))
 
 
-_SPEC = """{
-  "default_book": "personal",
-  "rules": [
-    {"book": "business", "name": "payroll", "category": "Wages", "counterparty": "GUSTO"},
-    {"book": "business", "name": "sales", "category": "Sales", "description_regex": "STRIPE"}
-  ],
-  "transactions": [
-    {"id": "t1", "description": "STRIPE PAYOUT", "counterparty": "STRIPE", "amount_minor": "250000"},
-    {"id": "t2", "description": "GUSTO PAYROLL", "counterparty": "GUSTO", "amount_minor": "-120000"},
-    {"id": "t3", "description": "WHOLE FOODS", "counterparty": "WHOLEFOODS", "amount_minor": "-8000"}
-  ]
-}"""
+# --- source: reads the imported statement ------------------------------------
 
-
-def test_split_screen_renders_the_guided_form() -> None:
+def test_split_screen_reads_the_imported_statement() -> None:
     r = _req(_app(), "/t/acme/books/split")
     assert r.status == 200
-    assert "Split a commingled account" in r.body
-    assert 'name="spec"' in r.body            # the JSON input
-    assert "GUSTO" in r.body                   # the prefilled worked example
+    assert "Statement to split" in r.body
+    # it shows the imported lines and the rule builder (not a JSON box)
+    assert "STRIPE PAYOUT" in r.body and "GUSTO PAYROLL" in r.body
+    assert "Routing rules" in r.body
+    assert 'name="rule_book_0"' in r.body
+    assert 'name="spec"' not in r.body
 
 
-def test_split_screen_posts_and_renders_two_balanced_books() -> None:
-    r = _req(_app(), "/t/acme/books/split", method="POST", form={"spec": _SPEC})
+def test_split_screen_without_a_feed_explains_how_to_import() -> None:
+    r = _req(_app(with_feed=False), "/t/acme/books/split")
+    assert r.status == 200
+    assert "No imported transactions yet" in r.body
+
+
+# --- the rule builder → a balanced split -------------------------------------
+
+def _rule_form() -> dict:
+    # Route business by counterparty/description; everything else → the default book.
+    return {
+        "default_book": "Personal",
+        "rule_book_0": "Business", "rule_field_0": "counterparty",
+        "rule_value_0": "GUSTO", "rule_dir_0": "", "rule_cat_0": "Wages",
+        "rule_book_1": "Business", "rule_field_1": "description",
+        "rule_value_1": "STRIPE", "rule_dir_1": "in", "rule_cat_1": "Sales",
+    }
+
+
+def test_rule_builder_produces_two_balanced_books() -> None:
+    r = _req(_app(), "/t/acme/books/split", method="POST", form=_rule_form())
     assert r.status == 200
     assert "Proposed split" in r.body
     assert "Every set of books balances" in r.body
-    # both destination books are shown, each with its entries
-    assert "business" in r.body and "personal" in r.body
-    # the audit trail names each transaction and where it landed
+    assert "Business" in r.body and "Personal" in r.body
+    # audit names the lines and where they landed
     assert "STRIPE PAYOUT" in r.body and "WHOLE FOODS" in r.body
 
 
-def test_split_screen_reports_bad_json_without_crashing() -> None:
-    r = _req(_app(), "/t/acme/books/split", method="POST", form={"spec": "{not json"})
+def test_submitted_rules_persist_in_the_builder() -> None:
+    r = _req(_app(), "/t/acme/books/split", method="POST", form=_rule_form())
+    # the values the owner typed come back in the form so they can tweak
+    assert 'value="Business"' in r.body
+    assert 'value="GUSTO"' in r.body
+
+
+def test_description_match_is_literal_not_regex() -> None:
+    # A value with a regex metachar must match literally, not blow up or over-match.
+    app = _app(with_feed=False)
+    app.add_transactions("acme", [
+        BankTransaction("t1", "2026-08-03", "ACME (A+B) LLC", Money.from_decimal("-50.00"),
+                        counterparty="ACME"),
+    ])
+    form = {
+        "default_book": "Personal",
+        "rule_book_0": "Business", "rule_field_0": "description",
+        "rule_value_0": "(A+B)", "rule_dir_0": "", "rule_cat_0": "Supplies",
+    }
+    r = _req(app, "/t/acme/books/split", method="POST", form=form)
     assert r.status == 200
-    assert "isn&#x27;t valid JSON" in r.body or "valid JSON" in r.body
+    assert "Every set of books balances" in r.body
+    # it landed in Business (literal match), not the default
+    assert "Business" in r.body
+
+
+def test_posting_with_no_rules_asks_for_one() -> None:
+    r = _req(_app(), "/t/acme/books/split", method="POST", form={"default_book": "Personal"})
+    assert r.status == 200
+    assert "Add at least one routing rule" in r.body

@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextvars
 import dataclasses
 import json
+import re
 import secrets
 import time
 from collections.abc import Callable, Mapping
@@ -106,7 +107,7 @@ from .books_screens import (
 from .books_screens import (
     unavailable as render_books_unavailable,
 )
-from .books_split_screens import render_split
+from .books_split_screens import RULE_ROWS, render_split
 from .provenance_labels import Provenance
 from .provenance_labels import legend as prov_legend
 from .consolidation_screens import (
@@ -2110,20 +2111,77 @@ class WebApp:
         return self._shell(subject, t, "books", render_register(t.tenant_id, res.body))
 
     def _books_split_page(self, subject: str, t: _Tenant, method: str, body: str) -> Response:
-        """The guided commingled-account split (A-2). GET shows the form (prefilled
-        with a worked example); POST runs the split and renders the proposed books
-        plus a per-transaction audit. Nothing is posted to the ledger."""
+        """The guided commingled-account split (A-2). Reads the tenant's imported
+        bank feed and lets the owner author routing rules in a form (no JSON). GET
+        shows the statement + an empty rule builder; POST runs the split and renders
+        the proposed books plus a per-transaction audit. Nothing is posted."""
+        txns = self._txns.get(t.tenant_id, [])
+        source = [
+            {"id": tx.id, "date": tx.date, "description": tx.description,
+             "counterparty": tx.counterparty, "amount_minor": tx.amount.minor_units}
+            for tx in txns
+        ]
+        preview = source[:8]
+
         if method != "POST":
-            return self._shell(subject, t, "books", render_split(t.tenant_id))
-        spec = str(self._form_or_json(body).get("spec", "")).strip()
-        try:
-            data = json.loads(spec or "{}")
-        except json.JSONDecodeError:
-            return self._shell(subject, t, "books",
-                               render_split(t.tenant_id, spec=spec, error="That isn't valid JSON."))
+            return self._shell(subject, t, "books", render_split(
+                t.tenant_id, source_count=len(source), source_preview=preview))
+
+        form = self._form_or_json(body)
+        default_book = str(form.get("default_book", "")).strip() or "Personal"
+        display_rules, engine_rules = self._parse_split_rules(form)
+        data = {
+            "default_book": default_book,
+            "rules": engine_rules,
+            "transactions": [
+                {"id": s["id"], "description": s["description"],
+                 "counterparty": s["counterparty"], "amount_minor": str(s["amount_minor"])}
+                for s in source
+            ],
+        }
         result, error = self._compute_split(data)
-        return self._shell(subject, t, "books",
-                           render_split(t.tenant_id, spec=spec, result=result, error=error))
+        if not engine_rules and not error:
+            error = "Add at least one routing rule (a book and something to match on)."
+        return self._shell(subject, t, "books", render_split(
+            t.tenant_id, source_count=len(source), source_preview=preview,
+            default_book=default_book, rules=display_rules, result=result, error=error))
+
+    @staticmethod
+    def _parse_split_rules(
+        form: "dict[str, object]",
+    ) -> "tuple[list[dict[str, str]], list[dict[str, object]]]":
+        """Turn the rule-builder form fields into (display_rules, engine_rules).
+
+        `display_rules` re-fill the form after submit (every row, blanks included);
+        `engine_rules` are the non-empty rules `_compute_split` consumes. A
+        "Description contains" match is treated as a literal substring (re.escape),
+        so an owner never has to think in regex; "Counterparty is" is an exact
+        match. A rule needs a book and a match value to count."""
+        display: list[dict[str, str]] = []
+        engine: list[dict[str, object]] = []
+        for i in range(RULE_ROWS):
+            book = str(form.get(f"rule_book_{i}", "")).strip()
+            field = str(form.get(f"rule_field_{i}", "counterparty")).strip() or "counterparty"
+            value = str(form.get(f"rule_value_{i}", "")).strip()
+            direction = str(form.get(f"rule_dir_{i}", "")).strip()
+            category = str(form.get(f"rule_cat_{i}", "")).strip()
+            display.append({"book": book, "field": field, "value": value,
+                            "dir": direction, "cat": category})
+            if not book or not value:
+                continue
+            rule: dict[str, object] = {
+                "book": book,
+                "name": f"{book}: {field} {value}",
+                "category": category or book,
+            }
+            if field == "description":
+                rule["description_regex"] = re.escape(value)
+            else:
+                rule["counterparty"] = value
+            if direction in ("in", "out"):
+                rule["amount_sign"] = direction
+            engine.append(rule)
+        return display, engine
 
     # --- attachments -----------------------------------------------------------
 

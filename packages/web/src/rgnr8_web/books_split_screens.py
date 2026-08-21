@@ -1,36 +1,36 @@
 """Split a commingled account into two sets of books — the guided screen (A-2).
 
 Business and personal spending (or several clients) running through one account is
-the mess bookkeepers untangle by hand. This screen takes one statement plus a few
-routing rules and produces one *balanced* set of books per destination, with a
-line-by-line audit of where every transaction landed and why. Nothing is posted —
-it's a read-only proposal the owner reviews before committing.
+the mess bookkeepers untangle by hand. This screen reads the account's *imported*
+statement straight from the bank feed and lets the owner author a few plain-English
+routing rules — no JSON, no re-typing transactions — then produces one *balanced*
+set of books per destination, with a line-by-line audit of where every
+transaction landed and why. Nothing is posted; it's a proposal the owner reviews.
 
-Rendering only: the app computes the split (shared with the JSON/MCP path) and
-hands the result here. Provisional surface — badged accordingly by scope.
+Rendering only: the app loads the statement and computes the split (shared with
+the JSON/MCP path) and hands the result here.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from .books_screens import _banner, _card, _esc
 
-# A worked example prefilled into the form so the flow is self-explanatory: two
-# business rules (payroll out, card deposits in), everything else personal.
-_EXAMPLE = """{
-  "default_book": "personal",
-  "rules": [
-    {"book": "business", "name": "payroll", "category": "Wages", "counterparty": "GUSTO"},
-    {"book": "business", "name": "card sales", "category": "Sales", "description_regex": "STRIPE"}
-  ],
-  "transactions": [
-    {"id": "t1", "description": "STRIPE PAYOUT", "counterparty": "STRIPE", "amount_minor": "250000"},
-    {"id": "t2", "description": "GUSTO PAYROLL", "counterparty": "GUSTO", "amount_minor": "-120000"},
-    {"id": "t3", "description": "WHOLE FOODS", "counterparty": "WHOLEFOODS", "amount_minor": "-8000"},
-    {"id": "t4", "description": "MORTGAGE", "counterparty": "BIGBANK", "amount_minor": "-300000"}
-  ]
-}"""
+# How many rule rows the builder shows. Six covers a household/business split or a
+# handful of clients; blank rows are ignored.
+RULE_ROWS = 6
+
+# What a rule can match on — kept to the two fields an owner actually reasons about.
+_MATCH_FIELDS = (("counterparty", "Counterparty is"), ("description", "Description contains"))
+_DIRECTIONS = (("", "Any amount"), ("in", "Money in"), ("out", "Money out"))
+
+
+def _opts(choices: Sequence[tuple[str, str]], selected: str) -> str:
+    return "".join(
+        f'<option value="{_esc(v)}"{" selected" if v == selected else ""}>{_esc(lbl)}</option>'
+        for v, lbl in choices
+    )
 
 
 def _money(minor: object) -> str:
@@ -43,28 +43,95 @@ def _money(minor: object) -> str:
     return f"{'-' if neg else ''}${whole:,}.{frac:02d}"
 
 
+def _rule_row(i: int, rule: Mapping[str, str] | None) -> str:
+    r = rule or {}
+    book = _esc(r.get("book", ""))
+    field = str(r.get("field", "counterparty"))
+    value = _esc(r.get("value", ""))
+    direction = str(r.get("dir", ""))
+    category = _esc(r.get("cat", ""))
+    return (
+        '<tr>'
+        f'<td><input name="rule_book_{i}" value="{book}" placeholder="Business" '
+        'style="min-width:110px"></td>'
+        f'<td><select name="rule_field_{i}">{_opts(_MATCH_FIELDS, field)}</select></td>'
+        f'<td><input name="rule_value_{i}" value="{value}" placeholder="GUSTO" '
+        'style="min-width:120px"></td>'
+        f'<td><select name="rule_dir_{i}">{_opts(_DIRECTIONS, direction)}</select></td>'
+        f'<td><input name="rule_cat_{i}" value="{category}" placeholder="Wages" '
+        'style="min-width:110px"></td>'
+        '</tr>'
+    )
+
+
 def render_split(
     tenant: str,
     *,
-    spec: str = "",
+    source_count: int = 0,
+    source_preview: Sequence[Mapping[str, object]] = (),
+    default_book: str = "Personal",
+    rules: Sequence[Mapping[str, str]] | None = None,
     result: Mapping[str, object] | None = None,
     error: str = "",
 ) -> str:
     base = f"/t/{_esc(tenant)}/books/split"
-    intro = (
-        '<p class="muted">Paste one statement and a few routing rules; RGNR8 sorts every '
-        "transaction into a set of books and proves each set balances. First matching rule "
-        "wins. Nothing is posted — this is a proposal you review first.</p>"
+    sections: list[str] = []
+
+    # --- source: the imported statement, read from the bank feed ---------------
+    if source_count == 0:
+        sections.append(_card(
+            "Split a commingled account",
+            _banner("warn", "No imported transactions yet.")
+            + '<p class="muted">This flow splits the transactions already imported into your '
+            "bank feed. Import a statement (Transactions → import, or a connected feed) and "
+            "come back — every line will be here to route.</p>",
+        ))
+        return "".join(sections)
+
+    preview_rows = "".join(
+        f'<tr><td>{_esc(t.get("date"))}</td>'
+        f'<td>{_esc(t.get("description"))}</td>'
+        f'<td class="muted">{_esc(t.get("counterparty"))}</td>'
+        f'<td class="num">{_money(t.get("amount_minor"))}</td></tr>'
+        for t in source_preview
     )
-    form = (
+    more = source_count - len(source_preview)
+    preview = (
+        '<table style="width:100%;border-collapse:collapse;font-size:13px">'
+        '<thead><tr class="muted" style="text-align:left"><th>Date</th><th>Description</th>'
+        '<th>Counterparty</th><th class="num">Amount</th></tr></thead>'
+        f'<tbody>{preview_rows}</tbody></table>'
+        + (f'<p class="muted" style="font-size:12px;margin-top:6px">…and {more} more.</p>'
+           if more > 0 else "")
+    )
+    intro = (
+        f'<p class="muted">Reading <strong>{source_count}</strong> imported '
+        f'transaction{"s" if source_count != 1 else ""} from your bank feed. Route them into '
+        "sets of books with the rules below — first matching rule wins; anything unmatched "
+        "goes to the default book. Nothing is posted.</p>"
+    )
+    sections.append(_card("Statement to split", intro + preview))
+
+    # --- the rule builder ------------------------------------------------------
+    row_html = "".join(_rule_row(i, (rules[i] if rules and i < len(rules) else None))
+                        for i in range(RULE_ROWS))
+    builder = (
         f'<form method="post" action="{base}" class="grid">'
-        '<label style="grid-column:1/-1">Statement + rules (JSON)'
-        f'<textarea name="spec" rows="16" style="font-family:var(--rg-mono,monospace);font-size:13px">'
-        f'{_esc(spec or _EXAMPLE)}</textarea></label>'
-        '<div style="grid-column:1/-1"><button type="submit">Split into books</button></div>'
+        '<label style="grid-column:1/-1">Default book (for anything no rule matches)'
+        f'<input name="default_book" value="{_esc(default_book)}" placeholder="Personal" '
+        'style="max-width:240px"></label>'
+        '<div style="grid-column:1/-1;overflow-x:auto">'
+        '<table style="width:100%;border-collapse:collapse;font-size:13px">'
+        '<thead><tr class="muted" style="text-align:left">'
+        '<th>Book</th><th>Match</th><th>Value</th><th>Direction</th><th>Category</th>'
+        '</tr></thead><tbody>' + row_html + '</tbody></table></div>'
+        '<div style="grid-column:1/-1"><button type="submit">Preview split</button>'
+        '<span class="muted" style="font-size:12px;margin-left:10px">'
+        'Leave a row blank to ignore it.</span></div>'
         "</form>"
     )
-    sections = [_card("Split a commingled account", intro + form)]
+    sections.append(_card("Routing rules", builder))
+
     if error:
         sections.append(_banner("warn", error))
     if result is not None:
@@ -77,7 +144,7 @@ def _render_result(tenant: str, result: Mapping[str, object]) -> str:
     books = books if isinstance(books, list) else []
     all_balanced = bool(result.get("all_balanced"))
     banner = _banner(
-        "ok" if all_balanced else "warn",
+        "good" if all_balanced else "warn",
         "Every set of books balances." if all_balanced
         else "One or more books do not balance — check the rules.",
     )
@@ -105,17 +172,18 @@ def _render_result(tenant: str, result: Mapping[str, object]) -> str:
 
     audit = result.get("audit")
     audit = audit if isinstance(audit, list) else []
-    rows = "".join(_audit_row(tenant, r) for r in audit if isinstance(r, Mapping))
+    rows = "".join(_audit_row(r) for r in audit if isinstance(r, Mapping))
     table = (
-        '<table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:8px">'
+        '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;'
+        'font-size:13px;margin-top:8px">'
         '<thead><tr class="muted" style="text-align:left">'
         "<th>Transaction</th><th>Amount</th><th>Book</th><th>Routed by</th><th>Category</th>"
-        "</tr></thead><tbody>" + rows + "</tbody></table>"
+        "</tr></thead><tbody>" + rows + "</tbody></table></div>"
     )
     return _card("Proposed split", banner + summary + table)
 
 
-def _audit_row(tenant: str, r: Mapping[str, object]) -> str:
+def _audit_row(r: Mapping[str, object]) -> str:
     return (
         "<tr>"
         f'<td style="padding:4px 8px 4px 0">{_esc(r.get("description")) or _esc(r.get("txn_id"))}</td>'
@@ -127,4 +195,4 @@ def _audit_row(tenant: str, r: Mapping[str, object]) -> str:
     )
 
 
-__all__ = ["render_split"]
+__all__ = ["render_split", "RULE_ROWS"]
