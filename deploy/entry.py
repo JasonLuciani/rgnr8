@@ -12,7 +12,7 @@ import os
 
 import _pathsetup  # noqa: F401
 
-from rgnr8_ops import Settings, create_application
+from rgnr8_ops import Settings, create_application, rls_bypass_warnings
 from db import open_connection
 
 
@@ -21,7 +21,11 @@ def _build():  # pragma: no cover - exercised in deployment, not unit tests
     for w in settings.warnings:
         print(f"[config] warning: {w}")
     print(f"[config] {settings.redacted()}")
-    conn, _dialect, _ph = open_connection(settings.database_url)
+    conn, _dialect, ph = open_connection(settings.database_url)
+    # RLS is silently inert for superuser / BYPASSRLS roles. Say so at boot rather
+    # than letting a tested-and-passing isolation policy do nothing in production.
+    for w in rls_bypass_warnings(conn, ph):
+        print(f"[security] warning: {w}")
     return create_application(os.environ, conn=conn if settings.is_production_db else None)
 
 

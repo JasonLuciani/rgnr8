@@ -141,6 +141,12 @@ PYTHON_MIGRATIONS: tuple[Migration, ...] = (
 )
 
 
+_MIGRATIONS_TABLE_DDL = (
+    "CREATE TABLE IF NOT EXISTS schema_migrations_py "
+    "(version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)"
+)
+
+
 def _ensure_migrations_table(conn: DbApiConnection) -> None:
     # `CREATE TABLE IF NOT EXISTS` is idempotent on both sqlite and Postgres and,
     # crucially, never aborts the surrounding transaction. The old approach probed
@@ -150,10 +156,7 @@ def _ensure_migrations_table(conn: DbApiConnection) -> None:
     # which is why it only ever broke on the real-Postgres path).
     cur = conn.cursor()
     try:
-        cur.execute(
-            "CREATE TABLE IF NOT EXISTS schema_migrations_py "
-            "(version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)"
-        )
+        cur.execute(_MIGRATIONS_TABLE_DDL)
     finally:
         cur.close()
     conn.commit()

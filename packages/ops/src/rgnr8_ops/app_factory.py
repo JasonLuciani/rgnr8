@@ -69,6 +69,7 @@ from rgnr8_web import (
 from datetime import datetime, timezone
 
 from .config import ConfigError, Settings
+from .ddl_lock import ddl_bootstrap_lock
 from .fleet import Fleet
 from .onboarding import OnboardingRegistry, SqlOnboardingRegistry
 from .operator_app import OperatorApp, operator_wsgi
@@ -276,30 +277,6 @@ def build_observability(
     return rate_limiter, logger, metrics, errors
 
 
-# A fixed 64-bit key so every worker contends for the same advisory lock.
-_SCHEMA_BOOTSTRAP_LOCK = 5_281_970
-
-
-def _schema_bootstrap_lock(conn: object, settings: Settings, *, acquire: bool) -> None:
-    """Acquire/release a session-level Postgres advisory lock that serializes the
-    boot-time schema creation across concurrent gunicorn workers (see the call
-    site for why). Session-level — not transaction-level — because the stores'
-    `create_schema()` commits mid-way, which would drop an xact lock; the lock is
-    released explicitly here and, as a backstop, automatically when the worker's
-    connection closes. A no-op without a real Postgres connection (dev/in-memory
-    or sqlite, identified by the parameter placeholder)."""
-    if conn is None or settings.placeholder != "%s":
-        return
-    fn = "pg_advisory_lock" if acquire else "pg_advisory_unlock"
-    cur = conn.cursor()  # type: ignore[attr-defined]
-    try:
-        cur.execute(f"SELECT {fn}(%s)", (_SCHEMA_BOOTSTRAP_LOCK,))
-        cur.fetchall()
-    finally:
-        cur.close()
-    conn.commit()  # type: ignore[attr-defined]
-
-
 def create_application(
     env: Mapping[str, str] | None = None,
     *,
@@ -325,8 +302,7 @@ def create_application(
     # can both pass the existence check and one then fails with a pg_type unique
     # violation, crashing that worker. A session-level advisory lock lets the first
     # worker create everything while the rest wait, then no-op. No-op off Postgres.
-    _schema_bootstrap_lock(conn, settings, acquire=True)
-    try:
+    with ddl_bootstrap_lock(conn, settings.placeholder):
         app = build_web_app(settings, conn=conn, packages=packages,
                             usage_recorder=prov.usage_recorder)
         if conn is not None:
@@ -340,8 +316,6 @@ def create_application(
                 app.add_tenant(bt.tenant_id, bt.name, bt.inputs, bt.config,
                                token=secrets.token_urlsafe(32))
                 _seat_owner(app, bt.recipient, bt.tenant_id)
-    finally:
-        _schema_bootstrap_lock(conn, settings, acquire=False)
     rate_limiter, logger, metrics, errors = build_observability(settings, clock=time.monotonic)
     return wsgi_app(app, rate_limiter=rate_limiter, logger=logger,
                     metrics=metrics, errors=errors)
@@ -372,11 +346,14 @@ def create_operator_application(
     if conn is not None:
         users = SqlUserDirectory(conn, placeholder=settings.placeholder)  # type: ignore[arg-type]
         sql_audit = SqlAuditLog(conn, placeholder=settings.placeholder)  # type: ignore[arg-type]
-        sql_audit.create_schema()
+        sql_onboarding = SqlOnboardingRegistry(conn, placeholder=settings.placeholder)  # type: ignore[arg-type]
+        # Same cold-start race as create_application(): the operator console is its
+        # own gunicorn entrypoint, so its workers contend on the identical DDL.
+        with ddl_bootstrap_lock(conn, settings.placeholder):
+            sql_audit.create_schema()
+            sql_onboarding.create_schema()
         audit = sql_audit
         fleet = load_fleet(settings, conn, jwt_secret=secret)
-        sql_onboarding = SqlOnboardingRegistry(conn, placeholder=settings.placeholder)  # type: ignore[arg-type]
-        sql_onboarding.create_schema()
         onboarding = sql_onboarding
     else:
         users = InMemoryUserDirectory()

@@ -31,6 +31,7 @@ from rgnr8_web import (
     SqlWebhookOutbox,
 )
 
+from .ddl_lock import ddl_bootstrap_lock
 from .scheduler import SqlLeaseStore
 from .store import SqlFleetStore
 
@@ -82,22 +83,23 @@ def bootstrap_python_schemas(
     )
     webhook_outbox = SqlWebhookOutbox(cast("Any", conn), placeholder=placeholder)
 
-    tenant_store.create_schema()
-    sub_store.create_schema()
-    fleet_store.create_schema()
-    users.create_schema()
-    invitations.create_schema()
-    api_keys.create_schema()
-    audit.create_schema()
-    accounts.create_schema()
-    credentials.create_schema()
-    verify_tokens.create_schema()
-    lease.create_schema()
-    saved_reports.create_schema()
-    report_schedules.create_schema()
-    qbo_connections.create_schema()
-    webhook_endpoints.create_schema()
-    webhook_outbox.create_schema()
+    with ddl_bootstrap_lock(conn, placeholder):
+        tenant_store.create_schema()
+        sub_store.create_schema()
+        fleet_store.create_schema()
+        users.create_schema()
+        invitations.create_schema()
+        api_keys.create_schema()
+        audit.create_schema()
+        accounts.create_schema()
+        credentials.create_schema()
+        verify_tokens.create_schema()
+        lease.create_schema()
+        saved_reports.create_schema()
+        report_schedules.create_schema()
+        qbo_connections.create_schema()
+        webhook_endpoints.create_schema()
+        webhook_outbox.create_schema()
     return ["web_tenant_state", "briefing_subscription", "fleet_tenant", "rgnr8_user",
             "rgnr8_membership", "rgnr8_invitation", "rgnr8_api_key", "audit_event",
             "billing_account", "billing_usage", "rgnr8_credential",

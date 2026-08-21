@@ -16,10 +16,19 @@ import psycopg  # noqa: E402
 
 from rgnr8_web import SqlTenantStore  # noqa: E402
 from rgnr8_web.store import TenantState  # noqa: E402
-from rgnr8_ops import run_migrations  # noqa: E402
+from rgnr8_ops import rls_bypass_warnings, run_migrations  # noqa: E402
 
 DSN = os.environ.get("RGNR8_TEST_DATABASE_URL", "")
 pytestmark = pytest.mark.skipif(not DSN, reason="RGNR8_TEST_DATABASE_URL not set (needs real Postgres)")
+
+
+# Postgres does not apply row-level security to superusers or to roles with
+# BYPASSRLS -- FORCE does not change that; FORCE only extends RLS to a table's
+# OWNER. CI connects as POSTGRES_USER, which the official postgres image creates
+# as a superuser, so every isolation assertion in this file passed through a role
+# for which the policies are never consulted. The test proved nothing about RLS.
+# Switch to a deliberately unprivileged role before asserting isolation.
+ROLE = "rls_app"
 
 
 @pytest.fixture()
@@ -29,19 +38,20 @@ def conn() -> "psycopg.Connection[object]":
     c.execute("DROP SCHEMA IF EXISTS rls_test CASCADE")
     c.execute("CREATE SCHEMA rls_test")
     c.execute("SET search_path TO rls_test")
-    # RLS is bypassed for superusers and table owners — and the CI/dev DSN connects
-    # as the bootstrap superuser — so the isolation checks below must run under a
-    # plain, non-superuser role for the policies to actually engage. Create one
-    # (idempotent) and hand it privileges on this schema + any table created in it;
-    # each test does `SET ROLE rls_app` around its isolation assertions.
+    # RLS is bypassed for superusers, BYPASSRLS roles and (absent FORCE) table
+    # owners — and the CI/dev DSN connects as the bootstrap superuser — so the
+    # isolation checks below must run under a plain, unprivileged role for the
+    # policies to actually engage. ALTER DEFAULT PRIVILEGES covers tables created
+    # later by run_migrations(); each test does `SET ROLE rls_app` around its
+    # isolation assertions.
     c.execute(
-        "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='rls_app') "
-        "THEN CREATE ROLE rls_app NOSUPERUSER; END IF; END $$"
+        f"DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='{ROLE}') "
+        f"THEN CREATE ROLE {ROLE} NOSUPERUSER NOBYPASSRLS NOINHERIT; END IF; END $$"
     )
-    c.execute("GRANT USAGE ON SCHEMA rls_test TO rls_app")
+    c.execute(f"GRANT USAGE ON SCHEMA rls_test TO {ROLE}")
     c.execute(
-        "ALTER DEFAULT PRIVILEGES IN SCHEMA rls_test "
-        "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO rls_app"
+        f"ALTER DEFAULT PRIVILEGES IN SCHEMA rls_test "
+        f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {ROLE}"
     )
     c.commit()
     try:
@@ -58,6 +68,22 @@ def _set_guc(c: "psycopg.Connection[object]", tenant: str) -> None:
     c.execute("SELECT set_config('app.tenant_id', %s, false)", (tenant,))
 
 
+def test_rls_is_not_bypassed_by_the_connecting_role(conn: "psycopg.Connection[object]") -> None:
+    """Guard the guard: if the probe role ever gains superuser/BYPASSRLS, every
+    isolation assertion below silently becomes vacuous. Fail loudly instead."""
+    run_migrations(conn, dialect="postgres", placeholder="%s", applied_at="now")
+    conn.execute(f"SET ROLE {ROLE}")
+    try:
+        row = conn.execute(
+            "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user"
+        ).fetchone()
+        assert row is not None
+        assert row[0] is False, "connecting role is a superuser — RLS is not enforced against it"
+        assert row[1] is False, "connecting role has BYPASSRLS — RLS is not enforced against it"
+    finally:
+        conn.execute("RESET ROLE")
+
+
 def test_stores_work_and_isolate_under_forced_rls(conn: "psycopg.Connection[object]") -> None:
     run_migrations(conn, dialect="postgres", placeholder="%s", applied_at="now")
     store = SqlTenantStore(conn, placeholder="%s")
@@ -70,7 +96,7 @@ def test_stores_work_and_isolate_under_forced_rls(conn: "psycopg.Connection[obje
     assert store.load("beta") is not None
 
     # Isolation must be checked as a non-superuser (superusers/owners bypass RLS).
-    conn.execute("SET ROLE rls_app")
+    conn.execute(f"SET ROLE {ROLE}")
     try:
         # Under tenant acme's context, a raw unfiltered read sees ONLY acme.
         _set_guc(conn, "acme")
@@ -104,7 +130,7 @@ def test_backend_tables_readable_cross_tenant_but_scoped_when_context_set(
     conn.commit()
 
     # Check the backend-table policy as a non-superuser (RLS bypassed otherwise).
-    conn.execute("SET ROLE rls_app")
+    conn.execute(f"SET ROLE {ROLE}")
     try:
         # No context (trusted backend, e.g. the fleet loader): sees ALL tenants.
         conn.execute("SELECT set_config('app.tenant_id', '', false)")
@@ -115,5 +141,23 @@ def test_backend_tables_readable_cross_tenant_but_scoped_when_context_set(
         _set_guc(conn, "acme")
         scoped = conn.execute("SELECT tenant_id FROM fleet_tenant").fetchall()
         assert {r[0] for r in scoped} == {"acme"}
+    finally:
+        conn.execute("RESET ROLE")
+
+
+def test_posture_check_flags_a_connection_that_cannot_enforce_rls(
+    conn: "psycopg.Connection[object]",
+) -> None:
+    """The deployment mistake this check exists to catch, exercised for real: CI
+    connects as POSTGRES_USER, which the postgres image creates as a superuser."""
+    warned = rls_bypass_warnings(conn, "%s")
+    assert warned, "a superuser connection must be flagged"
+    assert "SUPERUSER" in warned[0]
+    assert "inert" in warned[0]
+
+    # ...and stays quiet once the connection looks like production should.
+    conn.execute(f"SET ROLE {ROLE}")
+    try:
+        assert rls_bypass_warnings(conn, "%s") == []
     finally:
         conn.execute("RESET ROLE")

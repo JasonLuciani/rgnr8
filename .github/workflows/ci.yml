@@ -30,8 +30,8 @@ jobs:
           --health-cmd "pg_isready -U rgnr8"
           --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - run: npm ci
@@ -68,8 +68,8 @@ jobs:
       # real Postgres instead of skipping; sqlite has no RLS.
       RGNR8_TEST_DATABASE_URL: postgres://rgnr8:rgnr8@localhost:5432/rgnr8_test
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - name: Install tools
@@ -107,7 +107,7 @@ jobs:
     name: Docker build + boot smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Write a test .env for the stack
         run: |
           cat > deploy/.env <<'ENV'
@@ -166,14 +166,14 @@ jobs:
     name: Dependency audit (blocking on high+)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - run: npm ci
       - name: npm audit (high+)
         run: npm audit --audit-level=high
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - name: pip-audit on runtime deps
