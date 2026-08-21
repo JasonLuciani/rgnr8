@@ -65,10 +65,9 @@ def _req(app: WebApp, path: str, method: str = "GET", form: dict | None = None):
 def test_split_screen_reads_the_imported_statement() -> None:
     r = _req(_app(), "/t/acme/books/split")
     assert r.status == 200
-    assert "Statement to split" in r.body
+    assert "Split a commingled account" in r.body
     # it shows the imported lines and the rule builder (not a JSON box)
     assert "STRIPE PAYOUT" in r.body and "GUSTO PAYROLL" in r.body
-    assert "Routing rules" in r.body
     assert 'name="rule_book_0"' in r.body
     assert 'name="spec"' not in r.body
 
@@ -132,3 +131,73 @@ def test_posting_with_no_rules_asks_for_one() -> None:
     r = _req(_app(), "/t/acme/books/split", method="POST", form={"default_book": "Personal"})
     assert r.status == 200
     assert "Add at least one routing rule" in r.body
+
+
+# --- scope: which slice of the feed to route ---------------------------------
+
+def _mixed_app() -> WebApp:
+    app = _app(with_feed=False)
+    app.add_transactions("acme", [
+        # already reconciled + categorized → NOT needing review
+        BankTransaction("m1", "2026-07-15", "OLD MATCHED", Money.from_decimal("100.00"),
+                        counterparty="ACME", category="Sales", status="matched"),
+        # needs review (uncategorized)
+        BankTransaction("m2", "2026-08-10", "STRIPE PAYOUT", Money.from_decimal("2500.00"),
+                        counterparty="STRIPE"),
+        BankTransaction("m3", "2026-08-20", "GUSTO PAYROLL", Money.from_decimal("-1200.00"),
+                        counterparty="GUSTO"),
+    ])
+    return app
+
+
+def test_scope_shows_the_status_and_date_controls() -> None:
+    r = _req(_mixed_app(), "/t/acme/books/split")
+    assert r.status == 200
+    assert 'name="scope_status"' in r.body
+    assert 'name="scope_from"' in r.body and 'name="scope_to"' in r.body
+
+
+def test_scope_review_only_routes_lines_needing_review() -> None:
+    form = {
+        "scope_status": "review",
+        "default_book": "Personal",
+        "rule_book_0": "Business", "rule_field_0": "counterparty",
+        "rule_value_0": "STRIPE", "rule_dir_0": "", "rule_cat_0": "Sales",
+    }
+    r = _req(_mixed_app(), "/t/acme/books/split", method="POST", form=form)
+    assert r.status == 200
+    # the matched line is out of scope; only the two review lines are routed
+    assert "OLD MATCHED" not in r.body
+    assert "STRIPE PAYOUT" in r.body and "GUSTO PAYROLL" in r.body
+    assert "in scope of 3 imported" in r.body
+
+
+def test_scope_date_range_bounds_the_statement() -> None:
+    form = {
+        "scope_status": "all",
+        "scope_from": "2026-08-01",
+        "scope_to": "2026-08-15",
+        "default_book": "Personal",
+        "rule_book_0": "Business", "rule_field_0": "counterparty",
+        "rule_value_0": "STRIPE", "rule_dir_0": "", "rule_cat_0": "Sales",
+    }
+    r = _req(_mixed_app(), "/t/acme/books/split", method="POST", form=form)
+    assert r.status == 200
+    # only m2 (2026-08-10) falls in the window
+    assert "STRIPE PAYOUT" in r.body
+    assert "OLD MATCHED" not in r.body and "GUSTO PAYROLL" not in r.body
+
+
+def test_scope_persists_in_the_controls_after_submit() -> None:
+    form = {"scope_status": "review", "scope_from": "2026-08-01", "default_book": "Personal"}
+    r = _req(_mixed_app(), "/t/acme/books/split", method="POST", form=form)
+    # the chosen scope comes back selected/filled
+    assert 'value="review" selected' in r.body
+    assert 'value="2026-08-01"' in r.body
+
+
+def test_scope_that_matches_nothing_explains_how_to_widen() -> None:
+    form = {"scope_status": "all", "scope_from": "2030-01-01", "default_book": "Personal"}
+    r = _req(_mixed_app(), "/t/acme/books/split", method="POST", form=form)
+    assert r.status == 200
+    assert "No transactions match this scope" in r.body

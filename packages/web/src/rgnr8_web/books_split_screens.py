@@ -25,6 +25,9 @@ RULE_ROWS = 6
 _MATCH_FIELDS = (("counterparty", "Counterparty is"), ("description", "Description contains"))
 _DIRECTIONS = (("", "Any amount"), ("in", "Money in"), ("out", "Money out"))
 
+# Which slice of the imported feed to route.
+_SCOPE_STATUS = (("all", "All imported lines"), ("review", "Only lines needing review"))
+
 
 def _opts(choices: Sequence[tuple[str, str]], selected: str) -> str:
     return "".join(
@@ -67,8 +70,12 @@ def _rule_row(i: int, rule: Mapping[str, str] | None) -> str:
 def render_split(
     tenant: str,
     *,
+    total_imported: int = 0,
     source_count: int = 0,
     source_preview: Sequence[Mapping[str, object]] = (),
+    scope_status: str = "all",
+    scope_from: str = "",
+    scope_to: str = "",
     default_book: str = "Personal",
     rules: Sequence[Mapping[str, str]] | None = None,
     result: Mapping[str, object] | None = None,
@@ -77,8 +84,8 @@ def render_split(
     base = f"/t/{_esc(tenant)}/books/split"
     sections: list[str] = []
 
-    # --- source: the imported statement, read from the bank feed ---------------
-    if source_count == 0:
+    # --- nothing imported at all ----------------------------------------------
+    if total_imported == 0:
         sections.append(_card(
             "Split a commingled account",
             _banner("warn", "No imported transactions yet.")
@@ -88,49 +95,78 @@ def render_split(
         ))
         return "".join(sections)
 
-    preview_rows = "".join(
-        f'<tr><td>{_esc(t.get("date"))}</td>'
-        f'<td>{_esc(t.get("description"))}</td>'
-        f'<td class="muted">{_esc(t.get("counterparty"))}</td>'
-        f'<td class="num">{_money(t.get("amount_minor"))}</td></tr>'
-        for t in source_preview
-    )
-    more = source_count - len(source_preview)
-    preview = (
-        '<table style="width:100%;border-collapse:collapse;font-size:13px">'
-        '<thead><tr class="muted" style="text-align:left"><th>Date</th><th>Description</th>'
-        '<th>Counterparty</th><th class="num">Amount</th></tr></thead>'
-        f'<tbody>{preview_rows}</tbody></table>'
-        + (f'<p class="muted" style="font-size:12px;margin-top:6px">…and {more} more.</p>'
-           if more > 0 else "")
+    # Everything below shares ONE form so the scope selector, the rule builder,
+    # and the preview all reflect the same submitted state in one round-trip.
+    scoped_note = (
+        f"in scope of {total_imported} imported"
+        if source_count != total_imported else "imported"
     )
     intro = (
-        f'<p class="muted">Reading <strong>{source_count}</strong> imported '
-        f'transaction{"s" if source_count != 1 else ""} from your bank feed. Route them into '
-        "sets of books with the rules below — first matching rule wins; anything unmatched "
+        f'<p class="muted">Reading <strong>{source_count}</strong> '
+        f'transaction{"s" if source_count != 1 else ""} ({scoped_note}) from your bank feed. '
+        "Narrow the scope, route with rules — first matching rule wins; anything unmatched "
         "goes to the default book. Nothing is posted.</p>"
     )
-    sections.append(_card("Statement to split", intro + preview))
 
-    # --- the rule builder ------------------------------------------------------
+    scope_controls = (
+        '<div class="row" style="gap:12px;align-items:end">'
+        '<label style="margin:0">Which lines'
+        f'<select name="scope_status" style="min-width:200px">{_opts(_SCOPE_STATUS, scope_status)}</select>'
+        "</label>"
+        '<label style="margin:0">From (date)'
+        f'<input name="scope_from" type="date" value="{_esc(scope_from)}" style="min-width:150px"></label>'
+        '<label style="margin:0">To (date)'
+        f'<input name="scope_to" type="date" value="{_esc(scope_to)}" style="min-width:150px"></label>'
+        "</div>"
+    )
+
+    if source_count == 0:
+        preview = _banner("warn", "No transactions match this scope — widen the dates or "
+                          'switch to "All imported lines".')
+    else:
+        preview_rows = "".join(
+            f'<tr><td>{_esc(t.get("date"))}</td>'
+            f'<td>{_esc(t.get("description"))}</td>'
+            f'<td class="muted">{_esc(t.get("counterparty"))}</td>'
+            f'<td class="num">{_money(t.get("amount_minor"))}</td></tr>'
+            for t in source_preview
+        )
+        more = source_count - len(source_preview)
+        preview = (
+            '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">'
+            '<thead><tr class="muted" style="text-align:left"><th>Date</th><th>Description</th>'
+            '<th>Counterparty</th><th class="num">Amount</th></tr></thead>'
+            f'<tbody>{preview_rows}</tbody></table></div>'
+            + (f'<p class="muted" style="font-size:12px;margin-top:6px">…and {more} more.</p>'
+               if more > 0 else "")
+        )
+
     row_html = "".join(_rule_row(i, (rules[i] if rules and i < len(rules) else None))
                         for i in range(RULE_ROWS))
-    builder = (
-        f'<form method="post" action="{base}" class="grid">'
-        '<label style="grid-column:1/-1">Default book (for anything no rule matches)'
-        f'<input name="default_book" value="{_esc(default_book)}" placeholder="Personal" '
-        'style="max-width:240px"></label>'
+    rule_table = (
         '<div style="grid-column:1/-1;overflow-x:auto">'
         '<table style="width:100%;border-collapse:collapse;font-size:13px">'
         '<thead><tr class="muted" style="text-align:left">'
         '<th>Book</th><th>Match</th><th>Value</th><th>Direction</th><th>Category</th>'
         '</tr></thead><tbody>' + row_html + '</tbody></table></div>'
+    )
+
+    form = (
+        f'<form method="post" action="{base}" class="grid">'
+        # scope
+        '<div style="grid-column:1/-1">' + intro + scope_controls + '</div>'
+        '<div style="grid-column:1/-1;margin:6px 0">' + preview + '</div>'
+        # rules
+        '<label style="grid-column:1/-1;margin-top:6px">Default book (for anything no rule matches)'
+        f'<input name="default_book" value="{_esc(default_book)}" placeholder="Personal" '
+        'style="max-width:240px"></label>'
+        + rule_table +
         '<div style="grid-column:1/-1"><button type="submit">Preview split</button>'
         '<span class="muted" style="font-size:12px;margin-left:10px">'
-        'Leave a row blank to ignore it.</span></div>'
+        'Adjust the scope or rules and preview again — leave a rule row blank to ignore it.</span></div>'
         "</form>"
     )
-    sections.append(_card("Routing rules", builder))
+    sections.append(_card("Split a commingled account", form))
 
     if error:
         sections.append(_banner("warn", error))

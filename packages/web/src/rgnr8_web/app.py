@@ -2112,22 +2112,37 @@ class WebApp:
 
     def _books_split_page(self, subject: str, t: _Tenant, method: str, body: str) -> Response:
         """The guided commingled-account split (A-2). Reads the tenant's imported
-        bank feed and lets the owner author routing rules in a form (no JSON). GET
-        shows the statement + an empty rule builder; POST runs the split and renders
-        the proposed books plus a per-transaction audit. Nothing is posted."""
-        txns = self._txns.get(t.tenant_id, [])
+        bank feed and lets the owner scope it (all lines vs only those needing
+        review, plus an optional date range) and author routing rules in a form (no
+        JSON). GET shows the statement + an empty rule builder; POST applies the
+        scope, runs the split, and renders the proposed books plus a per-transaction
+        audit. Nothing is posted."""
+        all_txns = self._txns.get(t.tenant_id, [])
+        total_imported = len(all_txns)
+        form = self._form_or_json(body) if method == "POST" else {}
+        scope_status = str(form.get("scope_status", "all")).strip() or "all"
+        scope_from = str(form.get("scope_from", "")).strip()
+        scope_to = str(form.get("scope_to", "")).strip()
+
+        scoped = self._scope_txns(all_txns, scope_status, scope_from, scope_to)
         source = [
             {"id": tx.id, "date": tx.date, "description": tx.description,
              "counterparty": tx.counterparty, "amount_minor": tx.amount.minor_units}
-            for tx in txns
+            for tx in scoped
         ]
         preview = source[:8]
 
-        if method != "POST":
+        def _render(rules: "list[dict[str, str]] | None", default_book: str,
+                    result: "dict[str, object] | None", error: str) -> Response:
             return self._shell(subject, t, "books", render_split(
-                t.tenant_id, source_count=len(source), source_preview=preview))
+                t.tenant_id, total_imported=total_imported, source_count=len(source),
+                source_preview=preview, scope_status=scope_status, scope_from=scope_from,
+                scope_to=scope_to, default_book=default_book, rules=rules,
+                result=result, error=error))
 
-        form = self._form_or_json(body)
+        if method != "POST":
+            return _render(None, "Personal", None, "")
+
         default_book = str(form.get("default_book", "")).strip() or "Personal"
         display_rules, engine_rules = self._parse_split_rules(form)
         data = {
@@ -2142,9 +2157,25 @@ class WebApp:
         result, error = self._compute_split(data)
         if not engine_rules and not error:
             error = "Add at least one routing rule (a book and something to match on)."
-        return self._shell(subject, t, "books", render_split(
-            t.tenant_id, source_count=len(source), source_preview=preview,
-            default_book=default_book, rules=display_rules, result=result, error=error))
+        return _render(display_rules, default_book, result, error)
+
+    @staticmethod
+    def _scope_txns(
+        txns: "list[BankTransaction]", status: str, frm: str, to: str,
+    ) -> "list[BankTransaction]":
+        """The slice of the imported feed the owner chose to route: all lines, or
+        only those still needing review, optionally bounded by an inclusive date
+        range (ISO dates compare lexicographically)."""
+        out = []
+        for tx in txns:
+            if status == "review" and not tx.needs_review:
+                continue
+            if frm and tx.date < frm:
+                continue
+            if to and tx.date > to:
+                continue
+            out.append(tx)
+        return out
 
     @staticmethod
     def _parse_split_rules(
