@@ -13,7 +13,7 @@ from .factory import anthropic_llm
 from .http import HttpError, UrllibHttpClient
 from .ledger import FakeLedgerReader, LedgerReadError, LedgerReader
 from .llm import FakeLLM, HttpLLM, LLMProvider, LLMTurn, Msg, ToolCall
-from .model import AskAnswer, AskContext, Citation, ToolResult, TraceStep
+from .model import AskAnswer, AskContext, Citation, FigureRef, ToolResult, TraceStep
 from .orchestrator import SYSTEM_PROMPT, AskOrchestrator, Conversation, extract_money_minor
 from .tools import Tool, ToolError, ToolRegistry, collect_minor_figures, default_registry
 
@@ -33,6 +33,7 @@ __all__ = [
     "AskContext",
     "AskAnswer",
     "Citation",
+    "FigureRef",
     "ToolResult",
     "TraceStep",
     "Tool",

@@ -50,12 +50,37 @@ class TraceStep:
 
 
 @dataclass(frozen=True)
+class FigureRef:
+    """One dollar figure in an answer, tied back to what backs it — the
+    source-traceable "working record" that lets an owner question any number,
+    see its source, and correct it on the spot.
+
+    `display` is the figure exactly as it reads in the answer ("$12,500.00").
+    `sources` are the citations that produced it (most-correctable first).
+    `correct_href`/`correct_kind` point the "correct this" affordance at the most
+    specific correctable source — a posted entry or an account register when one
+    backs the figure, else the report it was read from. `stated` is True when the
+    figure came from the user or an earlier verified turn rather than a tool this
+    turn (so the UI can label it "as stated" instead of inventing a source)."""
+
+    minor: int
+    display: str
+    sources: tuple[Citation, ...] = ()
+    correct_href: str = ""
+    correct_kind: str = ""   # "entry" | "register" | "report" | ""
+    stated: bool = False
+
+
+@dataclass(frozen=True)
 class AskAnswer:
     text: str
     citations: tuple[Citation, ...]
     trace: tuple[TraceStep, ...]
     verified: bool          # did every money figure in `text` trace to a tool result?
     refused: bool = False   # true when the assistant declined / couldn't answer
+    # Per-figure provenance for every dollar amount in `text`, in order of
+    # appearance — the working record surfaced under the answer.
+    working_record: tuple[FigureRef, ...] = ()
 
 
-__all__ = ["Citation", "ToolResult", "AskContext", "TraceStep", "AskAnswer"]
+__all__ = ["Citation", "ToolResult", "AskContext", "TraceStep", "FigureRef", "AskAnswer"]

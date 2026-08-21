@@ -302,3 +302,40 @@ def test_the_answer_shows_a_trace_of_the_tools_it_ran() -> None:
     assert "How I worked this out" in r.body
     assert "cash_position" in r.body            # the tool the copilot actually ran
     assert "Cash on hand" in r.body             # its one-line summary
+
+
+# --- source-traceable working record (A-3) -----------------------------------
+
+def test_the_answer_shows_a_working_record_tying_each_figure_to_its_source() -> None:
+    app, _t = _app(_cash_llm())
+    r = _req(app, "/t/acme/ask", method="POST", form={"q": "how much cash do I have?"})
+    # the working record surfaces every figure and where it came from
+    assert "Working record" in r.body
+    assert "$50,000.00" in r.body
+    assert "Cash on hand" in r.body            # the source label, tied to the figure
+    # a report total has no single correctable row, so it says so rather than
+    # inventing a "correct this" link
+    assert "from a report total" in r.body
+
+
+def test_a_register_figure_offers_a_correct_this_link_to_the_account() -> None:
+    # account_register carries a "register" citation → the working record routes the
+    # figure to /t/acme/books/accounts/1000 where the entry can be corrected.
+    routes = dict(ROUTES)
+    routes["GET /t/acme/accounts/1000/register"] = (
+        200,
+        {"code": "1000", "entries": [{"id": "je-1", "amount_minor": "5000000"}],
+         "balance_minor": "5000000"},
+    )
+    llm = FakeLLM(turns=[
+        LLMTurn(tool_calls=(ToolCall("c1", "account_register", {"code": "1000"}),)),
+        LLMTurn(final_text="Account 1000 holds $50,000.00."),
+    ])
+    app, transport = _app(llm)
+    transport.routes = routes
+    r = _req(app, "/t/acme/ask", method="POST",
+             form={"q": "show the entries behind account 1000"})
+    assert r.status == 200
+    assert "Working record" in r.body
+    assert "Correct this" in r.body
+    assert "/t/acme/books/accounts/1000" in r.body
