@@ -13,8 +13,15 @@ from rgnr8_web import (
     WebApp,
     sign_jwt,
 )
-from rgnr8_web.scope import PROVISIONAL_NOTE, V1_PRODUCTION, is_provisional
+from rgnr8_web.scope import (
+    GRADUATION_CHECKLIST,
+    PROVISIONAL_NOTE,
+    V1_PRODUCTION,
+    is_provisional,
+)
 from rgnr8_web.shell import render_shell
+from rgnr8_web.inbox_screens import render_inbox
+from rgnr8_web.provenance_labels import Provenance, label
 from rgnr8_web.rbac import Permission
 
 SECRET = "scope-secret"
@@ -46,6 +53,22 @@ def test_scope_line_covers_cash_close_and_handoff() -> None:
     for prov in ("jobs", "estimates", "invoices", "bills", "payroll", "debt", "assets", "pipeline"):
         assert is_provisional(prov), prov
     assert "" in V1_PRODUCTION  # cash home
+
+
+def test_bank_feed_is_graduated_to_v1() -> None:
+    # C-1: the bank feed / review inbox graduated out of provisional.
+    assert not is_provisional("transactions")
+    assert not is_provisional("inbox")
+    # C-0: the graduation gate template exists.
+    assert len(GRADUATION_CHECKLIST) >= 4
+
+
+def test_review_inbox_carries_provenance_labels() -> None:
+    html = render_inbox("acme", {"items": []}, {}, can_post=True)
+    # The review queue is IMPORTED (from the bank, not yet in the books), and the
+    # legend explains the imported → posted → reconciled ladder.
+    assert "What do the labels mean?" in html
+    assert label(Provenance.IMPORTED) in html
 
 
 def test_production_screen_has_no_provisional_banner() -> None:

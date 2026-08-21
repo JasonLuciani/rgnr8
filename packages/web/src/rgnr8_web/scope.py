@@ -40,12 +40,31 @@ V1_PRODUCTION: frozenset[str] = frozenset({
     "team",
     "settings",
     "audit",
+    # Graduated 2026-08-20 (C-1): the bank feed / review inbox. Reads through the
+    # tenant-isolated ledger, categorize/accept is RBAC-gated and posts through the
+    # authoritative ledger, and its lines carry provenance labels (imported → posted
+    # → reconciled). "transactions" is the nav item; "inbox" is the review screen.
+    "transactions",
+    "inbox",
 })
 
 
 def is_provisional(suffix: str) -> bool:
     """True when a nav suffix is a provisional (not-yet-production) surface."""
     return suffix not in V1_PRODUCTION
+
+
+# --- graduation gate (C-0) ---------------------------------------------------
+#: The checklist a provisional surface must pass to be added to V1_PRODUCTION.
+#: Graduating a surface = satisfying all of these, then moving its nav suffix(es)
+#: into `V1_PRODUCTION` and recording the graduation in RGNR8-v1-scope.md.
+GRADUATION_CHECKLIST: tuple[str, ...] = (
+    "Inputs are validated and tenant-isolated (no cross-tenant read/write).",
+    "Every figure carries a provenance label (forecast/imported/posted/reconciled/sealed).",
+    "Writes flow through the authoritative controls — no silent in-memory state.",
+    "An acceptance test proves the above for this surface.",
+    "Graduation is recorded (date + who) in RGNR8-v1-scope.md.",
+)
 
 
 #: One-line, in-app disclosure shown on every provisional screen.
