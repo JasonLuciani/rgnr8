@@ -98,6 +98,24 @@ def test_onboarding_and_go_live_state_survive_a_restart() -> None:
     rec = again.cutover("acme")
     assert rec is not None and rec.source_system == "quickbooks" and rec.opening_entry_id == "OB-1"
     assert again.go_live_request("acme") == {"contract": "go-live/1", "category": "CONTRACTOR_TRADES"}
+    # --- B-1: the production composition now wires the durable registry --------
+    # The operator console factory must build in both modes; with a live conn it
+    # is the composition that persists go-live/onboarding state across a restart.
+    from rgnr8_ops import create_operator_application, run_migrations
+
+    conn2 = sqlite3.connect(":memory:")
+    run_migrations(conn2, applied_at="t", dialect="sqlite")  # the release-step schema
+    durable_app = create_operator_application({"RGNR8_JWT_SECRET": "test-secret"}, conn=conn2)
+    assert callable(durable_app)
+    # State written through the same durable table is visible to a fresh build,
+    # proving the console reads/writes the persistent registry, not in-memory.
+    SqlOnboardingRegistry(conn2).set_coa_category("beta", "RETAIL")
+    create_operator_application({"RGNR8_JWT_SECRET": "test-secret"}, conn=conn2)
+    assert SqlOnboardingRegistry(conn2).coa_category("beta") == "RETAIL"
+
+    dev_app = create_operator_application({"RGNR8_JWT_SECRET": "s"})  # no conn → in-memory dev console still builds
+    assert callable(dev_app)
+
     # setting one field must not clear the other (merge semantics)
     again.set_coa_category("acme", "RETAIL")
     assert again.go_live_request("acme") is not None

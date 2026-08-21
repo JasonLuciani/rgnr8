@@ -13,6 +13,7 @@ from .app_factory import (
     build_observability,
     build_web_app,
     create_application,
+    create_operator_application,
     load_fleet,
     readiness,
 )
@@ -136,6 +137,7 @@ __all__ = [
     "build_observability",
     "build_web_app",
     "create_application",
+    "create_operator_application",
     "load_fleet",
     "readiness",
     "Migration",

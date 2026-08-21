@@ -1,3 +1,4 @@
 release: python deploy/migrate.py
 web: gunicorn deploy.entry:application --workers ${RGNR8_WORKERS:-4} --bind 0.0.0.0:${PORT:-8080} --access-logfile -
+operator: gunicorn deploy.operator_entry:application --workers ${RGNR8_OPERATOR_WORKERS:-2} --bind 0.0.0.0:${OPERATOR_PORT:-8090} --access-logfile -
 worker: python deploy/worker.py

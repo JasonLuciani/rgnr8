@@ -36,9 +36,11 @@ from rgnr8_qbo import (
 )
 from rgnr8_qbo import UrllibHttpClient as QboHttpClient
 from rgnr8_web import (
+    AuditSink,
     AuthService,
     FinancialPackageReader,
     HttpJwksProvider,
+    InMemoryAuditLog,
     InMemoryCredentialStore,
     InMemoryTenantStore,
     InMemoryUserDirectory,
@@ -48,6 +50,7 @@ from rgnr8_web import (
     RateLimiter,
     Role,
     make_rate_limit_key,
+    SqlAuditLog,
     SqlCredentialStore,
     SqlTenantStore,
     SqlUserDirectory,
@@ -60,8 +63,12 @@ from rgnr8_web import (
     wsgi_app,
 )
 
+from datetime import datetime, timezone
+
 from .config import ConfigError, Settings
 from .fleet import Fleet
+from .onboarding import OnboardingRegistry, SqlOnboardingRegistry
+from .operator_app import OperatorApp, operator_wsgi
 from .provisioning import Provisioning, build_provisioning
 from .store import SqlFleetStore
 
@@ -291,3 +298,54 @@ def create_application(
     rate_limiter, logger, metrics, errors = build_observability(settings, clock=time.monotonic)
     return wsgi_app(app, rate_limiter=rate_limiter, logger=logger,
                     metrics=metrics, errors=errors)
+
+
+def create_operator_application(
+    env: Mapping[str, str] | None = None,
+    *,
+    conn: object | None = None,
+    provisioning: Provisioning | None = None,
+) -> Callable[..., object]:
+    """The RGNR8-staff control-plane WSGI entrypoint (the operator console).
+
+    This is the composition that was missing: `OperatorApp` is where go-live /
+    onboarding state lives, and until now nothing constructed it in production, so
+    its durable `SqlOnboardingRegistry` was dead code. With a live `conn` this
+    wires the **durable** onboarding registry (chosen COA template + cutover /
+    go-live status survive a restart) and a persisted fleet + audit log; without a
+    connection it builds the in-memory dev console. A deploy module does
+    `application = create_operator_application()` for gunicorn."""
+    settings = Settings.from_env(env)
+    prov = provisioning if provisioning is not None else build_provisioning()
+    secret = settings.jwt_secret or "dev-secret"
+
+    users: UserDirectory
+    audit: AuditSink
+    onboarding: OnboardingRegistry
+    if conn is not None:
+        users = SqlUserDirectory(conn, placeholder=settings.placeholder)  # type: ignore[arg-type]
+        sql_audit = SqlAuditLog(conn, placeholder=settings.placeholder)  # type: ignore[arg-type]
+        sql_audit.create_schema()
+        audit = sql_audit
+        fleet = load_fleet(settings, conn, jwt_secret=secret)
+        sql_onboarding = SqlOnboardingRegistry(conn, placeholder=settings.placeholder)  # type: ignore[arg-type]
+        sql_onboarding.create_schema()
+        onboarding = sql_onboarding
+    else:
+        users = InMemoryUserDirectory()
+        audit = InMemoryAuditLog()
+        fleet = Fleet(jwt_secret=secret)
+        onboarding = OnboardingRegistry()
+
+    ledger = (
+        LedgerClient(UrllibTransport(settings.ledger_url), token=settings.ledger_token or "")
+        if settings.ledger_url else None
+    )
+
+    app = OperatorApp(
+        fleet, prov.billing, users, audit, secret,
+        clock=lambda: datetime.now(timezone.utc),
+        onboarding=onboarding,
+        ledger=ledger,
+    )
+    return operator_wsgi(app)
