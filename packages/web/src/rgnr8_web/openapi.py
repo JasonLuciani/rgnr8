@@ -29,6 +29,7 @@ _ROUTES: list[tuple[str, str, str, str | None]] = [
     ("post", "/api/{tenant}/decisions", "Record a decision", "record_decision"),
     ("get", "/api/{tenant}/transactions", "Bank register summary + for-review queue", "view_transactions"),
     ("post", "/api/{tenant}/transactions", "Categorize / accept a bank line", "categorize_transactions"),
+    ("post", "/api/{tenant}/split", "Split a commingled statement into balanced sets of books", "view_transactions"),
     ("get", "/api/{tenant}/close", "Month-end close status", "manage_close"),
     ("post", "/api/{tenant}/close", "Advance a close task", "manage_close"),
     ("post", "/api/{tenant}/close/publish", "Seal the period", "publish_close"),

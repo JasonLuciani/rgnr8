@@ -30,11 +30,15 @@ from rgnr8_briefing import (
     validate_briefing,
 )
 from rgnr8_categorize import (
+    BookRouter,
+    BookRule,
     CategorizedTxn,
     Categorizer,
     LearnedModel,
+    Rule,
     RuleSet,
     Txn,
+    split_books,
 )
 from rgnr8_forecast import (
     CustomerHistory,
@@ -102,6 +106,7 @@ from .books_screens import (
 from .books_screens import (
     unavailable as render_books_unavailable,
 )
+from .books_split_screens import render_split
 from .provenance_labels import Provenance
 from .provenance_labels import legend as prov_legend
 from .consolidation_screens import (
@@ -1485,6 +1490,11 @@ class WebApp:
         if len(parts) == 4 and parts[0] == "t" and parts[2] == "books" and parts[3] == "statements":
             return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
                                  lambda t: self._books_statements_page(subject, t, req.query))
+        # /t/<tenant>/books/split -> split a commingled account into two books (A-2)
+        if len(parts) == 4 and parts[0] == "t" and parts[2] == "books" and parts[3] == "split":
+            body = req.body if req.method == "POST" else ""
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._books_split_page(subject, t, req.method, body))
         # /t/<tenant>/books/entries -> post a journal entry (form POST)
         if (len(parts) == 4 and parts[0] == "t" and parts[2] == "books"
                 and parts[3] == "entries" and req.method == "POST"):
@@ -1648,6 +1658,11 @@ class WebApp:
             if resource == "ingest" and req.method == "POST":
                 return self._require(subject, token_tenant, tenant, P.POST_JOURNAL,
                                      lambda t: self._ingest_json(t, req.body))
+            # Split one commingled statement into two+ balanced sets of books by
+            # rule (A-2). Read-only analysis (no posting), so VIEW_TRANSACTIONS.
+            if resource == "split" and req.method == "POST":
+                return self._require(subject, token_tenant, tenant, P.VIEW_TRANSACTIONS,
+                                     lambda t: self._split_books_json(req.body))
             if resource == "scenario" and req.method == "POST":
                 return self._require(subject, token_tenant, tenant, P.VIEW_CASH,
                                      lambda t: self._scenario(t, req.body))
@@ -2093,6 +2108,22 @@ class WebApp:
         if not res.ok:
             return self._shell(subject, t, "books", render_books_unavailable(res.error()))
         return self._shell(subject, t, "books", render_register(t.tenant_id, res.body))
+
+    def _books_split_page(self, subject: str, t: _Tenant, method: str, body: str) -> Response:
+        """The guided commingled-account split (A-2). GET shows the form (prefilled
+        with a worked example); POST runs the split and renders the proposed books
+        plus a per-transaction audit. Nothing is posted to the ledger."""
+        if method != "POST":
+            return self._shell(subject, t, "books", render_split(t.tenant_id))
+        spec = str(self._form_or_json(body).get("spec", "")).strip()
+        try:
+            data = json.loads(spec or "{}")
+        except json.JSONDecodeError:
+            return self._shell(subject, t, "books",
+                               render_split(t.tenant_id, spec=spec, error="That isn't valid JSON."))
+        result, error = self._compute_split(data)
+        return self._shell(subject, t, "books",
+                           render_split(t.tenant_id, spec=spec, result=result, error=error))
 
     # --- attachments -----------------------------------------------------------
 
@@ -4113,6 +4144,94 @@ class WebApp:
         source = str(data.get("source", "feed")).strip() or "feed"
         res = self._ledger.ingest(t.tenant_id, list(data["transactions"]), source=source)
         return _json(res.status, dict(res.body) if res.body else {"ok": res.ok})
+
+    def _split_books_json(self, body: str) -> Response:
+        """Route one commingled statement into two+ balanced sets of books by rule.
+
+        Body: {transactions:[{id,description,counterparty,amount_minor,currency?}],
+        default_book, rules:[{book,name,category?,description_regex?,counterparty?,
+        amount_sign?}]}. Each rule both routes (to `book`) and, via its `category`,
+        categorizes the entries that match it — so a book's postings hit real
+        accounts and each book balances. Read-only: nothing is posted here; the
+        result is the proposed split plus a full audit trail."""
+        try:
+            data = json.loads(body or "{}")
+        except json.JSONDecodeError:
+            return _json(400, {"error": "invalid JSON body"})
+        result, error = self._compute_split(data)
+        if error:
+            return _json(400, {"error": error})
+        return _json(200, result or {})
+
+    def _compute_split(self, data: object) -> "tuple[dict[str, object] | None, str]":
+        """Shared split engine used by the JSON endpoint and the guided screen.
+        Returns (result, "") on success or (None, error-message) on bad input."""
+        if not isinstance(data, dict) or not isinstance(data.get("transactions"), list):
+            return None, "a 'transactions' array is required"
+        default_book = str(data.get("default_book", "unassigned")).strip() or "unassigned"
+        raw_rules = data.get("rules")
+        raw_rules = raw_rules if isinstance(raw_rules, list) else []
+
+        book_rules: list[BookRule] = []
+        cat_rules: list[Rule] = []
+        for i, r in enumerate(raw_rules):
+            if not isinstance(r, dict):
+                continue
+            book = str(r.get("book", "")).strip()
+            if not book:
+                return None, f"rule {i} is missing 'book'"
+            name = str(r.get("name", f"rule-{i}")).strip() or f"rule-{i}"
+            sign = r.get("amount_sign")
+            sign = sign if sign in ("in", "out") else None
+            desc = r.get("description_regex")
+            cp = r.get("counterparty")
+            rule = Rule(
+                name=name,
+                category=str(r.get("category", name)).strip() or name,
+                description_regex=str(desc) if isinstance(desc, str) and desc else None,
+                counterparty=str(cp) if isinstance(cp, str) and cp else None,
+                amount_sign=sign,
+            )
+            book_rules.append(BookRule(book, rule))
+            cat_rules.append(rule)
+
+        txns: list[Txn] = []
+        for i, tr in enumerate(data["transactions"]):
+            if not isinstance(tr, dict):
+                return None, f"transaction {i} is not an object"
+            try:
+                amount = int(str(tr.get("amount_minor")))
+            except (TypeError, ValueError):
+                return None, f"transaction {i} has a bad amount_minor"
+            txns.append(Txn(
+                id=str(tr.get("id", f"t{i}")),
+                description=str(tr.get("description", "")),
+                counterparty=str(tr.get("counterparty", "")),
+                amount_minor=amount,
+                currency=str(tr.get("currency", "USD")) or "USD",
+            ))
+
+        router = BookRouter(rules=book_rules, default_book=default_book)
+        categorizer = Categorizer(RuleSet(cat_rules), LearnedModel.from_history([]))
+        result = split_books(txns, router, categorizer=categorizer)
+        return {
+            "all_balanced": result.all_balanced,
+            "books": [
+                {
+                    "book": b.book,
+                    "entry_count": len(b.entries),
+                    "debits_minor": str(b.debits_minor),
+                    "credits_minor": str(b.credits_minor),
+                    "net_cash_minor": str(b.net_cash_minor),
+                    "balanced": b.balanced,
+                }
+                for b in result.books
+            ],
+            "audit": [
+                {**row, "amount_minor": str(row["amount_minor"])}
+                for row in result.audit_trail()
+            ],
+        }, ""
 
     def _latest_period(self, tenant: str) -> str | None:
         if self._packages is None:

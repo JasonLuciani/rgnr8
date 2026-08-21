@@ -161,6 +161,37 @@ def test_report_statements_tool_reaches_the_ledger() -> None:
     assert method == "GET" and path.startswith("/t/acme/statements")
 
 
+def test_split_books_tool_is_in_the_manifest() -> None:
+    assert "rgnr8_split_books" in {t["name"] for t in _server().list_tools()}
+
+
+def test_split_books_tool_routes_into_two_balanced_books() -> None:
+    # No ledger needed — the split is pure in-process analysis.
+    srv = _server()
+    out = srv.call_tool("rgnr8_split_books", {
+        "tenant": "acme",
+        "default_book": "personal",
+        "rules": [
+            {"book": "business", "name": "payroll", "category": "Wages", "counterparty": "GUSTO"},
+            {"book": "business", "name": "sales", "category": "Sales", "description_regex": "STRIPE"},
+        ],
+        "transactions": [
+            {"id": "t1", "description": "STRIPE PAYOUT", "counterparty": "STRIPE", "amount_minor": "250000"},
+            {"id": "t2", "description": "GUSTO PAYROLL", "counterparty": "GUSTO", "amount_minor": "-120000"},
+            {"id": "t3", "description": "WHOLE FOODS", "counterparty": "WHOLEFOODS", "amount_minor": "-8000"},
+        ],
+    }, authorization=_tok("owner@acme.com"))
+    assert out["isError"] is False
+    body = json.loads(out["content"][0]["text"])
+    assert body["all_balanced"] is True
+    books = {b["book"]: b for b in body["books"]}
+    assert books["business"]["entry_count"] == 2
+    assert books["personal"]["entry_count"] == 1
+    # the split is auditable: every transaction shows where it landed
+    landed = {row["txn_id"]: row["book"] for row in body["audit"]}
+    assert landed == {"t1": "business", "t2": "business", "t3": "personal"}
+
+
 def test_pipeline_respects_rbac_scopes() -> None:
     # A viewer lacks POST_JOURNAL, so the post-entry tool is refused BEFORE it
     # ever reaches the ledger — the agent surface inherits the same RBAC.

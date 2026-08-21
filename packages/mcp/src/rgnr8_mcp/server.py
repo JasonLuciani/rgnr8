@@ -98,6 +98,17 @@ def _post_entry(app: WebApp, tenant: str, args: dict[str, Any], headers: dict[st
     return app.handle(Request("POST", f"/api/{tenant}/entries", h, json.dumps(payload)))
 
 
+def _split_books(app: WebApp, tenant: str, args: dict[str, Any], headers: dict[str, str]) -> Response:
+    """SPLIT step: route one commingled statement into two+ balanced sets of books
+    by rule (e.g. Business vs Personal, or per client). Read-only analysis — returns
+    the proposed split, each book's balance, and a full audit trail; nothing posts."""
+    payload = {"transactions": args.get("transactions", []),
+               "default_book": str(args.get("default_book", "unassigned")),
+               "rules": args.get("rules", [])}
+    h = {**headers, "content-type": "application/json"}
+    return app.handle(Request("POST", f"/api/{tenant}/split", h, json.dumps(payload)))
+
+
 def _report(app: WebApp, tenant: str, args: dict[str, Any], headers: dict[str, str]) -> Response:
     """REPORT step: the three statements for a period, every figure traceable to
     the posted ledger."""
@@ -159,6 +170,23 @@ TOOLS: list[Tool] = [
               "lines": {"type": "array", "items": {"type": "object"},
                         "description": "At least two balanced lines."}}),
           "required": ["tenant", "date", "lines"]}, _post_entry),
+    Tool("rgnr8_split_books",
+         "SPLIT: route one commingled bank statement into two+ balanced sets of "
+         "books by rule (e.g. Business vs Personal, or per client). Each rule "
+         "{book, name, category?, description_regex?, counterparty?, amount_sign?} "
+         "both routes a matching transaction to its book and categorizes it. "
+         "Read-only: returns the proposed split, per-book balance, and an audit "
+         "trail — nothing is posted. Requires VIEW_TRANSACTIONS scope.",
+         {"type": "object",
+          "properties": _tenant_prop({
+              "transactions": {"type": "array", "description":
+                               "Statement transactions {id, description, counterparty, amount_minor, currency?}.",
+                               "items": {"type": "object"}},
+              "default_book": {"type": "string",
+                               "description": "Book for transactions no rule matches."},
+              "rules": {"type": "array", "items": {"type": "object"},
+                        "description": "Routing+categorization rules, first match wins."}}),
+          "required": ["tenant", "transactions"]}, _split_books),
     Tool("rgnr8_report_statements",
          "REPORT: the P&L, balance sheet, and cash flow for a period — every figure "
          "traceable to the posted ledger. Requires VIEW_TRANSACTIONS scope.",

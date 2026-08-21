@@ -38,6 +38,17 @@ from .learn import (
     normalize_description,
 )
 from .rules import AmountSign, Rule, RuleSet
+from .split import (
+    CASH_ACCOUNT,
+    SUSPENSE_ACCOUNT,
+    BookRouter,
+    BookRule,
+    BookSet,
+    Posting,
+    RoutedEntry,
+    SplitResult,
+    split_books,
+)
 from .suggester import Categorizer, Source, Suggestion
 from .txn import (
     CategorizedTxn,
@@ -66,4 +77,14 @@ __all__ = [
     "Suggestion",
     "Source",
     "Categorizer",
+    # split into sets of books
+    "BookRule",
+    "BookRouter",
+    "RoutedEntry",
+    "Posting",
+    "BookSet",
+    "SplitResult",
+    "split_books",
+    "CASH_ACCOUNT",
+    "SUSPENSE_ACCOUNT",
 ]
