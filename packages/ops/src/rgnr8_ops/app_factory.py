@@ -276,6 +276,30 @@ def build_observability(
     return rate_limiter, logger, metrics, errors
 
 
+# A fixed 64-bit key so every worker contends for the same advisory lock.
+_SCHEMA_BOOTSTRAP_LOCK = 5_281_970
+
+
+def _schema_bootstrap_lock(conn: object, settings: Settings, *, acquire: bool) -> None:
+    """Acquire/release a session-level Postgres advisory lock that serializes the
+    boot-time schema creation across concurrent gunicorn workers (see the call
+    site for why). Session-level — not transaction-level — because the stores'
+    `create_schema()` commits mid-way, which would drop an xact lock; the lock is
+    released explicitly here and, as a backstop, automatically when the worker's
+    connection closes. A no-op without a real Postgres connection (dev/in-memory
+    or sqlite, identified by the parameter placeholder)."""
+    if conn is None or settings.placeholder != "%s":
+        return
+    fn = "pg_advisory_lock" if acquire else "pg_advisory_unlock"
+    cur = conn.cursor()  # type: ignore[attr-defined]
+    try:
+        cur.execute(f"SELECT {fn}(%s)", (_SCHEMA_BOOTSTRAP_LOCK,))
+        cur.fetchall()
+    finally:
+        cur.close()
+    conn.commit()  # type: ignore[attr-defined]
+
+
 def create_application(
     env: Mapping[str, str] | None = None,
     *,
@@ -295,19 +319,29 @@ def create_application(
     tenants when a connection is available so routes resolve after a restart."""
     settings = Settings.from_env(env)
     prov = provisioning if provisioning is not None else build_provisioning()
-    app = build_web_app(settings, conn=conn, packages=packages,
-                        usage_recorder=prov.usage_recorder)
-    if conn is not None:
-        fleet = load_fleet(settings, conn)
-        prov.bind_fleet(fleet)  # the on_provisioned → fleet-onboard/metering seam
-        for bt in fleet.tenants.values():
-            # No guessable static token: under a real authenticator the static map
-            # is inert anyway (gated in `_principal`), but we also stop minting a
-            # predictable `unused:<tenant>` credential. Seat the owner so IdP
-            # tokens resolve to real RBAC.
-            app.add_tenant(bt.tenant_id, bt.name, bt.inputs, bt.config,
-                           token=secrets.token_urlsafe(32))
-            _seat_owner(app, bt.recipient, bt.tenant_id)
+    # Serialize the boot-time schema creation across concurrent gunicorn workers.
+    # Each worker imports this module and builds its own app+connection, and the
+    # stores' `CREATE TABLE IF NOT EXISTS` is NOT atomic in Postgres — two workers
+    # can both pass the existence check and one then fails with a pg_type unique
+    # violation, crashing that worker. A session-level advisory lock lets the first
+    # worker create everything while the rest wait, then no-op. No-op off Postgres.
+    _schema_bootstrap_lock(conn, settings, acquire=True)
+    try:
+        app = build_web_app(settings, conn=conn, packages=packages,
+                            usage_recorder=prov.usage_recorder)
+        if conn is not None:
+            fleet = load_fleet(settings, conn)
+            prov.bind_fleet(fleet)  # the on_provisioned → fleet-onboard/metering seam
+            for bt in fleet.tenants.values():
+                # No guessable static token: under a real authenticator the static
+                # map is inert anyway (gated in `_principal`), but we also stop
+                # minting a predictable `unused:<tenant>` credential. Seat the owner
+                # so IdP tokens resolve to real RBAC.
+                app.add_tenant(bt.tenant_id, bt.name, bt.inputs, bt.config,
+                               token=secrets.token_urlsafe(32))
+                _seat_owner(app, bt.recipient, bt.tenant_id)
+    finally:
+        _schema_bootstrap_lock(conn, settings, acquire=False)
     rate_limiter, logger, metrics, errors = build_observability(settings, clock=time.monotonic)
     return wsgi_app(app, rate_limiter=rate_limiter, logger=logger,
                     metrics=metrics, errors=errors)
