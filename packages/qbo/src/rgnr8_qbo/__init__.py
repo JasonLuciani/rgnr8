@@ -67,6 +67,7 @@ from .service import (
     InMemoryNonceStore,
     NonceStore,
     QboConnectService,
+    SqlNonceStore,
     StateError,
     StateSigner,
 )
@@ -111,6 +112,7 @@ __all__ = [
     "StateError",
     "NonceStore",
     "InMemoryNonceStore",
+    "SqlNonceStore",
     "DEFAULT_STATE_TTL",
     # api client
     "QboApiClient",

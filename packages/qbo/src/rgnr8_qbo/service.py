@@ -84,6 +84,78 @@ class InMemoryNonceStore:
         return True
 
 
+class _NonceCursor(Protocol):
+    rowcount: int
+
+    def execute(self, sql: str, params: object = ..., /) -> object: ...
+    def close(self) -> None: ...
+
+
+class _NonceConnection(Protocol):
+    def cursor(self) -> _NonceCursor: ...
+    def commit(self) -> None: ...
+
+
+class SqlNonceStore:
+    """Durable, cross-worker one-time-nonce store over any DB-API 2.0 connection.
+
+    Unlike :class:`InMemoryNonceStore` (per-process), this survives a restart and
+    is shared by every web worker pointed at the same database, so a valid
+    ``state`` replayed against a *different* worker is still caught. Inject this in
+    a multi-worker production deploy; the in-memory store is fine for single-worker
+    dev/tests.
+
+    ``consume`` is atomic: it relies on the unique primary key and
+    ``INSERT ... ON CONFLICT DO NOTHING`` so that exactly one caller wins the race
+    for a given nonce even under concurrent callbacks — the winner sees one
+    affected row (``True``), everyone else sees zero (``False``). Rows past the TTL
+    are pruned on each call so the table doesn't grow without bound. ``placeholder``
+    is ``?`` (sqlite) or ``%s`` (psycopg)."""
+
+    def __init__(
+        self,
+        connection: _NonceConnection,
+        *,
+        table: str = "rgnr8_qbo_nonce",
+        placeholder: str = "?",
+        ttl_seconds: int = 900,
+    ) -> None:
+        self._conn = connection
+        self._t = table
+        self._ph = placeholder
+        self._ttl = ttl_seconds
+
+    def create_schema(self) -> None:
+        cur = self._conn.cursor()
+        try:
+            cur.execute(
+                f"CREATE TABLE IF NOT EXISTS {self._t} "
+                "(nonce TEXT PRIMARY KEY, issued INTEGER NOT NULL)"
+            )
+        finally:
+            cur.close()
+        self._conn.commit()
+
+    def consume(self, nonce: str, issued: int) -> bool:
+        p = self._ph
+        cur = self._conn.cursor()
+        try:
+            # Prune expired rows first so a replay of a long-expired nonce whose
+            # row was already reaped isn't mistaken for fresh; the state's own TTL
+            # check still rejects it, this just bounds the table.
+            cur.execute(f"DELETE FROM {self._t} WHERE issued < {p}", (issued - self._ttl,))
+            cur.execute(
+                f"INSERT INTO {self._t} (nonce, issued) VALUES ({p}, {p}) "
+                "ON CONFLICT (nonce) DO NOTHING",
+                (nonce, issued),
+            )
+            won = cur.rowcount == 1
+        finally:
+            cur.close()
+        self._conn.commit()
+        return won
+
+
 def _b64u(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 

@@ -309,6 +309,58 @@ def test_sql_connection_store_roundtrip() -> None:
         conn.close()
 
 
+def test_sql_nonce_store_is_single_use_and_durable_across_workers() -> None:
+    from rgnr8_qbo import SqlNonceStore
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        # Two store instances over the SAME database stand in for two web workers
+        # sharing one Postgres: what worker A consumes, worker B must see as used.
+        worker_a = SqlNonceStore(conn)
+        worker_a.create_schema()
+        worker_b = SqlNonceStore(conn)
+
+        assert worker_a.consume("nonce-1", issued=1000) is True     # first use wins
+        assert worker_a.consume("nonce-1", issued=1000) is False    # replay, same worker
+        assert worker_b.consume("nonce-1", issued=1000) is False    # replay, other worker
+        assert worker_b.consume("nonce-2", issued=1000) is True     # a fresh nonce is fine
+    finally:
+        conn.close()
+
+
+def test_sql_nonce_store_prunes_expired_but_still_bounds_the_table() -> None:
+    from rgnr8_qbo import SqlNonceStore
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        store = SqlNonceStore(conn, ttl_seconds=900)
+        store.create_schema()
+        assert store.consume("old", issued=1000) is True
+        # A later call past the TTL prunes the old row (bounding growth); the row
+        # count reflects only live nonces.
+        assert store.consume("new", issued=1000 + 5000) is True
+        rows = conn.execute("SELECT count(*) FROM rgnr8_qbo_nonce").fetchone()[0]
+        assert rows == 1
+    finally:
+        conn.close()
+
+
+def test_sql_nonce_store_gates_state_replay_end_to_end() -> None:
+    from rgnr8_qbo import SqlNonceStore
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        nonces = SqlNonceStore(conn)
+        nonces.create_schema()
+        signer = StateSigner("state-key", clock=_clock(T0), nonce_store=nonces)
+        state = signer.issue("acme")
+        assert signer.verify(state) == "acme"          # first use ok
+        with pytest.raises(StateError):
+            signer.verify(state)                        # replay rejected via the durable store
+    finally:
+        conn.close()
+
+
 def _sample_conn() -> QboConnection:
     return QboConnection(
         tenant_id="acme", realm_id="R1", access_token="super-secret-access",

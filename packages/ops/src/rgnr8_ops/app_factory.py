@@ -28,10 +28,13 @@ from rgnr8_copilot import anthropic_llm
 from rgnr8_qbo import (
     ConnectionStore,
     InMemoryConnectionStore,
+    InMemoryNonceStore,
+    NonceStore,
     QboConnectService,
     QboEnvironment,
     QboOAuthConfig,
     SqlConnectionStore,
+    SqlNonceStore,
     cipher_from_env,
 )
 from rgnr8_qbo import UrllibHttpClient as QboHttpClient
@@ -144,14 +147,23 @@ def build_web_app(
     qbo_state_secret = session_secret or settings.jwt_secret or settings.secret_key
     if settings.qbo_enabled and qbo_state_secret:
         assert settings.qbo_client_id is not None and settings.qbo_client_secret is not None
+        # OAuth `state` replay defense. With a DB, use the durable cross-worker
+        # SqlNonceStore so a replayed state is caught even when the callback lands
+        # on a different web worker than the one that minted it; without a DB
+        # (single-process dev) the in-process default is fine.
+        nonce_store: NonceStore
         if conn is not None:
             # At-rest encryption for tokens; config.from_env fails closed when a DB
             # is configured without RGNR8_SECRET_KEY, so the key is present here.
             cipher = cipher_from_env({"RGNR8_SECRET_KEY": settings.secret_key or ""})
             conn_store: ConnectionStore = SqlConnectionStore(
                 conn, placeholder=settings.placeholder, cipher=cipher)  # type: ignore[arg-type]
+            sql_nonces = SqlNonceStore(conn, placeholder=settings.placeholder)  # type: ignore[arg-type]
+            sql_nonces.create_schema()
+            nonce_store = sql_nonces
         else:
             conn_store = InMemoryConnectionStore()
+            nonce_store = InMemoryNonceStore()
         redirect = settings.qbo_redirect_uri or "http://localhost:8080/oauth/qbo/callback"
         qbo = QboConnectService(
             QboOAuthConfig(
@@ -163,6 +175,7 @@ def build_web_app(
             QboHttpClient(),
             conn_store,
             state_secret=qbo_state_secret,
+            nonce_store=nonce_store,
         )
 
     # --- Ask RGNR8 (optional) --------------------------------------------
