@@ -40,3 +40,11 @@ def test_bootstrapped_db_backs_a_persisted_fleet() -> None:
     assert set(back.tenants) == {"acme"}
     assert back.tenants["acme"].config.minimum_cash == Money.from_decimal("10000.00")
     assert isinstance(subs, list)
+
+
+def test_rls_posture_check_is_inert_on_sqlite() -> None:
+    """sqlite has no RLS to bypass. Passing an object with no cursor() proves the
+    check never touches the connection on that dialect."""
+    from rgnr8_ops import rls_bypass_warnings
+
+    assert rls_bypass_warnings(object(), "?") == []

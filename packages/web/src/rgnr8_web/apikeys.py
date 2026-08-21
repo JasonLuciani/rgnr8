@@ -149,6 +149,7 @@ class _DbApiCursor(Protocol):
 class _DbApiConnection(Protocol):
     def cursor(self) -> _DbApiCursor: ...
     def commit(self) -> None: ...
+    def rollback(self) -> None: ...   # DB-API 2.0 requires it; needed to undo a failed probe
 
 
 class SqlApiKeyStore:
@@ -169,14 +170,26 @@ class SqlApiKeyStore:
                 "subject TEXT NOT NULL, name TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL DEFAULT 0, "
                 "expires_at INTEGER NOT NULL DEFAULT 0, revoked INTEGER NOT NULL DEFAULT 0, "
                 "scopes TEXT NOT NULL DEFAULT '')")
-            # Upgrade path for a table created before per-key scopes existed.
-            try:
-                cur.execute(f"ALTER TABLE {self._t} ADD COLUMN scopes TEXT NOT NULL DEFAULT ''")
-            except Exception:  # noqa: BLE001 - column already exists → nothing to do
-                pass
         finally:
             cur.close()
+        # Commit the CREATE before probing with the ALTER below. The probe expects
+        # to fail on an up-to-date table, and on Postgres a failed statement aborts
+        # the ENTIRE transaction -- so when both ran together the swallowed ALTER
+        # took the CREATE down with it and commit() discarded everything. The table
+        # silently never existed on Postgres, with no error anywhere.
         self._conn.commit()
+
+        # Upgrade path for a table created before per-key scopes existed. Its own
+        # transaction, explicitly rolled back on the expected failure.
+        cur = self._conn.cursor()
+        try:
+            cur.execute(f"ALTER TABLE {self._t} ADD COLUMN scopes TEXT NOT NULL DEFAULT ''")
+        except Exception:  # noqa: BLE001 - column already exists → nothing to do
+            self._conn.rollback()
+        else:
+            self._conn.commit()
+        finally:
+            cur.close()
 
     def save(self, key: ApiKey) -> None:
         p = self._ph
