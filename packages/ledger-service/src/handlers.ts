@@ -2618,16 +2618,22 @@ export class LedgerService {
     if (!data) return bad("invalid JSON body");
     const dto = { ...(data as unknown as GoLiveDto), tenant_id: String(tenant) };
     const request = goLiveFromDto(dto);
+    const now = this.opts.now();
     // Persist the chart through the backend's chart store as part of go-live, so
-    // the accounts are written BEFORE the opening entry posts — no orphan
-    // postings, and no separate post-hoc save loop that could be interrupted.
-    const result = await executeGoLive(
-      this.backend.store(tenant),
-      this.backend.periods(tenant),
-      request,
-      this.opts.now(),
-      { chartStore: this.backend.chartStore() },
-    );
+    // the accounts are written BEFORE the opening entry posts. When the backend
+    // supports it (Postgres), run the whole thing in ONE transaction so
+    // chart-persist + opening-post + period-lock commit or roll back together;
+    // otherwise (in-memory) take the sequential, idempotent path.
+    const result = this.backend.atomicGoLive
+      ? await this.backend.atomicGoLive((store, periods, chartStore) =>
+          executeGoLive(store, periods, request, now, { chartStore }))
+      : await executeGoLive(
+          this.backend.store(tenant),
+          this.backend.periods(tenant),
+          request,
+          now,
+          { chartStore: this.backend.chartStore() },
+        );
     return ok({
       tenant,
       opening_entry_id: result.cutover.entry.id,

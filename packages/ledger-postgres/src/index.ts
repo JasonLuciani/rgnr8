@@ -15,3 +15,4 @@ export {
   ACCOUNT_MIGRATIONS,
   ACCOUNT_MIGRATIONS_WITH_RLS,
 } from "./migrations.js";
+export { runInTransaction } from "./transaction.js";
