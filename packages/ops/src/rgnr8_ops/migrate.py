@@ -142,16 +142,16 @@ PYTHON_MIGRATIONS: tuple[Migration, ...] = (
 
 
 def _ensure_migrations_table(conn: DbApiConnection) -> None:
+    # `CREATE TABLE IF NOT EXISTS` is idempotent on both sqlite and Postgres and,
+    # crucially, never aborts the surrounding transaction. The old approach probed
+    # for the table with a `SELECT` first: on Postgres a SELECT against a missing
+    # relation raises AND marks the whole transaction as failed, so the follow-up
+    # CREATE then died with InFailedSqlTransaction (sqlite doesn't poison the txn,
+    # which is why it only ever broke on the real-Postgres path).
     cur = conn.cursor()
     try:
-        try:  # existence probe (avoids a repeated CREATE IF NOT EXISTS quirk)
-            cur.execute("SELECT 1 FROM schema_migrations_py LIMIT 0")
-            cur.fetchall()
-            return
-        except Exception:  # noqa: BLE001 - table absent → create it
-            pass
         cur.execute(
-            "CREATE TABLE schema_migrations_py "
+            "CREATE TABLE IF NOT EXISTS schema_migrations_py "
             "(version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)"
         )
     finally:
