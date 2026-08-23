@@ -6,7 +6,7 @@ This runbook covers the operational gate identified in the executive review: man
 
 ## 0. Prerequisites
 
-You will need: a cloud account that offers managed PostgreSQL and a container/app host (Render, Fly.io, Railway, AWS, GCP — the manifests in this folder are host-agnostic Docker), a domain you control, and a place to store secrets (your host's secret manager or a vault). The build ships a `Dockerfile`, `docker-compose.yml`, `Procfile`, and a `render_app.py` blueprint helper in this directory.
+You will need: a cloud account that offers managed PostgreSQL and a container/app host (Render, Fly.io, Railway, AWS, GCP — the manifests in this folder are host-agnostic Docker), a domain you control, and a place to store secrets (your host's secret manager or a vault). The build ships a `Dockerfile`, `docker-compose.yml`, and `Procfile` in this directory. For Render specifically, the repo root carries a reviewed **`render.yaml`** Blueprint that implements this runbook's topology (public web at the custom domain, PRIVATE ledger + operator, cron worker, managed Postgres 16, `RGNR8_REQUIRE_RLS=1`) — create a Blueprint instance from it and you land at step 1 with most of steps 2–4 pre-wired.
 
 ## 1. Managed PostgreSQL 16
 
