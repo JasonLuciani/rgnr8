@@ -35,7 +35,17 @@ bootstrap_python_schemas(conn, placeholder="%s")   # "?" for sqlite
 Provide via environment/secret store:
 
 - `RGNR8_JWT_SECRET` — HS256 signing key for owner session JWTs (rotate via your IdP; the web app verifies with `JwtAuthenticator`).
-- Database DSN for the shared Postgres.
+- Database DSN for the shared Postgres. **The role in this DSN must not be a
+  superuser and must not have `BYPASSRLS`.** Postgres does not apply row-level
+  security to either, and `FORCE ROW LEVEL SECURITY` does not change that — it only
+  extends RLS to a table's *owner*. Connect as a superuser and every tenant-isolation
+  policy below is defined, tested, and completely inert, with nothing in the app
+  behaving differently. Owning the tables is fine; being a superuser is not. Managed
+  Postgres (Render, RDS, Cloud SQL) hands you a non-superuser role by default —
+  self-hosted setups are where this goes wrong.
+  The app checks its own role at boot and logs `[security] warning: …` when it
+  cannot enforce RLS. Set `RGNR8_REQUIRE_RLS=1` to make that fatal instead of a log
+  line — recommended for any environment holding real client books.
 - (When delivering) `SENDGRID_API_KEY` / FCM credentials for `rgnr8-briefing`'s HTTP transports.
 - (When connecting data) Plaid/Gusto keys and the QBO OAuth token + realm id.
 
@@ -54,7 +64,7 @@ application = wsgi_app(build_app())
 gunicorn rgnr8_web_entry:application --workers 4 --bind 0.0.0.0:8080
 ```
 
-Per-tenant isolation: every `/api/<tenant>/…` and `/t/<tenant>/…` route is tenant-scoped and a token for one tenant cannot reach another's data (enforced + tested). Put the web-state table behind Postgres RLS keyed on `tenant_id` in production.
+Per-tenant isolation: every `/api/<tenant>/…` and `/t/<tenant>/…` route is tenant-scoped and a token for one tenant cannot reach another's data (enforced + tested). The Python-owned tables are behind Postgres RLS keyed on `tenant_id` (migrations 2, 4 and 5 — `ENABLE` + `FORCE ROW LEVEL SECURITY`), and the stores set the per-request `app.tenant_id` GUC so the policies engage. **This is only real if the connecting role cannot bypass RLS — see the DSN note in *Configure* above.**
 
 ### Health & readiness
 

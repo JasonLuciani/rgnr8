@@ -5,6 +5,7 @@ import {
   StatementAdapter,
   TransactionKind,
   parseOfx,
+  buildOfx,
   parseStatement,
   parseStatementCsv,
   statementRawRecords,
@@ -65,4 +66,32 @@ test("re-importing the same statement is idempotent (dedupe by FITID)", () => {
   assert.equal(second.added.length, 0);
   assert.equal(second.duplicates, 3);
   assert.equal(pipe.active().length, 3);
+});
+
+test("buildOfx round-trips through parseOfx (fitid/date/amount/description)", () => {
+  const txns = [
+    { fitid: "T1", date: "2026-08-15", amount: "13210.55", description: "Client deposit", currency: "USD" },
+    { fitid: "T2", date: "2026-08-16", amount: "-4000.00", description: "Rent", currency: "USD" },
+    { fitid: "T3", date: "2026-08-17", amount: "-35.00", description: "Monthly bank fee", currency: "USD" },
+  ];
+  const ofx = buildOfx(txns, { bankId: "021000021", acctId: "12345678", currency: "USD", dtServer: "20260817120000" });
+  // Valid-looking OFX 1.02 SGML header + envelope.
+  assert.match(ofx, /OFXHEADER:100/);
+  assert.match(ofx, /<CURDEF>USD/);
+  assert.match(ofx, /<TRNTYPE>DEBIT<DTPOSTED>20260816<TRNAMT>-4000\.00/);
+
+  const back = parseOfx(ofx);
+  assert.equal(back.length, 3);
+  assert.deepEqual(back.map((t) => t.fitid), ["T1", "T2", "T3"]);
+  assert.deepEqual(back.map((t) => t.date), ["2026-08-15", "2026-08-16", "2026-08-17"]);
+  assert.deepEqual(back.map((t) => t.amount), ["13210.55", "-4000.00", "-35.00"]);
+  assert.equal(back[0]!.description, "Client deposit");
+  assert.equal(back[0]!.currency, "USD");
+});
+
+test("buildOfx classifies sign into CREDIT/DEBIT and is deterministic", () => {
+  const a = buildOfx([{ fitid: "X", date: "2026-01-02", amount: "10.00", description: "in" }], { dtServer: "20260102120000" });
+  const b = buildOfx([{ fitid: "X", date: "2026-01-02", amount: "10.00", description: "in" }], { dtServer: "20260102120000" });
+  assert.equal(a, b);                                   // deterministic (injected dtServer)
+  assert.match(a, /<TRNTYPE>CREDIT<DTPOSTED>20260102<TRNAMT>10\.00<FITID>X/);
 });

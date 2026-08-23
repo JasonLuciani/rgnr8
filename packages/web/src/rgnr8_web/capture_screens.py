@@ -12,6 +12,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from .books_screens import _banner, _card, _esc, _seq, money
+from .provenance_labels import Provenance
+from .provenance_labels import badge as prov_badge
+from .provenance_labels import legend as prov_legend
+
+# A captured receipt is IMPORTED (a claim read from OCR/text); creating the bill
+# posts it to the ledger, at which point it is POSTED.
+_CAPTURE_PROV = (Provenance.IMPORTED, Provenance.POSTED)
 
 _SAMPLE = (
     "HOME DEPOT #4512\nDate: 03/14/2026\n"
@@ -43,7 +50,7 @@ def render_capture(
         '<div style="grid-column:1/-1"><button type="submit">Scan receipt</button></div>'
         "</form>"
     )
-    sections = [banner, _card("Capture a receipt", scan_form)]
+    sections = [banner, prov_legend(_CAPTURE_PROV), _card("Capture a receipt", scan_form)]
 
     if draft is not None:
         sections.append(_render_draft(tenant, draft, vendors or []))
@@ -81,7 +88,8 @@ def _render_draft(tenant: str, draft: Mapping[str, object], vendors: list[object
 
     form = (
         review
-        + f'<div class="muted" style="margin-bottom:8px">Extracted total: <strong>{total}</strong>'
+        + f'<div class="muted" style="margin-bottom:8px">Extracted total: <strong>{total}</strong> '
+        f'{prov_badge(Provenance.IMPORTED)}'
         f' &nbsp;·&nbsp; tax shown on receipt: {tax}</div>'
         f'<form method="post" action="/t/{_esc(tenant)}/capture/bill" class="grid">'
         + vendor_field

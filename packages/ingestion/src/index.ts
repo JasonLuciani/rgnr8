@@ -19,6 +19,7 @@ export { PayrollGustoLikeAdapter } from "./adapters/payrollGustoLike.js";
 export { QboLikeAdapter } from "./adapters/qboLike.js";
 export {
   parseOfx,
+  buildOfx,
   parseStatementCsv,
   parseStatement,
   statementRawRecords,
@@ -26,6 +27,7 @@ export {
   STATEMENT_PROVIDER,
   type StatementTxn,
   type StatementRawOptions,
+  type OfxExportOptions,
 } from "./statements.js";
 export {
   toPostingCommands,

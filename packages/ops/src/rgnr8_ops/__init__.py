@@ -13,12 +13,13 @@ from .app_factory import (
     build_observability,
     build_web_app,
     create_application,
+    create_operator_application,
     load_fleet,
     readiness,
 )
 from .config import ConfigError, Settings
 from .console import render_operator_console
-from .db_posture import rls_bypass_warnings
+from .db_posture import check_rls_posture, rls_bypass_warnings
 from .deploy import bootstrap_python_schemas
 from .fleet import BetaTenant, Fleet, default_schedule
 from .migrate import (
@@ -74,6 +75,7 @@ from .worker import build_fleet_jobs, build_worker
 __version__ = "0.1.0"
 
 __all__ = [
+    "check_rls_posture",
     "rls_bypass_warnings",
     "Fleet",
     "BetaTenant",
@@ -138,6 +140,7 @@ __all__ = [
     "build_observability",
     "build_web_app",
     "create_application",
+    "create_operator_application",
     "load_fleet",
     "readiness",
     "Migration",

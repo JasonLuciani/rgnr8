@@ -19,6 +19,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from .books_screens import _card, _esc, _minor, _num, _seq, money
+from .provenance_labels import Provenance
+from .provenance_labels import badge as prov_badge
+from .provenance_labels import legend as prov_legend
+
+# A posted payroll run is a POSTED ledger fact; once its period is published it is
+# SEALED. A draft run (not yet posted) is not shown as a book figure.
+_PAYROLL_PROV = (Provenance.POSTED, Provenance.SEALED)
 
 
 def _banner(kind: str, text: str) -> str:
@@ -111,7 +118,8 @@ def render_payroll_home(
         else "No outstanding payroll liabilities.",
     )
 
-    out = head + _card("Payroll runs", table)
+    out = head + prov_legend(_PAYROLL_PROV) + _card(
+        "Payroll runs", table, actions=prov_badge(Provenance.POSTED))
     if owed > 0 and can_post:
         out += _render_remit_form(tenant, liabilities)
     if can_post:

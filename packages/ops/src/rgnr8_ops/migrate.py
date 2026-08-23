@@ -142,33 +142,18 @@ PYTHON_MIGRATIONS: tuple[Migration, ...] = (
 
 
 _MIGRATIONS_TABLE_DDL = (
-    "CREATE TABLE schema_migrations_py "
+    "CREATE TABLE IF NOT EXISTS schema_migrations_py "
     "(version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)"
 )
 
 
 def _ensure_migrations_table(conn: DbApiConnection) -> None:
-    cur = conn.cursor()
-    try:
-        try:  # existence probe (avoids a repeated CREATE IF NOT EXISTS quirk)
-            cur.execute("SELECT 1 FROM schema_migrations_py LIMIT 0")
-            cur.fetchall()
-            return
-        except Exception:  # noqa: BLE001 - table absent → create it
-            pass
-    finally:
-        cur.close()
-
-    # Postgres aborts the WHOLE transaction as soon as any statement fails, so once
-    # the probe above 404s every later statement raises InFailedSqlTransaction --
-    # including the CREATE below. Catching the Python exception is not enough; the
-    # server-side transaction has to be discarded. sqlite has no such behaviour, so
-    # this is a harmless no-op there.
-    #
-    # This is safe unconditionally: _ensure_migrations_table runs before
-    # run_migrations() has applied anything, so there is never real work to lose.
-    conn.rollback()
-
+    # `CREATE TABLE IF NOT EXISTS` is idempotent on both sqlite and Postgres and,
+    # crucially, never aborts the surrounding transaction. The old approach probed
+    # for the table with a `SELECT` first: on Postgres a SELECT against a missing
+    # relation raises AND marks the whole transaction as failed, so the follow-up
+    # CREATE then died with InFailedSqlTransaction (sqlite doesn't poison the txn,
+    # which is why it only ever broke on the real-Postgres path).
     cur = conn.cursor()
     try:
         cur.execute(_MIGRATIONS_TABLE_DDL)

@@ -28,17 +28,22 @@ from rgnr8_copilot import anthropic_llm
 from rgnr8_qbo import (
     ConnectionStore,
     InMemoryConnectionStore,
+    InMemoryNonceStore,
+    NonceStore,
     QboConnectService,
     QboEnvironment,
     QboOAuthConfig,
     SqlConnectionStore,
+    SqlNonceStore,
     cipher_from_env,
 )
 from rgnr8_qbo import UrllibHttpClient as QboHttpClient
 from rgnr8_web import (
+    AuditSink,
     AuthService,
     FinancialPackageReader,
     HttpJwksProvider,
+    InMemoryAuditLog,
     InMemoryCredentialStore,
     InMemoryTenantStore,
     InMemoryUserDirectory,
@@ -48,6 +53,7 @@ from rgnr8_web import (
     RateLimiter,
     Role,
     make_rate_limit_key,
+    SqlAuditLog,
     SqlCredentialStore,
     SqlTenantStore,
     SqlUserDirectory,
@@ -60,9 +66,13 @@ from rgnr8_web import (
     wsgi_app,
 )
 
+from datetime import datetime, timezone
+
 from .config import ConfigError, Settings
 from .ddl_lock import ddl_bootstrap_lock
 from .fleet import Fleet
+from .onboarding import OnboardingRegistry, SqlOnboardingRegistry
+from .operator_app import OperatorApp, operator_wsgi
 from .provisioning import Provisioning, build_provisioning
 from .store import SqlFleetStore
 
@@ -126,8 +136,7 @@ def build_web_app(
             if conn is not None else InMemoryCredentialStore()
         )
         if isinstance(credentials, SqlCredentialStore):
-            with ddl_bootstrap_lock(conn, settings.placeholder):
-                credentials.create_schema()
+            credentials.create_schema()
         auth_service = AuthService(credentials=credentials)
 
     # --- QuickBooks Online connect (optional) ----------------------------
@@ -139,14 +148,23 @@ def build_web_app(
     qbo_state_secret = session_secret or settings.jwt_secret or settings.secret_key
     if settings.qbo_enabled and qbo_state_secret:
         assert settings.qbo_client_id is not None and settings.qbo_client_secret is not None
+        # OAuth `state` replay defense. With a DB, use the durable cross-worker
+        # SqlNonceStore so a replayed state is caught even when the callback lands
+        # on a different web worker than the one that minted it; without a DB
+        # (single-process dev) the in-process default is fine.
+        nonce_store: NonceStore
         if conn is not None:
             # At-rest encryption for tokens; config.from_env fails closed when a DB
             # is configured without RGNR8_SECRET_KEY, so the key is present here.
             cipher = cipher_from_env({"RGNR8_SECRET_KEY": settings.secret_key or ""})
             conn_store: ConnectionStore = SqlConnectionStore(
                 conn, placeholder=settings.placeholder, cipher=cipher)  # type: ignore[arg-type]
+            sql_nonces = SqlNonceStore(conn, placeholder=settings.placeholder)  # type: ignore[arg-type]
+            sql_nonces.create_schema()
+            nonce_store = sql_nonces
         else:
             conn_store = InMemoryConnectionStore()
+            nonce_store = InMemoryNonceStore()
         redirect = settings.qbo_redirect_uri or "http://localhost:8080/oauth/qbo/callback"
         qbo = QboConnectService(
             QboOAuthConfig(
@@ -158,6 +176,7 @@ def build_web_app(
             QboHttpClient(),
             conn_store,
             state_secret=qbo_state_secret,
+            nonce_store=nonce_store,
         )
 
     # --- Ask RGNR8 (optional) --------------------------------------------
@@ -277,19 +296,80 @@ def create_application(
     tenants when a connection is available so routes resolve after a restart."""
     settings = Settings.from_env(env)
     prov = provisioning if provisioning is not None else build_provisioning()
-    app = build_web_app(settings, conn=conn, packages=packages,
-                        usage_recorder=prov.usage_recorder)
-    if conn is not None:
-        fleet = load_fleet(settings, conn)
-        prov.bind_fleet(fleet)  # the on_provisioned → fleet-onboard/metering seam
-        for bt in fleet.tenants.values():
-            # No guessable static token: under a real authenticator the static map
-            # is inert anyway (gated in `_principal`), but we also stop minting a
-            # predictable `unused:<tenant>` credential. Seat the owner so IdP
-            # tokens resolve to real RBAC.
-            app.add_tenant(bt.tenant_id, bt.name, bt.inputs, bt.config,
-                           token=secrets.token_urlsafe(32))
-            _seat_owner(app, bt.recipient, bt.tenant_id)
+    # Serialize the boot-time schema creation across concurrent gunicorn workers.
+    # Each worker imports this module and builds its own app+connection, and the
+    # stores' `CREATE TABLE IF NOT EXISTS` is NOT atomic in Postgres — two workers
+    # can both pass the existence check and one then fails with a pg_type unique
+    # violation, crashing that worker. A session-level advisory lock lets the first
+    # worker create everything while the rest wait, then no-op. No-op off Postgres.
+    with ddl_bootstrap_lock(conn, settings.placeholder):
+        app = build_web_app(settings, conn=conn, packages=packages,
+                            usage_recorder=prov.usage_recorder)
+        if conn is not None:
+            fleet = load_fleet(settings, conn)
+            prov.bind_fleet(fleet)  # the on_provisioned → fleet-onboard/metering seam
+            for bt in fleet.tenants.values():
+                # No guessable static token: under a real authenticator the static
+                # map is inert anyway (gated in `_principal`), but we also stop
+                # minting a predictable `unused:<tenant>` credential. Seat the owner
+                # so IdP tokens resolve to real RBAC.
+                app.add_tenant(bt.tenant_id, bt.name, bt.inputs, bt.config,
+                               token=secrets.token_urlsafe(32))
+                _seat_owner(app, bt.recipient, bt.tenant_id)
     rate_limiter, logger, metrics, errors = build_observability(settings, clock=time.monotonic)
     return wsgi_app(app, rate_limiter=rate_limiter, logger=logger,
                     metrics=metrics, errors=errors)
+
+
+def create_operator_application(
+    env: Mapping[str, str] | None = None,
+    *,
+    conn: object | None = None,
+    provisioning: Provisioning | None = None,
+) -> Callable[..., object]:
+    """The RGNR8-staff control-plane WSGI entrypoint (the operator console).
+
+    This is the composition that was missing: `OperatorApp` is where go-live /
+    onboarding state lives, and until now nothing constructed it in production, so
+    its durable `SqlOnboardingRegistry` was dead code. With a live `conn` this
+    wires the **durable** onboarding registry (chosen COA template + cutover /
+    go-live status survive a restart) and a persisted fleet + audit log; without a
+    connection it builds the in-memory dev console. A deploy module does
+    `application = create_operator_application()` for gunicorn."""
+    settings = Settings.from_env(env)
+    prov = provisioning if provisioning is not None else build_provisioning()
+    secret = settings.jwt_secret or "dev-secret"
+
+    users: UserDirectory
+    audit: AuditSink
+    onboarding: OnboardingRegistry
+    if conn is not None:
+        users = SqlUserDirectory(conn, placeholder=settings.placeholder)  # type: ignore[arg-type]
+        sql_audit = SqlAuditLog(conn, placeholder=settings.placeholder)  # type: ignore[arg-type]
+        sql_onboarding = SqlOnboardingRegistry(conn, placeholder=settings.placeholder)  # type: ignore[arg-type]
+        # Same cold-start race as create_application(): the operator console is its
+        # own gunicorn entrypoint, so its workers contend on the identical DDL.
+        with ddl_bootstrap_lock(conn, settings.placeholder):
+            sql_audit.create_schema()
+            sql_onboarding.create_schema()
+        audit = sql_audit
+        fleet = load_fleet(settings, conn, jwt_secret=secret)
+        onboarding = sql_onboarding
+    else:
+        users = InMemoryUserDirectory()
+        audit = InMemoryAuditLog()
+        fleet = Fleet(jwt_secret=secret)
+        onboarding = OnboardingRegistry()
+
+    ledger = (
+        LedgerClient(UrllibTransport(settings.ledger_url), token=settings.ledger_token or "")
+        if settings.ledger_url else None
+    )
+
+    app = OperatorApp(
+        fleet, prov.billing, users, audit, secret,
+        clock=lambda: datetime.now(timezone.utc),
+        onboarding=onboarding,
+        ledger=ledger,
+    )
+    return operator_wsgi(app)

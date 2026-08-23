@@ -196,7 +196,7 @@ def test_operator_can_launch_view_as_and_it_is_audited() -> None:
     hdr = {"authorization": f"Bearer {token}"}
 
     r = app.handle(Request("POST", "/operator/view-as", hdr,
-                           json.dumps({"tenant_id": "seed", "role": "viewer", "ttl_seconds": 600})))
+                           json.dumps({"tenant_id": "seed", "role": "viewer", "ttl_seconds": 600, "case_id": "ZD-1"})))
     assert r.status == 200
     body = json.loads(r.body)
     assert body["view_as"] == "viewer" and body["tenant_id"] == "seed"
@@ -206,7 +206,7 @@ def test_operator_can_launch_view_as_and_it_is_audited() -> None:
 
     # an unknown role is a clean 400
     bad = app.handle(Request("POST", "/operator/view-as", hdr,
-                             json.dumps({"tenant_id": "seed", "role": "wizard"})))
+                             json.dumps({"tenant_id": "seed", "role": "wizard", "case_id": "ZD-2"})))
     assert bad.status == 400
 
 
@@ -226,12 +226,13 @@ def test_view_as_toggle_is_operator_only_and_disables_role_view() -> None:
 
     # now a role-scoped view-as is refused...
     denied = app.handle(Request("POST", "/operator/view-as", op,
-                                json.dumps({"tenant_id": "seed", "role": "owner"})))
+                                json.dumps({"tenant_id": "seed", "role": "owner", "case_id": "ZD-3"})))
     assert denied.status == 403
-    # ...but a plain support session (no role) still works
+    # ...and so is a plain support session — the kill switch stops ALL staff
+    # impersonation once we're live (B-2), not just role-emulation.
     plain = app.handle(Request("POST", "/operator/view-as", op,
-                               json.dumps({"tenant_id": "seed"})))
-    assert plain.status == 200 and json.loads(plain.body)["view_as"] is None
+                               json.dumps({"tenant_id": "seed", "case_id": "ZD-4"})))
+    assert plain.status == 403
 
 
 def test_operator_manages_tenant_users_and_roles() -> None:

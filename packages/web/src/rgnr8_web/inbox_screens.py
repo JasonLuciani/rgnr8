@@ -19,6 +19,7 @@ from collections.abc import Mapping
 
 from .attachment_screens import attachment_link
 from .books_screens import _card, _esc, _minor, _seq, money
+from .provenance_labels import Provenance, badge as prov_badge, legend as prov_legend
 
 
 def _banner(kind: str, text: str) -> str:
@@ -196,7 +197,10 @@ def render_inbox(
         f'<a class="btn-link" href="/t/{_esc(tenant)}/inbox?status=EXCLUDED">Excluded</a></p>'
     )
 
-    out = head + summary + _card("For review", table)
+    # Provenance: for-review lines are IMPORTED (from the bank, not yet in the
+    # books); accepting one POSTs it; a bank rec then makes it RECONCILED.
+    legend = prov_legend((Provenance.IMPORTED, Provenance.POSTED, Provenance.RECONCILED))
+    out = head + summary + legend + _card("For review", table, actions=prov_badge(Provenance.IMPORTED))
     if can_post and pending:
         out += _bulk_form(tenant)
     return out

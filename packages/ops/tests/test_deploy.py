@@ -48,3 +48,42 @@ def test_rls_posture_check_is_inert_on_sqlite() -> None:
     from rgnr8_ops import rls_bypass_warnings
 
     assert rls_bypass_warnings(object(), "?") == []
+
+
+def test_rls_enforcement_flag_turns_the_warning_into_a_refusal() -> None:
+    """RGNR8_REQUIRE_RLS=1 is what makes a misconfigured role fatal instead of a
+    log line nobody reads. A fake superuser connection stands in for the real one."""
+    from rgnr8_ops import check_rls_posture
+
+    class _Cur:
+        def execute(self, sql: str, params: object = None) -> None: ...
+        def fetchall(self) -> list:
+            return [("app_role", True, False)]      # rolsuper = True
+        def close(self) -> None: ...
+
+    class _Conn:
+        def cursor(self) -> _Cur:
+            return _Cur()
+        def commit(self) -> None: ...
+        def rollback(self) -> None: ...
+
+    warned, fatal = check_rls_posture(_Conn(), "%s", {})
+    assert warned and not fatal                     # default: warn only
+
+    warned, fatal = check_rls_posture(_Conn(), "%s", {"RGNR8_REQUIRE_RLS": "1"})
+    assert warned and fatal                         # opted in: refuse to boot
+
+    # A sound connection must never be fatal, even with enforcement on.
+    class _CleanCur(_Cur):
+        def fetchall(self) -> list:
+            return [("app_role", False, False)]
+
+    class _CleanConn(_Conn):
+        def cursor(self) -> _CleanCur:
+            return _CleanCur()
+
+    warned, fatal = check_rls_posture(_CleanConn(), "%s", {"RGNR8_REQUIRE_RLS": "1"})
+    assert not warned and not fatal
+
+    # sqlite has no RLS to bypass; enforcement must not block it.
+    assert check_rls_posture(object(), "?", {"RGNR8_REQUIRE_RLS": "1"}) == ([], False)

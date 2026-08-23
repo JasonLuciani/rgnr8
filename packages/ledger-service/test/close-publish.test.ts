@@ -31,9 +31,39 @@ async function books(s: LedgerService): Promise<void> {
   });
 }
 
+/** Reconcile the Cash account through the period end so the close gate's bank
+ * reconciliation control passes (the authoritative gate requires it). */
+async function reconcileCash(s: LedgerService): Promise<void> {
+  const q = { statement_date: "2026-08-31", statement_balance_minor: "500000" };
+  const view = obj(await call(s, "GET", "/t/acme/accounts/1000/reconcile", "", q));
+  for (const l of (view["lines"] as Array<{ entry_id: string }>)) {
+    await call(s, "POST", "/t/acme/accounts/1000/reconcile/toggle",
+      { entry_id: l.entry_id, cleared: true, ...q });
+  }
+  await call(s, "POST", "/t/acme/accounts/1000/reconcile/finish", q);
+}
+
+test("publish is blocked until the bank is reconciled (real gate, not board flags)", async () => {
+  const s = svc();
+  await books(s);
+  // Cash is not reconciled through the period end → the authoritative gate refuses.
+  const blocked = await call(s, "POST", "/t/acme/close/publish", {
+    from: "2026-08-01", to: "2026-08-31", published_by: "sam",
+  });
+  assert.equal(blocked.status, 409, JSON.stringify(blocked.body));
+  assert.match(String(obj(blocked)["error"]), /reconcil/i);
+  // Reconcile, then the same publish succeeds.
+  await reconcileCash(s);
+  const ok = await call(s, "POST", "/t/acme/close/publish", {
+    from: "2026-08-01", to: "2026-08-31", published_by: "sam",
+  });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+});
+
 test("publish seals the period: locks it durably and persists the package", async () => {
   const s = svc();
   await books(s);
+  await reconcileCash(s);
 
   const res = await call(s, "POST", "/t/acme/close/publish", {
     from: "2026-08-01", to: "2026-08-31", period: "2026-08",
@@ -65,6 +95,7 @@ test("publish seals the period: locks it durably and persists the package", asyn
 test("separation of duties: the preparer cannot also publish", async () => {
   const s = svc();
   await books(s);
+  await reconcileCash(s);
   const res = await call(s, "POST", "/t/acme/close/publish", {
     from: "2026-08-01", to: "2026-08-31", prepared_by: "sam", published_by: "sam",
   });
@@ -72,14 +103,24 @@ test("separation of duties: the preparer cannot also publish", async () => {
   assert.match(String(obj(res)["error"]), /sign off|second person/i);
 });
 
-test("a failing control blocks the publish — nothing is sealed", async () => {
+test("a real AR control mismatch blocks the publish — nothing is sealed", async () => {
   const s = svc();
   await books(s);
+  await reconcileCash(s);
+  // Post straight to the AR control account with no matching open invoice, so the
+  // GL AR balance no longer ties to the (empty) subledger.
+  await call(s, "POST", "/t/acme/entries", {
+    date: "2026-08-07", memo: "orphan AR",
+    lines: [
+      { code: "1200", side: "DEBIT", amount_minor: "9000" },
+      { code: "4000", side: "CREDIT", amount_minor: "9000" },
+    ],
+  });
   const res = await call(s, "POST", "/t/acme/close/publish", {
     from: "2026-08-01", to: "2026-08-31", published_by: "sam",
-    controls: [{ name: "AP", balanced: false }],
   });
-  assert.equal(res.status, 409);
+  assert.equal(res.status, 409, JSON.stringify(res.body));
+  assert.match(String(obj(res)["error"]), /receivable|subledger|blocked/i);
   const state = await call(s, "GET", "/t/acme/close/state", "", { period: "2026-08" });
   assert.equal(state.status, 404, "no close state should exist after a blocked publish");
 });
@@ -87,6 +128,7 @@ test("a failing control blocks the publish — nothing is sealed", async () => {
 test("reopen is two-step and separation-of-duties gated; evidence is preserved", async () => {
   const s = svc();
   await books(s);
+  await reconcileCash(s);
   await call(s, "POST", "/t/acme/close/publish", {
     from: "2026-08-01", to: "2026-08-31", published_by: "sam",
   });

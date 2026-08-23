@@ -363,6 +363,9 @@ class OperatorApp:
         tenant_id = str(data.get("tenant_id", "")).strip()
         if not tenant_id:
             return _json(400, {"error": "tenant_id is required"})
+        case_id = str(data.get("case_id", "")).strip()
+        if not case_id:
+            return _json(400, {"error": "case_id (support ticket) is required to impersonate"})
         role_raw = data.get("role")
         view_as: Role | None = None
         if role_raw not in (None, ""):
@@ -377,7 +380,8 @@ class OperatorApp:
             return _json(400, {"error": "ttl_seconds must be an integer"})
 
         try:
-            token = self._admin.view_as(subject, tenant_id, view_as, ttl_seconds=ttl_seconds)
+            token = self._admin.view_as(subject, tenant_id, view_as,
+                                        case_id=case_id, ttl_seconds=ttl_seconds)
         except PlatformError as exc:
             return _json(403, {"error": str(exc)})
         return _json(200, {

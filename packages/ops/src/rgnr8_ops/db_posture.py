@@ -8,6 +8,7 @@ being discovered during an incident.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 
@@ -46,3 +47,24 @@ def rls_bypass_warnings(conn: Any, placeholder: str) -> list[str]:
         f"against it, so every tenant-isolation policy on this database is inert. "
         f"Connect the application as a non-superuser role without BYPASSRLS."
     ]
+
+
+# Accepted truthy spellings for the enforcement flag.
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def check_rls_posture(
+    conn: Any, placeholder: str, env: Mapping[str, str]
+) -> tuple[list[str], bool]:
+    """(warnings, must_refuse_to_boot).
+
+    RLS is the tenant-isolation control, and a log line is easy to miss -- a
+    misconfigured role disables isolation silently and the app serves happily.
+    Set ``RGNR8_REQUIRE_RLS=1`` in any environment where that must be fatal
+    instead: the process refuses to start rather than run without the isolation
+    it claims to enforce. Default stays a warning so a dev box or a sqlite run is
+    never blocked by it.
+    """
+    warnings = rls_bypass_warnings(conn, placeholder)
+    strict = str(env.get("RGNR8_REQUIRE_RLS", "")).strip().lower() in _TRUTHY
+    return warnings, bool(warnings) and strict

@@ -21,6 +21,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from .books_screens import _card, _esc, _minor, _num, _seq, money
+from .provenance_labels import Provenance
+from .provenance_labels import badge as prov_badge
+from .provenance_labels import legend as prov_legend
+
+# Job cost and billed-to-date tie to the general ledger — POSTED, RECONCILED once
+# matched to the bank. (The contract value is the agreed contract, shown for
+# context, not a book figure.)
+_JOBS_PROV = (Provenance.POSTED, Provenance.RECONCILED)
 
 
 def _banner(kind: str, text: str) -> str:
@@ -113,7 +121,8 @@ def render_jobs(
             f"<tbody>{cells}</tbody></table>"
         )
 
-    out = head + _card(f"Jobs ({len(rows)})", body)
+    out = head + prov_legend(_JOBS_PROV) + _card(
+        f"Jobs ({len(rows)})", body, actions=prov_badge(Provenance.POSTED))
     if can_edit:
         out += _new_job_form(tenant, customers, accounts)
     return out

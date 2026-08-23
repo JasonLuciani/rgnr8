@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextvars
 import dataclasses
 import json
+import re
 import secrets
 import time
 from collections.abc import Callable, Mapping
@@ -30,11 +31,15 @@ from rgnr8_briefing import (
     validate_briefing,
 )
 from rgnr8_categorize import (
+    BookRouter,
+    BookRule,
     CategorizedTxn,
     Categorizer,
     LearnedModel,
+    Rule,
     RuleSet,
     Txn,
+    split_books,
 )
 from rgnr8_forecast import (
     CustomerHistory,
@@ -102,6 +107,7 @@ from .books_screens import (
 from .books_screens import (
     unavailable as render_books_unavailable,
 )
+from .books_split_screens import RULE_ROWS, render_split
 from .provenance_labels import Provenance
 from .provenance_labels import legend as prov_legend
 from .consolidation_screens import (
@@ -1485,6 +1491,11 @@ class WebApp:
         if len(parts) == 4 and parts[0] == "t" and parts[2] == "books" and parts[3] == "statements":
             return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
                                  lambda t: self._books_statements_page(subject, t, req.query))
+        # /t/<tenant>/books/split -> split a commingled account into two books (A-2)
+        if len(parts) == 4 and parts[0] == "t" and parts[2] == "books" and parts[3] == "split":
+            body = req.body if req.method == "POST" else ""
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._books_split_page(subject, t, req.method, body))
         # /t/<tenant>/books/entries -> post a journal entry (form POST)
         if (len(parts) == 4 and parts[0] == "t" and parts[2] == "books"
                 and parts[3] == "entries" and req.method == "POST"):
@@ -1633,6 +1644,26 @@ class WebApp:
             if resource == "transactions" and req.method == "POST":
                 return self._require(subject, token_tenant, tenant, P.CATEGORIZE_TXNS,
                                      lambda t: self._categorize(t, req.body))
+            # --- agent-native pipeline (JSON): post / report / ingest ----------
+            # A journal post (balanced-journal + period-lock enforcement live in
+            # the ledger service; RBAC/scopes gate the caller here).
+            if resource == "entries" and req.method == "POST":
+                return self._require(subject, token_tenant, tenant, P.POST_JOURNAL,
+                                     lambda t: self._post_entry_json(subject, t, req.body))
+            # The three statements for a period as JSON (report step).
+            if resource == "statements" and req.method == "GET":
+                return self._require(subject, token_tenant, tenant, P.VIEW_TRANSACTIONS,
+                                     lambda t: self._statements_json(t, req.query))
+            # Ingest a batch of parsed feed transactions (parse/match step); the
+            # ledger de-duplicates by transaction id.
+            if resource == "ingest" and req.method == "POST":
+                return self._require(subject, token_tenant, tenant, P.POST_JOURNAL,
+                                     lambda t: self._ingest_json(t, req.body))
+            # Split one commingled statement into two+ balanced sets of books by
+            # rule (A-2). Read-only analysis (no posting), so VIEW_TRANSACTIONS.
+            if resource == "split" and req.method == "POST":
+                return self._require(subject, token_tenant, tenant, P.VIEW_TRANSACTIONS,
+                                     lambda t: self._split_books_json(req.body))
             if resource == "scenario" and req.method == "POST":
                 return self._require(subject, token_tenant, tenant, P.VIEW_CASH,
                                      lambda t: self._scenario(t, req.body))
@@ -2078,6 +2109,110 @@ class WebApp:
         if not res.ok:
             return self._shell(subject, t, "books", render_books_unavailable(res.error()))
         return self._shell(subject, t, "books", render_register(t.tenant_id, res.body))
+
+    def _books_split_page(self, subject: str, t: _Tenant, method: str, body: str) -> Response:
+        """The guided commingled-account split (A-2). Reads the tenant's imported
+        bank feed and lets the owner scope it (all lines vs only those needing
+        review, plus an optional date range) and author routing rules in a form (no
+        JSON). GET shows the statement + an empty rule builder; POST applies the
+        scope, runs the split, and renders the proposed books plus a per-transaction
+        audit. Nothing is posted."""
+        all_txns = self._txns.get(t.tenant_id, [])
+        total_imported = len(all_txns)
+        form = self._form_or_json(body) if method == "POST" else {}
+        scope_status = str(form.get("scope_status", "all")).strip() or "all"
+        scope_from = str(form.get("scope_from", "")).strip()
+        scope_to = str(form.get("scope_to", "")).strip()
+
+        scoped = self._scope_txns(all_txns, scope_status, scope_from, scope_to)
+        source = [
+            {"id": tx.id, "date": tx.date, "description": tx.description,
+             "counterparty": tx.counterparty, "amount_minor": tx.amount.minor_units}
+            for tx in scoped
+        ]
+        preview = source[:8]
+
+        def _render(rules: "list[dict[str, str]] | None", default_book: str,
+                    result: "dict[str, object] | None", error: str) -> Response:
+            return self._shell(subject, t, "books", render_split(
+                t.tenant_id, total_imported=total_imported, source_count=len(source),
+                source_preview=preview, scope_status=scope_status, scope_from=scope_from,
+                scope_to=scope_to, default_book=default_book, rules=rules,
+                result=result, error=error))
+
+        if method != "POST":
+            return _render(None, "Personal", None, "")
+
+        default_book = str(form.get("default_book", "")).strip() or "Personal"
+        display_rules, engine_rules = self._parse_split_rules(form)
+        data = {
+            "default_book": default_book,
+            "rules": engine_rules,
+            "transactions": [
+                {"id": s["id"], "description": s["description"],
+                 "counterparty": s["counterparty"], "amount_minor": str(s["amount_minor"])}
+                for s in source
+            ],
+        }
+        result, error = self._compute_split(data)
+        if not engine_rules and not error:
+            error = "Add at least one routing rule (a book and something to match on)."
+        return _render(display_rules, default_book, result, error)
+
+    @staticmethod
+    def _scope_txns(
+        txns: "list[BankTransaction]", status: str, frm: str, to: str,
+    ) -> "list[BankTransaction]":
+        """The slice of the imported feed the owner chose to route: all lines, or
+        only those still needing review, optionally bounded by an inclusive date
+        range (ISO dates compare lexicographically)."""
+        out = []
+        for tx in txns:
+            if status == "review" and not tx.needs_review:
+                continue
+            if frm and tx.date < frm:
+                continue
+            if to and tx.date > to:
+                continue
+            out.append(tx)
+        return out
+
+    @staticmethod
+    def _parse_split_rules(
+        form: "dict[str, object]",
+    ) -> "tuple[list[dict[str, str]], list[dict[str, object]]]":
+        """Turn the rule-builder form fields into (display_rules, engine_rules).
+
+        `display_rules` re-fill the form after submit (every row, blanks included);
+        `engine_rules` are the non-empty rules `_compute_split` consumes. A
+        "Description contains" match is treated as a literal substring (re.escape),
+        so an owner never has to think in regex; "Counterparty is" is an exact
+        match. A rule needs a book and a match value to count."""
+        display: list[dict[str, str]] = []
+        engine: list[dict[str, object]] = []
+        for i in range(RULE_ROWS):
+            book = str(form.get(f"rule_book_{i}", "")).strip()
+            field = str(form.get(f"rule_field_{i}", "counterparty")).strip() or "counterparty"
+            value = str(form.get(f"rule_value_{i}", "")).strip()
+            direction = str(form.get(f"rule_dir_{i}", "")).strip()
+            category = str(form.get(f"rule_cat_{i}", "")).strip()
+            display.append({"book": book, "field": field, "value": value,
+                            "dir": direction, "cat": category})
+            if not book or not value:
+                continue
+            rule: dict[str, object] = {
+                "book": book,
+                "name": f"{book}: {field} {value}",
+                "category": category or book,
+            }
+            if field == "description":
+                rule["description_regex"] = re.escape(value)
+            else:
+                rule["counterparty"] = value
+            if direction in ("in", "out"):
+                rule["amount_sign"] = direction
+            engine.append(rule)
+        return display, engine
 
     # --- attachments -----------------------------------------------------------
 
@@ -4031,6 +4166,162 @@ class WebApp:
                                tenant_id=t.tenant_id, detail=f"{date} {memo}".strip())
         return _redirect(f"/t/{t.tenant_id}/books?posted={_qs_escape('Entry posted')}")
 
+    # --- agent-native pipeline (JSON) ---------------------------------------
+    def _post_entry_json(self, subject: str, t: _Tenant, body: str) -> Response:
+        """Post a balanced journal entry from a JSON body:
+        {date, memo?, lines:[{code, side:"DEBIT"|"CREDIT", amount_minor, dimensions?}]}.
+        Balance and period locks are enforced by the ledger; this returns the
+        ledger's JSON verbatim so an agent sees the posted entry or the error."""
+        if self._ledger is None:
+            return _json(503, {"error": "no ledger service configured"})
+        try:
+            data = json.loads(body or "{}")
+        except json.JSONDecodeError:
+            return _json(400, {"error": "invalid JSON body"})
+        if not isinstance(data, dict):
+            return _json(400, {"error": "expected a JSON object"})
+        date = str(data.get("date", "")).strip()
+        memo = str(data.get("memo", "")).strip()
+        raw_lines = data.get("lines")
+        if not date or not isinstance(raw_lines, list) or len(raw_lines) < 2:
+            return _json(400, {"error": "date and at least two lines are required"})
+        lines: list[dict[str, object]] = []
+        for ln in raw_lines:
+            if not isinstance(ln, dict):
+                return _json(400, {"error": "each line must be an object"})
+            side = str(ln.get("side", "")).upper()
+            if side not in ("DEBIT", "CREDIT"):
+                return _json(400, {"error": "each line needs side DEBIT or CREDIT"})
+            line: dict[str, object] = {
+                "code": str(ln.get("code", "")).strip(),
+                "side": side,
+                "amount_minor": str(ln.get("amount_minor", "")).strip(),
+            }
+            if isinstance(ln.get("dimensions"), dict):
+                line["dimensions"] = ln["dimensions"]
+            lines.append(line)
+        res = self._ledger.post_entry(t.tenant_id, date, lines, memo=memo, source="agent")
+        if res.ok and self._audit is not None:
+            self._audit.record(subject, "journal.posted", self._session_clock(),
+                               tenant_id=t.tenant_id, detail=f"{date} {memo}".strip())
+        return _json(res.status, dict(res.body) if res.body else {"ok": res.ok})
+
+    def _statements_json(self, t: _Tenant, query: "dict[str, str]") -> Response:
+        """The three statements for a period as JSON (the report step)."""
+        if self._ledger is None:
+            return _json(503, {"error": "no ledger service configured"})
+        frm = query.get("from", "")
+        to = query.get("to", "")
+        if not frm or not to:
+            as_of = t.inputs.opening.as_of.isoformat()
+            frm = frm or f"{as_of[:7]}-01"
+            to = to or as_of
+        res = self._ledger.statements(t.tenant_id, frm, to)
+        return _json(res.status, dict(res.body) if res.body else {"ok": res.ok})
+
+    def _ingest_json(self, t: _Tenant, body: str) -> Response:
+        """Ingest a batch of parsed feed transactions (the parse/match step). The
+        ledger de-duplicates by transaction id, so re-ingesting overlaps is safe."""
+        if self._ledger is None:
+            return _json(503, {"error": "no ledger service configured"})
+        try:
+            data = json.loads(body or "{}")
+        except json.JSONDecodeError:
+            return _json(400, {"error": "invalid JSON body"})
+        if not isinstance(data, dict) or not isinstance(data.get("transactions"), list):
+            return _json(400, {"error": "a 'transactions' array is required"})
+        source = str(data.get("source", "feed")).strip() or "feed"
+        res = self._ledger.ingest(t.tenant_id, list(data["transactions"]), source=source)
+        return _json(res.status, dict(res.body) if res.body else {"ok": res.ok})
+
+    def _split_books_json(self, body: str) -> Response:
+        """Route one commingled statement into two+ balanced sets of books by rule.
+
+        Body: {transactions:[{id,description,counterparty,amount_minor,currency?}],
+        default_book, rules:[{book,name,category?,description_regex?,counterparty?,
+        amount_sign?}]}. Each rule both routes (to `book`) and, via its `category`,
+        categorizes the entries that match it — so a book's postings hit real
+        accounts and each book balances. Read-only: nothing is posted here; the
+        result is the proposed split plus a full audit trail."""
+        try:
+            data = json.loads(body or "{}")
+        except json.JSONDecodeError:
+            return _json(400, {"error": "invalid JSON body"})
+        result, error = self._compute_split(data)
+        if error:
+            return _json(400, {"error": error})
+        return _json(200, result or {})
+
+    def _compute_split(self, data: object) -> "tuple[dict[str, object] | None, str]":
+        """Shared split engine used by the JSON endpoint and the guided screen.
+        Returns (result, "") on success or (None, error-message) on bad input."""
+        if not isinstance(data, dict) or not isinstance(data.get("transactions"), list):
+            return None, "a 'transactions' array is required"
+        default_book = str(data.get("default_book", "unassigned")).strip() or "unassigned"
+        raw_rules = data.get("rules")
+        raw_rules = raw_rules if isinstance(raw_rules, list) else []
+
+        book_rules: list[BookRule] = []
+        cat_rules: list[Rule] = []
+        for i, r in enumerate(raw_rules):
+            if not isinstance(r, dict):
+                continue
+            book = str(r.get("book", "")).strip()
+            if not book:
+                return None, f"rule {i} is missing 'book'"
+            name = str(r.get("name", f"rule-{i}")).strip() or f"rule-{i}"
+            sign = r.get("amount_sign")
+            sign = sign if sign in ("in", "out") else None
+            desc = r.get("description_regex")
+            cp = r.get("counterparty")
+            rule = Rule(
+                name=name,
+                category=str(r.get("category", name)).strip() or name,
+                description_regex=str(desc) if isinstance(desc, str) and desc else None,
+                counterparty=str(cp) if isinstance(cp, str) and cp else None,
+                amount_sign=sign,
+            )
+            book_rules.append(BookRule(book, rule))
+            cat_rules.append(rule)
+
+        txns: list[Txn] = []
+        for i, tr in enumerate(data["transactions"]):
+            if not isinstance(tr, dict):
+                return None, f"transaction {i} is not an object"
+            try:
+                amount = int(str(tr.get("amount_minor")))
+            except (TypeError, ValueError):
+                return None, f"transaction {i} has a bad amount_minor"
+            txns.append(Txn(
+                id=str(tr.get("id", f"t{i}")),
+                description=str(tr.get("description", "")),
+                counterparty=str(tr.get("counterparty", "")),
+                amount_minor=amount,
+                currency=str(tr.get("currency", "USD")) or "USD",
+            ))
+
+        router = BookRouter(rules=book_rules, default_book=default_book)
+        categorizer = Categorizer(RuleSet(cat_rules), LearnedModel.from_history([]))
+        result = split_books(txns, router, categorizer=categorizer)
+        return {
+            "all_balanced": result.all_balanced,
+            "books": [
+                {
+                    "book": b.book,
+                    "entry_count": len(b.entries),
+                    "debits_minor": str(b.debits_minor),
+                    "credits_minor": str(b.credits_minor),
+                    "net_cash_minor": str(b.net_cash_minor),
+                    "balanced": b.balanced,
+                }
+                for b in result.books
+            ],
+            "audit": [
+                {**row, "amount_minor": str(row["amount_minor"])}
+                for row in result.audit_trail()
+            ],
+        }, ""
+
     def _latest_period(self, tenant: str) -> str | None:
         if self._packages is None:
             return None
@@ -5131,14 +5422,14 @@ class WebApp:
 
         if self._ledger is not None:
             frm, to = _month_bounds(board.period)
-            # The board's own tasks become the gate's control results, so an
-            # incomplete/failed board blocks the seal at the authoritative layer.
-            controls = [{"name": tk.label, "balanced": tk.status == "done"}
-                        for tk in board.tasks]
+            # The board's completeness is a local UX pre-gate; the AUTHORITATIVE
+            # gate lives in the ledger, which computes the real controls itself
+            # (bank reconciled-through dates, AR/AP subledger ties, trial balance
+            # in balance) — not these self-reported task flags.
             try:
                 res = self._ledger.publish_close(
                     t.tenant_id, frm, to, published_by=subject or "owner",
-                    period=board.period, controls=controls,
+                    period=board.period,
                     # Separation of duties: whoever prepared the close (advanced
                     # the tasks) may not also publish it.
                     prepared_by=board.prepared_by,

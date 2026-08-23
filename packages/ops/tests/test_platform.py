@@ -67,14 +67,14 @@ def test_impersonation_requires_platform_role_and_is_audited() -> None:
 
     # a non-staff user cannot impersonate
     try:
-        admin.impersonate("random@user.com", "northwind")
+        admin.impersonate("random@user.com", "northwind", case_id="TICKET-1")
         assert False, "expected PlatformError"
     except PlatformError:
         pass
 
     # grant support, then impersonate → a valid, tenant-scoped token
     admin.grant_platform_role("sam@rgnr8.co", Role.SUPPORT, operator="ops@rgnr8.co")
-    token = admin.impersonate("sam@rgnr8.co", "northwind", ttl_seconds=900)
+    token = admin.impersonate("sam@rgnr8.co", "northwind", case_id="TICKET-1", ttl_seconds=900)
     claims = verify_jwt(token, SECRET, now=NOW)
     assert claims["tenant"] == "northwind"
     imp = [e for e in audit.events(tenant_id="northwind") if e.action == "support.impersonate"]
@@ -97,7 +97,7 @@ def test_view_as_role_carries_the_role_claim_and_audits() -> None:
                            Money.from_decimal("25000.00"), "o@n.com", operator="ops@rgnr8.co")
     admin.grant_platform_role("sam@rgnr8.co", Role.SUPPORT, operator="ops@rgnr8.co")
 
-    token = admin.view_as("sam@rgnr8.co", "northwind", Role.BOOKKEEPER, ttl_seconds=600)
+    token = admin.view_as("sam@rgnr8.co", "northwind", Role.BOOKKEEPER, case_id="TICKET-2", ttl_seconds=600)
     claims = verify_jwt(token, SECRET, now=NOW)
     assert claims["tenant"] == "northwind"
     assert claims["sub"] == "sam@rgnr8.co"          # staff identity, not the client
@@ -113,7 +113,7 @@ def test_view_as_rejects_platform_role_as_target() -> None:
                            Money.from_decimal("25000.00"), "o@n.com", operator="ops@rgnr8.co")
     admin.grant_platform_role("sam@rgnr8.co", Role.SUPPORT, operator="ops@rgnr8.co")
     try:
-        admin.view_as("sam@rgnr8.co", "northwind", Role.OPERATOR)
+        admin.view_as("sam@rgnr8.co", "northwind", Role.OPERATOR, case_id="TICKET-3")
         assert False, "expected PlatformError (platform role is not a client role)"
     except PlatformError:
         pass
@@ -128,11 +128,33 @@ def test_view_as_can_be_globally_disabled() -> None:
 
     admin.set_view_as_enabled(False, operator="ops@rgnr8.co")
     assert admin.view_as_enabled is False
+    # The kill switch disables BOTH role-emulation AND plain impersonation (B-2).
+    for call in (
+        lambda: admin.view_as("sam@rgnr8.co", "northwind", Role.OWNER, case_id="T"),
+        lambda: admin.impersonate("sam@rgnr8.co", "northwind", case_id="T"),
+    ):
+        try:
+            call()
+            assert False, "expected PlatformError when impersonation is disabled"
+        except PlatformError:
+            pass
+    assert any(e.action == "platform.view_as_toggled" for e in audit.events())
+
+
+def test_impersonation_requires_a_case_id_and_flags_the_audit_row() -> None:
+    admin, _dir, audit, _billing = _admin()
+    admin.provision_account("acct_1", "N", "b@n.com", Tier.CO_DELIVERY, operator="ops@rgnr8.co")
+    admin.onboard_business("acct_1", "northwind", "N", "o@n.com", _dto(),
+                           Money.from_decimal("25000.00"), "o@n.com", operator="ops@rgnr8.co")
+    admin.grant_platform_role("sam@rgnr8.co", Role.SUPPORT, operator="ops@rgnr8.co")
+
+    # An empty case id is refused.
     try:
-        admin.view_as("sam@rgnr8.co", "northwind", Role.OWNER)
-        assert False, "expected PlatformError when view-as disabled"
+        admin.impersonate("sam@rgnr8.co", "northwind", case_id="  ")
+        assert False, "expected PlatformError for a missing case id"
     except PlatformError:
         pass
-    # a plain support session (no role) still works even when view-as is off
-    admin.impersonate("sam@rgnr8.co", "northwind")
-    assert any(e.action == "platform.view_as_toggled" for e in audit.events())
+
+    admin.impersonate("sam@rgnr8.co", "northwind", case_id="ZD-4231")
+    ev = [e for e in audit.events(tenant_id="northwind") if e.action == "support.impersonate"]
+    assert ev and "case=ZD-4231" in ev[0].detail and "impersonation" in ev[0].detail

@@ -144,6 +144,65 @@ def test_debt_question_uses_debt_summary() -> None:
     assert "$20,000.00" in ans.text and "$860.66" in ans.text
 
 
+# --- source-traceable working record (A-3) -----------------------------------
+
+def test_answer_carries_a_per_figure_working_record_tied_to_sources() -> None:
+    orch, _llm = _orch([
+        LLMTurn(tool_calls=(ToolCall("c1", "ratios", {}),)),
+        LLMTurn(final_text="Net income was $1,700.00 on revenue of $5,000.00."),
+    ])
+    ans = orch.answer(_ctx(), "how did we do?")
+    assert ans.verified is True
+    # Every dollar figure in the answer appears in the working record, in order,
+    # each tied to the report that produced it.
+    displays = [f.display for f in ans.working_record]
+    assert displays == ["$1,700.00", "$5,000.00"]
+    for fig in ans.working_record:
+        assert fig.sources, f"{fig.display} has no source"
+        assert fig.sources[0].source_type == "report"
+        assert fig.sources[0].ref == "/ratios"
+
+
+def test_working_record_routes_a_register_figure_to_its_entry_for_correction() -> None:
+    reader = _reader().on(
+        "/accounts/1000/register",
+        {"code": "1000", "entries": [{"id": "je-1", "amount_minor": "20000000"}],
+         "balance_minor": "20000000"},
+    )
+    ctx = AskContext(tenant="acme", permissions=frozenset({"ledger:read"}), ledger=reader)
+    orch, _llm = _orch([
+        LLMTurn(tool_calls=(ToolCall("c1", "account_register", {"code": "1000"}),)),
+        LLMTurn(final_text="Account 1000 holds $200,000.00."),
+    ])
+    ans = orch.answer(ctx, "show the entries behind account 1000")
+    assert ans.verified is True
+    fig = next(f for f in ans.working_record if f.display == "$200,000.00")
+    assert fig.correct_kind == "register"
+    assert fig.correct_href == "/accounts/1000/register"
+
+
+def test_working_record_marks_a_user_stated_figure_as_stated() -> None:
+    orch, _llm = _orch([
+        LLMTurn(final_text="A $8,000.00 hire is affordable."),
+    ])
+    ans = orch.answer(_ctx(), "can I afford an $8,000 hire?")
+    fig = next(f for f in ans.working_record if f.display == "$8,000.00")
+    assert fig.stated is True and fig.sources == ()
+
+
+def test_working_record_provenance_survives_into_a_follow_up_turn() -> None:
+    orch, _llm = _orch([
+        LLMTurn(tool_calls=(ToolCall("c1", "ratios", {}),)),
+        LLMTurn(final_text="Net income was $1,700.00."),
+        LLMTurn(final_text="Yes — still $1,700.00 this period."),  # follow-up, no new tool
+    ])
+    ans1, convo = orch.converse(_ctx(), Conversation.empty(), "what was net income?")
+    ans2, _convo2 = orch.converse(_ctx(), convo, "are you sure?")
+    assert ans2.verified is True
+    fig = next(f for f in ans2.working_record if f.display == "$1,700.00")
+    assert fig.sources and fig.sources[0].ref == "/ratios"  # carried source, no re-run
+
+
 # --- the backstop (load-bearing) ---------------------------------------------
 
 def test_backstop_refuses_a_fabricated_figure() -> None:

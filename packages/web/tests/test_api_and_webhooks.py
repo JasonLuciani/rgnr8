@@ -100,6 +100,55 @@ def test_api_key_still_subject_to_rbac() -> None:
     assert r.status == 403  # viewer lacks categorize_transactions
 
 
+def test_split_books_endpoint_routes_into_balanced_books() -> None:
+    app, keys = _app()
+    _rec, k = keys.issue("acme", "owner@acme.com")
+    payload = {
+        "default_book": "personal",
+        "rules": [
+            {"book": "business", "name": "payroll", "category": "Wages", "counterparty": "GUSTO"},
+            {"book": "business", "name": "sales", "category": "Sales", "description_regex": "STRIPE"},
+        ],
+        "transactions": [
+            {"id": "t1", "description": "STRIPE PAYOUT", "counterparty": "STRIPE", "amount_minor": "250000"},
+            {"id": "t2", "description": "GUSTO PAYROLL", "counterparty": "GUSTO", "amount_minor": "-120000"},
+            {"id": "t3", "description": "WHOLE FOODS", "counterparty": "WHOLEFOODS", "amount_minor": "-8000"},
+        ],
+    }
+    r = app.handle(Request("POST", "/api/acme/split",
+                           {"x-api-key": k, "content-type": "application/json"},
+                           json.dumps(payload)))
+    assert r.status == 200
+    body = json.loads(r.body)
+    assert body["all_balanced"] is True
+    books = {b["book"]: b for b in body["books"]}
+    assert books["business"]["entry_count"] == 2 and books["personal"]["entry_count"] == 1
+    assert books["business"]["debits_minor"] == books["business"]["credits_minor"]
+    landed = {row["txn_id"]: row["book"] for row in body["audit"]}
+    assert landed == {"t1": "business", "t2": "business", "t3": "personal"}
+
+
+def test_split_books_endpoint_rejects_a_bad_amount() -> None:
+    app, keys = _app()
+    _rec, k = keys.issue("acme", "owner@acme.com")
+    r = app.handle(Request("POST", "/api/acme/split",
+                           {"x-api-key": k, "content-type": "application/json"},
+                           '{"transactions":[{"id":"t1","amount_minor":"NaN"}]}'))
+    assert r.status == 400
+
+
+def test_split_books_endpoint_is_rbac_gated() -> None:
+    app, keys = _app()
+    app._users.upsert_user(User("view@acme.com", "view@acme.com"))  # type: ignore[attr-defined]
+    app._users.set_membership("view@acme.com", "acme", Role.VIEWER)  # type: ignore[attr-defined]
+    _rec, k = keys.issue("acme", "view@acme.com")
+    # a viewer HAS view_transactions, so the read-only split is allowed
+    r = app.handle(Request("POST", "/api/acme/split",
+                           {"x-api-key": k, "content-type": "application/json"},
+                           '{"transactions":[],"rules":[]}'))
+    assert r.status == 200
+
+
 def test_transactions_and_close_json_endpoints() -> None:
     app, keys = _app()
     _rec, k = keys.issue("acme", "owner@acme.com")

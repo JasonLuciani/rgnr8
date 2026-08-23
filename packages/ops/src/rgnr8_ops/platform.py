@@ -125,21 +125,29 @@ class PlatformAdmin:
                      detail=role.value if role is not None else "revoked")
 
     # --- support impersonation / view-as (audited, time-boxed) ---------------
-    def impersonate(self, support_user: str, tenant_id: str, *, ttl_seconds: int = 900) -> str:
+    def impersonate(
+        self, support_user: str, tenant_id: str, *, case_id: str, ttl_seconds: int = 900,
+    ) -> str:
         """Mint a short-lived token to act as a client for support/debugging. Only
-        RGNR8 staff (a platform role) may do this, and every use is logged."""
-        return self.view_as(support_user, tenant_id, view_as=None, ttl_seconds=ttl_seconds)
+        RGNR8 staff (a platform role) may do this, a support case id is required,
+        and every use is logged."""
+        return self.view_as(support_user, tenant_id, view_as=None,
+                            case_id=case_id, ttl_seconds=ttl_seconds)
 
     def view_as(
         self, support_user: str, tenant_id: str, view_as: Role | None,
-        *, ttl_seconds: int = 900,
+        *, case_id: str, ttl_seconds: int = 900,
     ) -> str:
         """Mint a short-lived token that lets RGNR8 staff view a client's account
         **exactly as one of its roles sees it** (owner / bookkeeper / accountant /
-        viewer). `view_as=None` is a plain support session (the operator's own
-        cross-tenant sight). Only a platform role may do this, it is time-boxed,
-        every use is audited, and the whole capability can be turned off with
-        `set_view_as_enabled(False)` once we're live.
+        viewer), or (`view_as=None`) a plain support session.
+
+        Controls: only a platform role may do this; a non-empty support `case_id`
+        (ticket reference) is REQUIRED and recorded on the audit row so every
+        session ties to a case; it is time-boxed; and the WHOLE capability —
+        impersonation and view-as alike — is gated by the master switch, so
+        `set_view_as_enabled(False)` genuinely stops staff seeing into live books
+        once we go live.
 
         The token's subject is the SUPPORT user, so every action taken while
         viewing-as is attributable to staff — you cannot launder a change through
@@ -147,11 +155,14 @@ class PlatformAdmin:
         role = self._dir.platform_role(support_user)
         if role is None or not role.is_platform:
             raise PlatformError("view-as requires a platform role")
-        if view_as is not None:
-            if not self._view_as_enabled:
-                raise PlatformError("developer view-as is disabled")
-            if view_as.is_platform:
-                raise PlatformError(f"{view_as.value} is a platform role, not a client role to view as")
+        # The kill switch disables ALL staff impersonation, not just role-emulation.
+        if not self._view_as_enabled:
+            raise PlatformError("staff impersonation / view-as is disabled")
+        case = case_id.strip()
+        if not case:
+            raise PlatformError("a support case id is required to impersonate a client")
+        if view_as is not None and view_as.is_platform:
+            raise PlatformError(f"{view_as.value} is a platform role, not a client role to view as")
         if tenant_id not in self._fleet.tenants:
             raise PlatformError(f"unknown tenant {tenant_id}")
         token = self._fleet.mint_token(
@@ -159,7 +170,9 @@ class PlatformAdmin:
             view_as=view_as.value if view_as is not None else None,
         )
         action = "support.view_as" if view_as is not None else "support.impersonate"
-        detail = f"ttl={ttl_seconds}s" + (f" as={view_as.value}" if view_as is not None else "")
+        # The audit row is flagged as an impersonation and carries the case id.
+        detail = f"impersonation case={case} ttl={ttl_seconds}s" + (
+            f" as={view_as.value}" if view_as is not None else "")
         self._record(support_user, action, tenant_id=tenant_id, detail=detail)
         return token
 

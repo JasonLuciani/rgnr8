@@ -68,6 +68,83 @@ export function parseOfx(text: string): StatementTxn[] {
   return out;
 }
 
+// --- OFX export --------------------------------------------------------------
+
+export interface OfxExportOptions {
+  /** Routing/bank id for BANKACCTFROM (any stable string). */
+  readonly bankId?: string;
+  /** Account id for BANKACCTFROM. */
+  readonly acctId?: string;
+  /** CHECKING | SAVINGS | CREDITLINE | MONEYMRKT. Default CHECKING. */
+  readonly acctType?: string;
+  /** ISO currency (default USD, or the first txn's currency). */
+  readonly currency?: string;
+  /** Server timestamp as OFX datetime (YYYYMMDDHHMMSS); injected for determinism. */
+  readonly dtServer?: string;
+  /** Closing ledger balance (signed decimal) to stamp in LEDGERBAL. */
+  readonly ledgerBalance?: string;
+}
+
+function ofxAmountType(amount: string): "CREDIT" | "DEBIT" {
+  return amount.trim().startsWith("-") ? "DEBIT" : "CREDIT";
+}
+
+function toOfxDate(iso: string): string {
+  return iso.replace(/-/g, ""); // YYYY-MM-DD -> YYYYMMDD
+}
+
+function ofxEscape(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * Serialize statement transactions to an OFX 1.02 (SGML) bank statement — the
+ * inverse of {@link parseOfx}. This is the export half of the accountant handoff:
+ * any tool that reads OFX/QFX (QuickBooks, Xero, GnuCash, …) can import the
+ * result. `parseOfx(buildOfx(txns))` round-trips the fitid/date/amount/description.
+ */
+export function buildOfx(txns: readonly StatementTxn[], opts: OfxExportOptions = {}): string {
+  const currency = opts.currency ?? txns[0]?.currency ?? "USD";
+  const dates = txns.map((t) => toOfxDate(t.date)).sort();
+  const dtStart = dates[0] ?? "19700101";
+  const dtEnd = dates[dates.length - 1] ?? "19700101";
+  const dtServer = opts.dtServer ?? `${dtEnd}120000`;
+  const acctType = opts.acctType ?? "CHECKING";
+
+  const header = [
+    "OFXHEADER:100", "DATA:OFXSGML", "VERSION:102", "SECURITY:NONE",
+    "ENCODING:USASCII", "CHARSET:1252", "COMPRESSION:NONE",
+    "OLDFILEUID:NONE", "NEWFILEUID:NONE", "",
+  ].join("\n");
+
+  const trns = txns.map((t) => {
+    const amount = t.amount.replace(/,/g, "").trim();
+    return (
+      "<STMTTRN>" +
+      `<TRNTYPE>${ofxAmountType(amount)}` +
+      `<DTPOSTED>${toOfxDate(t.date)}` +
+      `<TRNAMT>${amount}` +
+      `<FITID>${ofxEscape(t.fitid)}` +
+      `<NAME>${ofxEscape(t.description.slice(0, 32))}` +
+      "</STMTTRN>"
+    );
+  }).join("\n");
+
+  const body =
+    "<OFX>" +
+    "<SIGNONMSGSRSV1><SONRS><STATUS><CODE>0<SEVERITY>INFO</STATUS>" +
+    `<DTSERVER>${dtServer}<LANGUAGE>ENG</SONRS></SIGNONMSGSRSV1>` +
+    "<BANKMSGSRSV1><STMTTRNRS><TRNUID>1<STATUS><CODE>0<SEVERITY>INFO</STATUS>" +
+    `<STMTRS><CURDEF>${currency}` +
+    `<BANKACCTFROM><BANKID>${ofxEscape(opts.bankId ?? "000000000")}` +
+    `<ACCTID>${ofxEscape(opts.acctId ?? "000000")}<ACCTTYPE>${acctType}</BANKACCTFROM>` +
+    `<BANKTRANLIST><DTSTART>${dtStart}<DTEND>${dtEnd}\n${trns}\n</BANKTRANLIST>` +
+    `<LEDGERBAL><BALAMT>${(opts.ledgerBalance ?? "0.00").trim()}<DTASOF>${dtEnd}</LEDGERBAL>` +
+    "</STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>";
+
+  return `${header}\n${body}\n`;
+}
+
 // --- CSV ---------------------------------------------------------------------
 
 function splitCsvLine(line: string): string[] {

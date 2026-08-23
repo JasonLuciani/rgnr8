@@ -16,7 +16,7 @@ import re
 from dataclasses import dataclass, field
 
 from .llm import LLMProvider, Msg
-from .model import AskAnswer, AskContext, Citation, TraceStep
+from .model import AskAnswer, AskContext, Citation, FigureRef, TraceStep
 from .tools import ToolRegistry, ToolError, collect_minor_figures
 
 SYSTEM_PROMPT = (
@@ -84,6 +84,65 @@ def _verified(value: int, allowed: set[int]) -> bool:
     return any(abs(value - a) <= 1 for a in allowed)
 
 
+# How correctable a source is — a posted entry or an account register can be
+# opened and corrected on the spot; a report is where the figure was read from.
+_SOURCE_RANK = {"entry": 0, "register": 1, "report": 2}
+
+
+def _ordered_money(text: str) -> list[tuple[int, str]]:
+    """Every `$`-amount in `text` as (minor, display), in order of first
+    appearance, de-duplicated by value — so the working record lists each figure
+    once, in the order the reader meets it."""
+    seen: set[int] = set()
+    out: list[tuple[int, str]] = []
+    for m in _MONEY.finditer(text):
+        raw = m.group(1).replace(",", "")
+        whole, _dot, frac = raw.partition(".")
+        frac = (frac + "00")[:2]
+        try:
+            minor = int(whole) * 100 + int(frac)
+        except ValueError:
+            continue
+        if minor in seen:
+            continue
+        seen.add(minor)
+        out.append((minor, m.group(0).strip()))
+    return out
+
+
+def _source_for(minor: int, figure_sources: dict[int, tuple[Citation, ...]]) -> tuple[Citation, ...]:
+    """The citations backing `minor` (±1 tolerance), most-correctable first."""
+    cites: list[Citation] = []
+    for value, cs in figure_sources.items():
+        if abs(value - minor) <= 1:
+            cites.extend(cs)
+    # de-dup by (ref, source_type), then rank so an entry/register leads a report
+    uniq: dict[tuple[str, str], Citation] = {}
+    for c in cites:
+        uniq.setdefault((c.ref, c.source_type), c)
+    return tuple(sorted(uniq.values(), key=lambda c: _SOURCE_RANK.get(c.source_type, 9)))
+
+
+def _working_record(
+    text: str, figure_sources: dict[int, tuple[Citation, ...]], stated: set[int]
+) -> tuple[FigureRef, ...]:
+    """Tie every dollar figure in `text` to its source(s) and a correction target."""
+    refs: list[FigureRef] = []
+    for minor, display in _ordered_money(text):
+        sources = _source_for(minor, figure_sources)
+        best = sources[0] if sources else None
+        is_stated = not sources and any(abs(minor - s) <= 1 for s in stated)
+        refs.append(FigureRef(
+            minor=minor,
+            display=display,
+            sources=sources,
+            correct_href=best.ref if best else "",
+            correct_kind=best.source_type if best else "",
+            stated=is_stated,
+        ))
+    return tuple(refs)
+
+
 @dataclass(frozen=True)
 class Conversation:
     """The carried state of a multi-turn thread. `messages` is the CLEAN transcript
@@ -95,10 +154,17 @@ class Conversation:
 
     messages: tuple[Msg, ...] = ()
     verified_minor: frozenset[int] = field(default_factory=frozenset)
+    # Per-figure provenance carried across turns, so a follow-up that references a
+    # figure verified earlier ("still $50,000") keeps its source in the working
+    # record. Stored as a hashable tuple of (minor, citation-tuple).
+    figure_sources: tuple[tuple[int, tuple[Citation, ...]], ...] = ()
 
     @staticmethod
     def empty() -> "Conversation":
         return Conversation()
+
+    def sources_map(self) -> dict[int, tuple[Citation, ...]]:
+        return {minor: cites for minor, cites in self.figure_sources}
 
 
 class AskOrchestrator:
@@ -129,8 +195,14 @@ class AskOrchestrator:
         # A dollar figure is "allowed" in the answer if a tool returned it this turn,
         # the user stated it, or it was verified in an earlier turn of this thread.
         allowed: set[int] = set(conversation.verified_minor) | extract_money_minor(question)
+        # Figures the user stated (this turn or verified earlier) with no tool
+        # source — the working record labels these "as stated" rather than faking one.
+        stated: set[int] = set(conversation.verified_minor) | extract_money_minor(question)
         citations: list[Citation] = []
         trace: list[TraceStep] = []
+        # Per-figure provenance: minor value -> the citations of the tool result(s)
+        # that returned it. Seeded from earlier turns so carried figures keep sources.
+        figure_sources: dict[int, tuple[Citation, ...]] = conversation.sources_map()
         retried = False
 
         for _step in range(self._max_steps + 1):
@@ -147,9 +219,11 @@ class AskOrchestrator:
                 if unverified:
                     ans = AskAnswer(_FALLBACK, tuple(citations), tuple(trace),
                                     verified=False, refused=True)
-                    return ans, self._commit(conversation, question, _FALLBACK, allowed)
-                ans = AskAnswer(final, tuple(citations), tuple(trace), verified=True)
-                return ans, self._commit(conversation, question, final, allowed)
+                    return ans, self._commit(conversation, question, _FALLBACK, allowed, figure_sources)
+                record = _working_record(final, figure_sources, stated)
+                ans = AskAnswer(final, tuple(citations), tuple(trace), verified=True,
+                                working_record=record)
+                return ans, self._commit(conversation, question, final, allowed, figure_sources)
 
             for call in turn.tool_calls:
                 if not self._registry.permitted(call.name, ctx.permissions):
@@ -166,25 +240,35 @@ class AskOrchestrator:
                     messages.append(Msg("tool", json.dumps({"tool": call.name, "error": str(exc)})))
                     trace.append(TraceStep(call.name, call.args, False, str(exc)))
                     continue
-                allowed |= collect_minor_figures(result.data)
+                produced = collect_minor_figures(result.data)
+                allowed |= produced
                 citations.extend(result.citations)
+                if result.citations:
+                    for minor in produced:
+                        figure_sources[minor] = (*figure_sources.get(minor, ()), *result.citations)
                 messages.append(Msg("tool", json.dumps({
                     "tool": call.name, "data": result.data, "summary": result.summary_hint,
                 })))
                 trace.append(TraceStep(call.name, call.args, True, result.summary_hint))
 
         ans = AskAnswer(_FALLBACK, tuple(citations), tuple(trace), verified=False, refused=True)
-        return ans, self._commit(conversation, question, _FALLBACK, allowed)
+        return ans, self._commit(conversation, question, _FALLBACK, allowed, figure_sources)
 
     def _commit(
-        self, conversation: Conversation, question: str, answer_text: str, allowed: set[int]
+        self, conversation: Conversation, question: str, answer_text: str,
+        allowed: set[int], figure_sources: dict[int, tuple[Citation, ...]],
     ) -> Conversation:
         """Fold this turn into the carried state: append the clean Q/A pair, trim to
-        the last `max_turns`, and keep the accumulated set of book-tied figures."""
+        the last `max_turns`, and keep the accumulated set of book-tied figures plus
+        their per-figure provenance."""
         transcript = (*conversation.messages, Msg("user", question), Msg("assistant", answer_text))
         if self._max_turns > 0:
             transcript = transcript[-2 * self._max_turns:]
-        return Conversation(messages=transcript, verified_minor=frozenset(allowed))
+        return Conversation(
+            messages=transcript,
+            verified_minor=frozenset(allowed),
+            figure_sources=tuple(sorted(figure_sources.items())),
+        )
 
 
 __all__ = ["AskOrchestrator", "Conversation", "extract_money_minor", "SYSTEM_PROMPT"]

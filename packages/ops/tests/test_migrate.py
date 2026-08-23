@@ -40,8 +40,11 @@ def test_rls_migration_runs_under_postgres_dialect() -> None:
     # statement fails, every later statement in the same transaction raises until
     # someone rolls back. The original fake let any statement succeed after a
     # failed probe, so it "proved" the postgres path worked while the real thing
-    # died with InFailedSqlTransaction on the CREATE. A fake that cannot express
-    # the failure mode cannot catch it.
+    # died with InFailedSqlTransaction. A fake that cannot express the failure mode
+    # cannot catch it. _ensure_migrations_table now uses CREATE TABLE IF NOT EXISTS
+    # and never probes, so nothing here should poison the transaction -- and if a
+    # SELECT probe is ever reintroduced without a rollback, this fake makes the
+    # following statement raise and the test fails.
     aborted = {"tx": False}
     rollbacks: list[int] = []
 
@@ -81,8 +84,8 @@ def test_rls_migration_runs_under_postgres_dialect() -> None:
     assert "current_setting('rgnr8.tenant_id'" not in joined  # old divergent name is gone
     assert "CREATE POLICY fleet_tenant_tenant_isolation" in joined
     assert "CREATE POLICY rgnr8_membership_tenant_isolation" in joined
-    assert rollbacks, "a failed existence probe must roll back before the CREATE"
-    assert "CREATE TABLE schema_migrations_py" in joined
+    assert "CREATE TABLE IF NOT EXISTS schema_migrations_py" in joined
+    assert not rollbacks, "no probe should have failed, so nothing needed rolling back"
 
 
 def test_checksum_drift_is_detected() -> None:

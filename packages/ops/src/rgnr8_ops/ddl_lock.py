@@ -24,7 +24,7 @@ DDL_BOOTSTRAP_LOCK_KEY = 8273419006512337201
 @contextmanager
 def ddl_bootstrap_lock(conn: Any, placeholder: str) -> Iterator[None]:
     """Hold a session-level advisory lock for the duration of the block."""
-    if placeholder != "%s":
+    if conn is None or placeholder != "%s":   # in-memory dev app, or sqlite
         yield
         return
 

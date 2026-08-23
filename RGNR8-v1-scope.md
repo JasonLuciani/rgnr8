@@ -28,7 +28,15 @@ This list is the single source of truth in code: `packages/web/src/rgnr8_web/sco
 
 ## Provisional (works, but not yet production)
 
-The broader accounting surface — the parts the review flagged as immature at the trust boundaries — remains available but is provisional: **Transactions (bank feed), Invoices, Bills, Jobs, Estimates, Pipeline, Capture, Payroll, Debt, Assets.** They are useful and improving, but they should not yet be relied on for decisions or filings.
+The broader accounting surface — the parts the review flagged as immature at the trust boundaries — remains available but is provisional: **Invoices, Bills, Jobs, Estimates, Pipeline, Capture, Payroll, Debt, Assets.** They are useful and improving, but they should not yet be relied on for decisions or filings.
+
+## Graduation gate (C-0) and record
+
+A provisional surface graduates to production (moves into `V1_PRODUCTION` in `scope.py`) only when it passes the reusable checklist in `scope.GRADUATION_CHECKLIST`: (1) inputs validated + tenant-isolated; (2) every figure carries a provenance label; (3) writes flow through the authoritative controls, no silent in-memory state; (4) an acceptance test proves the above; (5) the graduation is recorded here.
+
+**Graduations**
+
+- **2026-08-20 — Bank feed / Transactions + review Inbox (C-1).** Reads through the tenant-isolated ledger; categorize/accept is RBAC-gated (`CATEGORIZE_TXNS`) and posts through the authoritative ledger; the review queue carries provenance labels (imported → posted → reconciled). Tests: `test_scope.py::test_bank_feed_is_graduated_to_v1`, `::test_review_inbox_carries_provenance_labels`.
 
 ## How the product enforces this
 

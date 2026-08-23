@@ -645,4 +645,43 @@ describe("real PostgreSQL", { skip: URL_ ? false : "set RGNR8_TEST_DATABASE_URL 
       await pool.end();
     }
   });
+  /**
+   * Every ledger instance migrates on boot. Two doing it at once race twice over:
+   * on `CREATE TABLE` in the system catalogs (pg_type unique violation) and on the
+   * schema_migrations primary key when both see the same pending version. At one
+   * instance it never fires; the moment the ledger scales past one it does, on the
+   * cold start where it hurts most. Measured before the advisory lock: 5 failures
+   * in 5 runs. pg-mem cannot express this — it needs a real engine.
+   */
+  test("concurrent instances migrate a virgin database without racing", async () => {
+    const schema = `race_${`${Date.now()}`.slice(-8)}`;
+    const admin = new pg.Pool({ connectionString: URL_ });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    try {
+      const instances = 6;
+      const results = await Promise.all(
+        Array.from({ length: instances }, async () => {
+          // Its own pool, pinned to the virgin schema — one process per instance
+          // is what production looks like.
+          const pool = new pg.Pool({
+            connectionString: URL_,
+            options: `-c search_path=${schema}`,
+          });
+          try {
+            await new PostgresBackend(pool as never).migrate();
+            return "ok";
+          } catch (err) {
+            return String(err).split("\n")[0];
+          } finally {
+            await pool.end();
+          }
+        }),
+      );
+      const failed = results.filter((r) => r !== "ok");
+      assert.deepEqual(failed, [], `concurrent boot migration raced: ${failed[0] ?? ""}`);
+    } finally {
+      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      await admin.end();
+    }
+  });
 });

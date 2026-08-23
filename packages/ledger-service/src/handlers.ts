@@ -1993,6 +1993,73 @@ export class LedgerService {
   }
 
   /**
+   * Derive the close gate from REAL ledger results — not self-reported board
+   * flags. Bank/cash accounts are reconciled only if the recon store's
+   * reconciled-through date covers the period end; AR/AP controls tie only if the
+   * GL control-account balance equals the open subledger; and the trial balance
+   * must be in balance. This is what makes "gate on real control results"
+   * authoritative rather than circular.
+   */
+  private async computeCloseGate(
+    tenant: TenantId, periodEnd: string, tbInBalance: boolean,
+  ): Promise<CloseGateInputs> {
+    const chart = await this.backend.chart(tenant);
+    const store = this.backend.store(tenant);
+    const recon = this.backend.recon();
+    const docs = this.backend.documents();
+
+    // Signed (debit-positive) GL balance per account, as-of the period end.
+    const tb = await computeTrialBalance(store, tenant, chart, this.currency, { to: periodEnd });
+    const signedByCode = new Map<string, bigint>();
+    for (const r of tb.rows) signedByCode.set(r.code, r.debit.minorUnits - r.credit.minorUnits);
+
+    // Bank reconciliations: each BANK-subtype account that carries a balance must
+    // be reconciled through the period end. An account with a zero as-of balance
+    // has nothing to reconcile and does not block the close.
+    const reconciliations: ReconLike[] = [];
+    for (const acct of chart.list()) {
+      if (acct.subtype !== AccountSubtype.BANK) continue;
+      if ((signedByCode.get(acct.code) ?? 0n) === 0n) continue; // no activity to reconcile
+      const through = await recon.reconciledThrough(String(tenant), acct.code);
+      reconciliations.push({
+        accountId: acct.code,
+        status: through !== undefined && through >= periodEnd ? "BALANCED" : "UNRECONCILED",
+      });
+    }
+
+    // Subledger control ties: GL AR balance == open invoices; GL AP == open bills.
+    const controls: ControlLike[] = [];
+    const glOf = (subtype: AccountSubtype, creditNormal: boolean): bigint => {
+      let sum = 0n;
+      for (const acct of chart.list()) {
+        if (acct.subtype !== subtype) continue;
+        const signed = signedByCode.get(acct.code) ?? 0n;
+        sum += creditNormal ? -signed : signed;
+      }
+      return sum;
+    };
+    const openSum = async (kind: "invoice" | "bill"): Promise<bigint> => {
+      const list = await docs.listDocs(String(tenant), kind);
+      return list.reduce((a, d) => a + BigInt(d.openMinor), 0n);
+    };
+    const hasSubtype = (s: AccountSubtype): boolean => chart.list().some((a) => a.subtype === s);
+    if (hasSubtype(AccountSubtype.ACCOUNTS_RECEIVABLE)) {
+      controls.push({
+        name: "Accounts receivable ties to the subledger",
+        balanced: glOf(AccountSubtype.ACCOUNTS_RECEIVABLE, false) === (await openSum("invoice")),
+      });
+    }
+    if (hasSubtype(AccountSubtype.ACCOUNTS_PAYABLE)) {
+      controls.push({
+        name: "Accounts payable ties to the subledger",
+        balanced: glOf(AccountSubtype.ACCOUNTS_PAYABLE, true) === (await openSum("bill")),
+      });
+    }
+
+    return { reconciliations, controls, trialBalanceBalanced: tbInBalance };
+  }
+
+  /**
    * Publish (seal) a period through the authoritative close state machine: build
    * the package from the books, run the close gate, and — only if it passes —
    * durably lock the period and persist the immutable package, atomically in
@@ -2019,14 +2086,12 @@ export class LedgerService {
       throw err;
     }
 
-    const reconciliations = Array.isArray(data["reconciliations"])
-      ? (data["reconciliations"] as ReconLike[])
-      : [];
-    const controls = Array.isArray(data["controls"]) ? (data["controls"] as ControlLike[]) : [];
+    // Gate on REAL results the ledger computes itself (reconciled-through dates,
+    // AR/AP subledger ties, trial-balance-in-balance) — not caller-supplied
+    // flags. The period end is `to`.
+    const gate = await this.computeCloseGate(tenant, to, input.trialBalance.inBalance);
     const inputs: CloseGateInputs = {
-      reconciliations,
-      controls,
-      trialBalanceBalanced: input.trialBalance.inBalance,
+      ...gate,
       ...(data["require_signoff"] ? { requireSignOff: true } : {}),
     };
 
@@ -2553,16 +2618,22 @@ export class LedgerService {
     if (!data) return bad("invalid JSON body");
     const dto = { ...(data as unknown as GoLiveDto), tenant_id: String(tenant) };
     const request = goLiveFromDto(dto);
+    const now = this.opts.now();
     // Persist the chart through the backend's chart store as part of go-live, so
-    // the accounts are written BEFORE the opening entry posts — no orphan
-    // postings, and no separate post-hoc save loop that could be interrupted.
-    const result = await executeGoLive(
-      this.backend.store(tenant),
-      this.backend.periods(tenant),
-      request,
-      this.opts.now(),
-      { chartStore: this.backend.chartStore() },
-    );
+    // the accounts are written BEFORE the opening entry posts. When the backend
+    // supports it (Postgres), run the whole thing in ONE transaction so
+    // chart-persist + opening-post + period-lock commit or roll back together;
+    // otherwise (in-memory) take the sequential, idempotent path.
+    const result = this.backend.atomicGoLive
+      ? await this.backend.atomicGoLive((store, periods, chartStore) =>
+          executeGoLive(store, periods, request, now, { chartStore }))
+      : await executeGoLive(
+          this.backend.store(tenant),
+          this.backend.periods(tenant),
+          request,
+          now,
+          { chartStore: this.backend.chartStore() },
+        );
     return ok({
       tenant,
       opening_entry_id: result.cutover.entry.id,

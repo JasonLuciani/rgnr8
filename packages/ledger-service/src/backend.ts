@@ -11,7 +11,13 @@ import {
   type PeriodStore,
   type TenantId,
 } from "@rgnr8/ledger-kernel";
-import { PgAccountStore, PgLedgerStore, SqlPeriodStore, type Pool } from "@rgnr8/ledger-postgres";
+import {
+  PgAccountStore,
+  PgLedgerStore,
+  SqlPeriodStore,
+  runInTransaction,
+  type Pool,
+} from "@rgnr8/ledger-postgres";
 import {
   InMemoryDocumentStore,
   PgDocumentStore,
@@ -140,6 +146,15 @@ export interface LedgerBackend {
   packages(): FinancialPackageStore;
   /** The authoritative close/publish/reopen state, keyed by (tenant, period). */
   closeStates(): CloseStateStore;
+  /**
+   * Run a go-live inside ONE transaction, yielding transaction-scoped stores so
+   * chart-persist + opening-post + period-lock commit or roll back together.
+   * Omitted by the in-memory backend (which has no rollback); the handler then
+   * takes the sequential, idempotent path.
+   */
+  atomicGoLive?<T>(
+    run: (store: LedgerStore, periods: PeriodStore, chartStore: ChartStore) => Promise<T>,
+  ): Promise<T>;
   /** Create/verify schema. Safe to run repeatedly. */
   migrate(): Promise<void>;
   /** A readiness probe: true when the store is reachable (for /ready). */
@@ -566,6 +581,17 @@ export class PostgresBackend implements LedgerBackend {
   chartStore(): ChartStore {
     // PgAccountStore.saveChart writes the whole chart in one transaction.
     return this.accounts;
+  }
+
+  atomicGoLive<T>(
+    run: (store: LedgerStore, periods: PeriodStore, chartStore: ChartStore) => Promise<T>,
+  ): Promise<T> {
+    // One DB transaction spanning all three stores: build them over the shared
+    // transaction connection so chart-persist + opening-post + period-lock
+    // commit or roll back together.
+    return runInTransaction(this.pool, (txPool) =>
+      run(new PgLedgerStore(txPool), new SqlPeriodStore(txPool), new PgAccountStore(txPool)),
+    );
   }
 
   seedChart(tenant: TenantId, category: BusinessCategory, currency: Currency): Promise<Account[]> {
