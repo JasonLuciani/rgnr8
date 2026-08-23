@@ -1,0 +1,140 @@
+# RGNR8 hosted deployment — Render Blueprint.
+#
+# This file pins the deployment decisions as code so they get reviewed like
+# everything else; creating a Blueprint instance from it in the Render dashboard
+# is the manual step that actually provisions. It implements
+# deploy/PROVISIONING-RUNBOOK.md on Render specifically:
+#
+#   web       public  — the owner app at acctg.rgnr8ventures.com
+#   ledger    PRIVATE — the accounting system of record; never on the public
+#                       internet (mirrors compose, which does not publish it)
+#   operator  PRIVATE — staff control plane over client books; reach it with
+#                       `render services ssh` / port-forward, not public DNS
+#   worker    cron    — one idempotent delivery tick per run (worker.py is
+#                       explicitly designed for a scheduler, not a loop)
+#   Postgres  managed — the Render role is NOT a superuser, so the FORCE'd
+#                       row-level security actually engages
+#
+# Role posture: every service starts on the database's own (owner) role via
+# fromDatabase. On Render that role is a non-superuser without BYPASSRLS, and the
+# Python-owned tables FORCE RLS, so isolation is real from first boot —
+# RGNR8_REQUIRE_RLS=1 makes the web app refuse to start if that ever stops being
+# true. Runbook §1's least-privilege `rgnr8_app` role is the post-provisioning
+# tightening step: create it, then replace the DSNs here.
+#
+# Host-only cookies: acctg.rgnr8ventures.com shares a parent domain with
+# corporate email — the app must never set Domain=rgnr8ventures.com cookies
+# (it doesn't; keep it that way).
+
+previews:
+  generation: off
+
+envVarGroups:
+  - name: rgnr8-shared
+    envVars:
+      # Web -> ledger bearer token; both services read the same value.
+      - key: RGNR8_LEDGER_TOKEN
+        generateValue: true
+
+databases:
+  - name: rgnr8-db
+    plan: basic-256mb
+    region: oregon
+    postgresMajorVersion: "16"
+    ipAllowList: []            # internal-only; no public database access
+
+services:
+  # ---- Owner web app (public) -------------------------------------------------
+  - type: web
+    name: rgnr8-web
+    runtime: docker
+    region: oregon
+    plan: starter
+    dockerfilePath: ./deploy/Dockerfile
+    dockerContext: .
+    healthCheckPath: /ready
+    domains:
+      - acctg.rgnr8ventures.com
+    # Release phase: Python-owned schema (incl. RLS policies), before traffic.
+    # Runs from /app/deploy (the image's WORKDIR), same as the compose service.
+    preDeployCommand: python migrate.py
+    envVars:
+      - fromGroup: rgnr8-shared
+      - key: RGNR8_DATABASE_URL
+        fromDatabase: { name: rgnr8-db, property: connectionString }
+      - key: RGNR8_PORT
+        value: "10000"
+      - key: RGNR8_WORKERS
+        value: "4"
+      - key: RGNR8_LEDGER_URL
+        value: http://rgnr8-ledger:8181   # Render private-service hostname
+      - key: RGNR8_REQUIRE_RLS            # inert RLS = refuse to boot, not a log line
+        value: "1"
+      - key: RGNR8_AUTH_MODE
+        value: hs256
+      - key: RGNR8_SECURE_COOKIES
+        value: "1"
+      - key: RGNR8_TRUST_FORWARDED_FOR    # TLS terminates at Render's proxy
+        value: "1"
+      - key: RGNR8_JWT_SECRET
+        generateValue: true
+      - key: RGNR8_SESSION_SECRET
+        generateValue: true
+      # Fernet key for tokens-at-rest. Set by hand and BACK IT UP SEPARATELY
+      # from the database (runbook §2) — losing it orphans stored QBO tokens.
+      - key: RGNR8_SECRET_KEY
+        sync: false
+
+  # ---- Ledger service (PRIVATE — the system of record) ------------------------
+  - type: pserv
+    name: rgnr8-ledger
+    runtime: docker
+    region: oregon
+    plan: starter
+    dockerfilePath: ./deploy/Dockerfile.ledger
+    dockerContext: .
+    envVars:
+      - fromGroup: rgnr8-shared
+      - key: DATABASE_URL
+        fromDatabase: { name: rgnr8-db, property: connectionString }
+      - key: RGNR8_LEDGER_PORT
+        value: "8181"
+      # First boot only, per runbook §1: also set RGNR8_PROVISION_APP_ROLE /
+      # RGNR8_PROVISION_APP_PASSWORD here to create the least-privilege role,
+      # then remove them and switch the DSNs above to rgnr8_app.
+
+  # ---- Operator console (PRIVATE — staff control plane) -----------------------
+  - type: pserv
+    name: rgnr8-operator
+    runtime: docker
+    region: oregon
+    plan: starter
+    dockerfilePath: ./deploy/Dockerfile
+    dockerContext: .
+    dockerCommand: sh -c "gunicorn operator_entry:application --workers ${RGNR8_OPERATOR_WORKERS:-2} --bind 0.0.0.0:${RGNR8_PORT:-8090} --access-logfile -"
+    envVars:
+      - fromGroup: rgnr8-shared
+      - key: RGNR8_DATABASE_URL
+        fromDatabase: { name: rgnr8-db, property: connectionString }
+      - key: RGNR8_PORT
+        value: "8090"
+      - key: RGNR8_LEDGER_URL
+        value: http://rgnr8-ledger:8181
+      - key: RGNR8_JWT_SECRET
+        sync: false   # staff-console signing key; set by hand, distinct from the web app's
+
+  # ---- Delivery worker (cron — one idempotent tick per run) -------------------
+  - type: cron
+    name: rgnr8-worker
+    runtime: docker
+    region: oregon
+    plan: starter
+    schedule: "0 * * * *"   # hourly; briefings fire on their per-tenant window,
+                            # webhook-outbox retries drain each tick. Tune freely.
+    dockerfilePath: ./deploy/Dockerfile
+    dockerContext: .
+    dockerCommand: python worker.py
+    envVars:
+      - fromGroup: rgnr8-shared
+      - key: RGNR8_DATABASE_URL
+        fromDatabase: { name: rgnr8-db, property: connectionString }
