@@ -874,7 +874,13 @@ class WebApp:
                     t = self._auth.tenant_for(synthetic)
                     if t is not None:
                         return (t, t)
-            elif self._session_secret is not None:
+            # Self-issued browser session cookies are signed with the SESSION
+            # secret, which is NOT the authenticator's key (in hs256 they differ),
+            # so the authenticator above can't verify them. Fall back to the
+            # session secret whenever one is configured — this is the browser
+            # login path. In jwks/SSO mode the session secret is unset, so this is
+            # inert and the IdP remains the only cookie authority.
+            if self._session_secret is not None:
                 try:
                     claims = verify_jwt(cookie, self._session_secret, now=self._session_clock())
                 except JwtError:

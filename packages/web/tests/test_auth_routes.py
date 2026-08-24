@@ -136,6 +136,41 @@ def test_verified_login_can_reach_the_app() -> None:
     assert home.status == 200                                          # authenticated session works
 
 
+def test_browser_session_cookie_works_with_an_hs256_authenticator() -> None:
+    # Production shape: an hs256 JwtAuthenticator (verifying with the JWT secret)
+    # AND a self-issued session cookie (signed with a DIFFERENT session secret).
+    # The session cookie must still authenticate the browser — the authenticator
+    # can't verify it, so _principal falls back to the session secret. Without
+    # that fallback, login would loop straight back to /login.
+    from rgnr8_web.auth import JwtAuthenticator
+
+    clock = {"t": NOW}
+
+    def token() -> str:
+        return "tok-x"
+
+    svc = AuthService(
+        InMemoryCredentialStore(), InMemoryVerificationTokenStore(), None,
+        clock=lambda: clock["t"], token_factory=token,
+        salt_factory=lambda: b"0123456789abcdef", min_password_length=8,
+    )
+    app = WebApp(
+        users=InMemoryUserDirectory(),
+        authenticator=JwtAuthenticator("JWT-secret-not-the-session-one"),  # different key
+        session_secret="SESSION-secret",
+        session_clock=lambda: clock["t"],
+        auth_service=svc,
+    )
+    app.add_tenant("acme", "Acme Co", _inputs(),
+                   ForecastConfig(minimum_cash=Money.from_decimal("10000.00")), token="unused")
+    tok = json.loads(_post(app, "/signup", {"email": "ada@acme.com", "password": "hunter2222"}).body)["verify_token"]
+    _post(app, "/verify", {"token": tok})
+    login = _post(app, "/login", {"email": "ada@acme.com", "password": "hunter2222"})
+    assert login.status == 302 and login.headers.get("Location") == "/app"   # single tenant → straight in
+    home = app.handle(Request("GET", "/app", {"cookie": _cookie_from(login)}))
+    assert home.status == 200                                          # the session cookie authenticates
+
+
 # --- the "choose your view" chooser -----------------------------------------
 
 
