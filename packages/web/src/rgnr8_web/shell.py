@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from .csp import script_open
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from datetime import datetime, timezone
 from html import escape
 
@@ -177,7 +177,8 @@ def _choose_tile(*, href: str, title: str, subtitle: str, accent: bool) -> str:
     )
 
 
-def render_choose_html(*, businesses, staff: bool, operator_url: str = "/operator",
+def render_choose_html(*, businesses: "Iterable[tuple[str, str]]", staff: bool,
+                       operator_url: str = "/operator",
                        email: "str | None" = None) -> str:
     """The post-login 'choose your view' screen. Lists the RGNR8 Fin OS (staff
     console) tile when the user holds a platform role, plus one tile per business

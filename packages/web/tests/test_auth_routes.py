@@ -328,3 +328,57 @@ def test_dev_login_unchanged_without_credential_store() -> None:
     assert r.status == 302 and "rgnr8_session=" in r.headers.get("Set-Cookie", "")
     # and the public-track endpoints are inert (501) without a service
     assert app.handle(Request("POST", "/signup", {}, '{"email":"x@acme.com","password":"hunter2222"}')).status == 501
+
+
+# --- SSO mode: the chooser must not try to re-mint a self-issued cookie ------
+
+
+class _IdpAuthenticator:
+    """Stands in for a real IdP-backed authenticator: resolves a bearer/cookie to
+    (tenant, subject) without any self-issued session secret being configured."""
+
+    def __init__(self, subject: str, tenant: str) -> None:
+        self._principal = (tenant, subject)
+
+    def tenant_for(self, headers: Any) -> str | None:
+        return self._principal[0] if headers.get("authorization") else None
+
+    def principal_for(self, headers: Any) -> tuple[str, str] | None:
+        return self._principal if headers.get("authorization") else None
+
+
+def _sso_app() -> WebApp:
+    """jwks/SSO posture: an authenticator is configured and `session_secret` is
+    deliberately unset (see Settings.from_env — in jwks mode the IdP mints tokens)."""
+    users = InMemoryUserDirectory()
+    users.upsert_user(User(id="ada@acme.com", email="ada@acme.com"))
+    users.set_membership("ada@acme.com", "acme", Role.OWNER)
+    app = WebApp(
+        users=users,
+        session_secret=None,                       # <- no self-issued secret
+        authenticator=_IdpAuthenticator("ada@acme.com", "acme"),
+        session_clock=lambda: NOW,
+    )
+    app.add_tenant("acme", "Acme Co", _inputs(),
+                   ForecastConfig(minimum_cash=Money.from_decimal("10000.00")), token="unused")
+    return app
+
+
+def test_choose_enter_does_not_crash_without_a_self_issued_secret() -> None:
+    """`/choose/enter` re-mints the self-issued session cookie. In SSO mode there
+    is no secret to sign with, but `_session_subject` still resolves a subject
+    through the IdP — so the tenant check passed and `sign_jwt(claims, None)` blew
+    up on `None.encode()`, turning a normal click into a 500. mypy caught it as
+    `Argument 2 to "sign_jwt" has incompatible type "str | None"`."""
+    app = _sso_app()
+    resp = app.handle(Request("GET", "/choose/enter?tenant=acme", {"cookie": "rgnr8_session=idp-issued-token"}))
+    assert resp.status == 400, resp.status
+    assert "identity provider" in resp.body
+
+
+def test_choose_page_still_renders_under_sso() -> None:
+    """The guard is scoped to re-minting: the chooser itself must still list the
+    businesses, or SSO users would lose the screen entirely."""
+    app = _sso_app()
+    page = app.handle(Request("GET", "/choose", {"cookie": "rgnr8_session=idp-issued-token"}))
+    assert page.status == 200 and "Acme Co" in page.body

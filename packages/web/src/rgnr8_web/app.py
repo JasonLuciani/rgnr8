@@ -4443,10 +4443,15 @@ class WebApp:
     def _session_cookie(self, *, sub: str, tenant: "str | None" = None) -> str:
         """Build the `rgnr8_session` Set-Cookie value. Carries `sub` always and a
         `tenant` only once a business is chosen (the chooser runs before that)."""
+        secret = self._session_secret
+        if secret is None:  # callers guard; this keeps the impossible case explicit
+            raise RuntimeError(
+                "_session_cookie needs a self-issued session secret; in SSO mode "
+                "the identity provider mints the token instead.")
         claims: dict[str, object] = {"sub": sub, "exp": self._session_clock() + 8 * 3600}
         if tenant is not None:
             claims["tenant"] = tenant
-        token = sign_jwt(claims, self._session_secret)
+        token = sign_jwt(claims, secret)
         cookie = f"rgnr8_session={token}; Path=/; Max-Age=28800; HttpOnly; SameSite=Lax"
         if self._secure_cookies:
             cookie += "; Secure"
@@ -4465,7 +4470,9 @@ class WebApp:
             if callable(pf):
                 result = pf({"authorization": f"Bearer {cookie}"})
                 if result is not None:
-                    return result[1]
+                    subject = result[1]
+                    if isinstance(subject, str):
+                        return subject
         if self._session_secret is not None:
             try:
                 claims = verify_jwt(cookie, self._session_secret, now=self._session_clock())
@@ -4502,6 +4509,14 @@ class WebApp:
         if (not tenant or tenant not in self._tenants or self._users is None
                 or self._users.membership(subject, tenant) is None):
             return _redirect("/choose")
+        # Entering a business re-mints the SELF-ISSUED session cookie. In SSO
+        # (jwks) mode there is no self-issued secret — _session_subject still
+        # resolves a subject through the IdP, so without this guard we would call
+        # sign_jwt(claims, None) and 500 on None.encode(). The IdP owns the token
+        # there; the chooser cannot re-scope it.
+        if self._session_secret is None:
+            return _html(400, render_login_html(
+                sso=True, error="Choosing a business is handled by your identity provider."))
         return _redirect("/app", (("Set-Cookie",
             self._session_cookie(sub=subject, tenant=tenant)),))
 

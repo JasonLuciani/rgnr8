@@ -11,6 +11,8 @@ stages share.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
 from rgnr8_forecast.brand import POSITIVE, RG_BASE_CSS, RG_TOKENS_CSS, RISK, WATCH, mark_svg
 
 from .report import OpsReport, TenantOpsRow
@@ -209,8 +211,8 @@ def render_client_detail(
     name: str,
     operator: str = "operator@rgnr8.co",
     row: "TenantOpsRow | None" = None,
-    cutover: "dict | None" = None,
-    members: "list[dict] | None" = None,
+    cutover: "Mapping[str, object] | None" = None,
+    members: "Sequence[Mapping[str, object]] | None" = None,
     assignable_roles: "list[str] | None" = None,
     notice: str = "",
     notice_kind: str = "ok",
