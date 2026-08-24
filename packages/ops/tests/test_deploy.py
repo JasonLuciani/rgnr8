@@ -4,7 +4,7 @@ import sqlite3
 
 from factory import steady_tenant
 from rgnr8_forecast import Money
-from rgnr8_ops import Fleet, SqlFleetStore, bootstrap_python_schemas
+from rgnr8_ops import Fleet, SqlFleetStore, bootstrap_python_schemas, run_migrations
 from rgnr8_runtime import SqlSubscriptionStore
 
 
@@ -26,6 +26,26 @@ def test_bootstrap_creates_every_python_table_idempotently() -> None:
     assert expected <= _tables(conn)
     # idempotent — running again does not raise
     bootstrap_python_schemas(conn)
+
+
+def test_release_migration_sequence_leaves_webhook_outbox_present() -> None:
+    """deploy/migrate.py runs the versioned migrations and THEN the full schema
+    bootstrap on the same connection. The versioned set does not include the
+    webhook tables, so the bootstrap is what makes the cron worker's
+    `webhook_outbox` query resolve. This reproduces the exact release sequence
+    and guards against the two paths ever conflicting (a regression: the worker
+    crashed on a missing webhook_outbox because migrate.py ran only the versioned
+    migrations)."""
+    conn = sqlite3.connect(":memory:")
+    run_migrations(conn, dialect="sqlite", placeholder="?", applied_at="2026-01-01T00:00:00Z")
+    # webhook_outbox is NOT among the versioned migrations…
+    assert "webhook_outbox" not in _tables(conn)
+    # …the bootstrap composes on top of the migrated core tables without error…
+    bootstrap_python_schemas(conn, placeholder="?")
+    assert {"webhook_outbox", "webhook_endpoint"} <= _tables(conn)
+    # …and the whole sequence is safe to run again (every deploy re-runs it).
+    run_migrations(conn, dialect="sqlite", placeholder="?", applied_at="2026-01-01T00:00:00Z")
+    bootstrap_python_schemas(conn, placeholder="?")
 
 
 def test_bootstrapped_db_backs_a_persisted_fleet() -> None:
