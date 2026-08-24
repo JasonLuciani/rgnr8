@@ -78,7 +78,7 @@ jobs:
         # openpyxl (the rgnr8-reports PDF/XLSX export renderers, pulled in by the
         # web suite too). The rgnr8-* packages themselves are resolved via each
         # pyproject's pythonpath, so only their external deps need installing here.
-        run: python -m pip install --upgrade pytest mypy ruff cryptography reportlab openpyxl "psycopg[binary]"
+        run: python -m pip install --upgrade pytest mypy ruff cryptography reportlab openpyxl pyyaml "psycopg[binary]"
       - name: Lint (ruff)
         run: ruff check packages/*/src packages/*/tests
       - name: Type-check (mypy)

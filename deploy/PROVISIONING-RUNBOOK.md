@@ -8,6 +8,39 @@ This runbook covers the operational gate identified in the executive review: man
 
 You will need: a cloud account that offers managed PostgreSQL and a container/app host (Render, Fly.io, Railway, AWS, GCP — the manifests in this folder are host-agnostic Docker), a domain you control, and a place to store secrets (your host's secret manager or a vault). The build ships a `Dockerfile`, `docker-compose.yml`, and `Procfile` in this directory. For Render specifically, the repo root carries a reviewed **`render.yaml`** Blueprint that implements this runbook's topology (public web at the custom domain, PRIVATE ledger + operator, cron worker, managed Postgres 16, `RGNR8_REQUIRE_RLS=1`) — create a Blueprint instance from it and you land at step 1 with most of steps 2–4 pre-wired.
 
+### 0a. What Render will ask you for, and the two answers that must match
+
+A Blueprint instance prompts for every `sync: false` value at creation time. There are
+four, and two of them are the same secret entered twice:
+
+| Prompt | Service | Notes |
+| --- | --- | --- |
+| `RGNR8_SECRET_KEY` | `rgnr8-web` | the Fernet key from step 2 |
+| `RGNR8_SECRET_KEY` | `rgnr8-worker` | **paste the identical value** |
+| `RGNR8_SENDGRID_API_KEY` | `rgnr8-worker` | omit and delivery is a silent dry run |
+| `RGNR8_DELIVERY_FROM` | `rgnr8-worker` | must be a SendGrid-verified sender |
+
+Render does not allow `sync: false` inside an environment group, which is why the
+Fernet key cannot be shared automatically. If the two copies drift, the worker builds
+a `NullCipher` and fails to decrypt the webhook endpoint secrets the web app wrote —
+with no error on either side. `RGNR8_JWT_SECRET` and `RGNR8_LEDGER_TOKEN` *are* in the
+shared group and are generated once for all services; do not override either per
+service.
+
+Do the DNS first: add the `acctg` CNAME at your registrar and let it propagate before
+creating the instance, so Render's certificate issuance succeeds on the first attempt.
+This is a subdomain CNAME only — it does not touch the MX records for corporate mail
+on the parent domain.
+
+### 0b. `ipAllowList: []` locks you out too
+
+The blueprint blocks all external connections to Postgres, which is correct for the
+services and inconvenient for you: step 1 below needs a session as the owner role, and
+`psql` from your laptop will not connect. Either add your IP to the database's allow
+list temporarily in the dashboard and remove it afterwards, or run step 1 through the
+ledger service's `RGNR8_PROVISION_APP_ROLE` path (below), which already has a
+private-network connection.
+
 ## 1. Managed PostgreSQL 16
 
 Create a managed Postgres 16 instance. Managed (not self-run) is the point: you want automated failover and point-in-time recovery you didn't have to build. Capture its connection string as `DATABASE_URL` / `RGNR8_DATABASE_URL`.

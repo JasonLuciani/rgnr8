@@ -24,6 +24,26 @@ def _bool(v: str | None, default: bool = False) -> bool:
     return v.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _normalize_ledger_url(raw: str | None) -> str | None:
+    """Accept a bare ``host:port`` as well as a full URL.
+
+    Render's Blueprint ``fromService``/``hostport`` property yields a private-network
+    address with no scheme (``rgnr8-ledger-a1b2:8181``), and a blueprint cannot
+    interpolate that value into a larger string. Hardcoding the hostname instead is
+    not an option: Render appends a random suffix to the private hostname, so the
+    address is not knowable until the service exists. So default a scheme-less value
+    to http:// — the private network is internal and TLS terminates at Render's edge,
+    which is exactly what the ledger serves there.
+    """
+    value = (raw or "").strip()
+    if not value:
+        return None
+    if "://" in value:
+        return value
+    return f"http://{value}"
+
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     # --- web / auth ---
@@ -127,7 +147,7 @@ class Settings:
             warnings.append(
                 "no RGNR8_SESSION_SECRET — browser login is disabled (API bearer tokens only)"
             )
-        ledger_url = e.get("RGNR8_LEDGER_URL")
+        ledger_url = _normalize_ledger_url(e.get("RGNR8_LEDGER_URL"))
         if database_url and not ledger_url:
             warnings.append(
                 "no RGNR8_LEDGER_URL — the books/ledger screens will show 'not configured'"
