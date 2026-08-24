@@ -104,7 +104,11 @@ def test_logout_clears_the_cookie() -> None:
 
 def test_no_cookie_no_access() -> None:
     app = _app()
-    assert app.handle(Request("GET", "/app")).status == 401
+    # The app root sends a browser to the sign-in page (not a raw JSON 401)...
+    home = app.handle(Request("GET", "/app"))
+    assert home.status in (302, 303)
+    assert home.headers.get("Location") == "/login"
+    # ...but a deep tenant/API route with no credential is still refused.
     assert app.handle(Request("GET", "/t/acme/team")).status == 401
 
 # --- H1-5: session cookie carries Secure (HTTPS-only) by default -------------

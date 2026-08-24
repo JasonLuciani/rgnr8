@@ -983,6 +983,11 @@ class WebApp:
 
         principal = self._principal(req)
         if principal is None:
+            # A browser landing on the app root should see the sign-in page, not a
+            # raw JSON 401 (that bare-domain error read as "broken"). The rest of
+            # the surface — the JSON API — still gets the 401.
+            if route in ("/", "/app"):
+                return _redirect("/login")
             return _json(401, {"error": "missing or invalid bearer token"})
         token_tenant, subject = principal
         _VIEW_AS.set(self._resolve_view_as(req, subject))

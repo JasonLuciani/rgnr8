@@ -88,6 +88,46 @@ services:
       - key: RGNR8_SECURE_COOKIES
         value: "true"
 
+  # --- the operator console: RGNR8-staff control plane (onboard businesses) ----
+  # Public, but every route requires a platform (staff) role. Shares the owner
+  # app's DB, JWT secret, and ledger, so one account works on both sides and the
+  # fleet the operator provisions is the fleet the owner app serves.
+  - type: web
+    name: rgnr8-operator
+    runtime: docker
+    repo: https://github.com/JasonLuciani/rgnr8
+    branch: main
+    region: oregon
+    plan: starter
+    dockerfilePath: ./deploy/Dockerfile
+    dockerContext: .
+    dockerCommand: gunicorn operator_entry:application --workers 2 --bind 0.0.0.0:10000 --access-logfile -
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: RGNR8_PORT
+        value: "10000"
+      - key: RGNR8_AUTH_MODE
+        value: hs256
+      - key: RGNR8_JWT_SECRET
+        fromService:
+          type: web
+          name: rgnr8-web
+          envVarKey: RGNR8_JWT_SECRET
+      - key: RGNR8_DATABASE_URL
+        fromDatabase:
+          name: rgnr8-db
+          property: connectionString
+      - key: RGNR8_LEDGER_URL
+        value: http://rgnr8-ledger:10000
+      - key: RGNR8_LEDGER_TOKEN
+        fromService:
+          type: pserv
+          name: rgnr8-ledger
+          envVarKey: RGNR8_LEDGER_TOKEN
+      - key: RGNR8_SECURE_COOKIES
+        value: "true"
+
   # --- the delivery worker: briefings + durable webhook outbox, on a schedule --
   - type: cron
     name: rgnr8-worker
@@ -101,6 +141,10 @@ services:
     dockerCommand: python worker.py
     autoDeploy: true
     envVars:
+      # The worker has no interactive auth surface, so it needs no JWT secret;
+      # static mode satisfies config without one (hs256 would demand a secret).
+      - key: RGNR8_AUTH_MODE
+        value: static
       - key: RGNR8_DATABASE_URL
         fromDatabase:
           name: rgnr8-db
