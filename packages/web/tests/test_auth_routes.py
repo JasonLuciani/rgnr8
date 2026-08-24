@@ -136,6 +136,61 @@ def test_verified_login_can_reach_the_app() -> None:
     assert home.status == 200                                          # authenticated session works
 
 
+# --- the "choose your view" chooser -----------------------------------------
+
+
+def test_staff_login_lands_on_the_view_chooser() -> None:
+    # A staffer with no business of their own logs in once and lands on the
+    # chooser showing the RGNR8 Fin OS (operator console) tile — not auto-seated
+    # into some tenant, and not bounced to a dead end.
+    app = _make_app({"t": NOW})
+    token = json.loads(_post(app, "/signup", {"email": "boss@rgnr8.co", "password": "hunter2222"}).body)["verify_token"]
+    _post(app, "/verify", {"token": token})
+    app._users.set_platform_role("boss@rgnr8.co", Role.OPERATOR)
+    ok = _post(app, "/login", {"email": "boss@rgnr8.co", "password": "hunter2222"})
+    assert ok.status == 302 and ok.headers.get("Location") == "/choose"
+    page = app.handle(Request("GET", "/choose", {"cookie": _cookie_from(ok)}))
+    assert page.status == 200
+    assert "Choose your view" in page.body
+    assert "RGNR8 Fin OS" in page.body            # the staff console tile
+    assert "/operator" in page.body               # links to the console, same origin
+
+
+def test_multi_business_chooser_and_authorized_enter() -> None:
+    app = _make_app({"t": NOW})
+    app.add_tenant("beta", "Beta LLC", _inputs(),
+                   ForecastConfig(minimum_cash=Money.from_decimal("10000.00")), token="unused")
+    app.add_tenant("gamma", "Gamma Inc", _inputs(),
+                   ForecastConfig(minimum_cash=Money.from_decimal("10000.00")), token="unused")
+    token = json.loads(_post(app, "/signup", {"email": "ada@acme.com", "password": "hunter2222"}).body)["verify_token"]
+    _post(app, "/verify", {"token": token})
+    app._users.upsert_user(User(id="ada@acme.com", email="ada@acme.com"))
+    app._users.set_membership("ada@acme.com", "acme", Role.OWNER)
+    app._users.set_membership("ada@acme.com", "beta", Role.OWNER)   # member of two, not gamma
+
+    ok = _post(app, "/login", {"email": "ada@acme.com", "password": "hunter2222"})
+    assert ok.status == 302 and ok.headers.get("Location") == "/choose"
+    cookie = _cookie_from(ok)
+    page = app.handle(Request("GET", "/choose", {"cookie": cookie}))
+    assert page.status == 200 and "Acme Co" in page.body and "Beta LLC" in page.body
+    assert "Gamma Inc" not in page.body                              # not a member → not offered
+
+    # entering a business the user belongs to scopes the session and reaches /app
+    enter = app.handle(Request("GET", "/choose/enter?tenant=beta", {"cookie": cookie}))
+    assert enter.status == 302 and enter.headers.get("Location") == "/app"
+    assert app.handle(Request("GET", "/app", {"cookie": _cookie_from(enter)})).status == 200
+
+    # entering a business the user does NOT belong to is refused → back to chooser
+    bad = app.handle(Request("GET", "/choose/enter?tenant=gamma", {"cookie": cookie}))
+    assert bad.status == 302 and bad.headers.get("Location") == "/choose"
+
+
+def test_choose_requires_a_session() -> None:
+    app = _make_app({"t": NOW})
+    assert app.handle(Request("GET", "/choose")).headers.get("Location") == "/login"
+    assert app.handle(Request("GET", "/choose/enter?tenant=acme")).headers.get("Location") == "/login"
+
+
 # --- password reset ----------------------------------------------------------
 
 

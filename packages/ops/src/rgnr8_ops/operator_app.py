@@ -96,6 +96,7 @@ class OperatorApp:
         *,
         clock: Callable[[], datetime],
         auth_service: AuthService | None = None,
+        session_secret: str | None = None,
         ledger: LedgerClient | None = None,
         onboarding: OnboardingRegistry | None = None,
     ) -> None:
@@ -108,6 +109,12 @@ class OperatorApp:
         # When set, staff can sign into the console in a browser (email+password
         # → session cookie). Without it, the console is bearer-JWT only (as before).
         self._auth_service = auth_service
+        # The owner web app's session-cookie signing key. When the two apps are
+        # served from one domain (acctg), this lets the console accept the SAME
+        # `rgnr8_session` cookie the owner app's login sets — one sign-on grants
+        # both the business view and the staff console. Signed separately from the
+        # operator's own `rgnr8_operator` cookie (which uses the JWT secret).
+        self._session_secret = session_secret
         # When wired, go-live doesn't just *record* the decision — it executes it
         # against the ledger service, so the client's books actually open.
         self._ledger = ledger
@@ -152,13 +159,27 @@ class OperatorApp:
         if token is None:
             # browser session: the login cookie the console's sign-in set
             token = _cookie(req.headers, "rgnr8_operator")
-        if not token:
-            return self._unauth(req, "missing bearer token")
-        try:
-            claims = verify_jwt(token, self._secret, now=self._epoch())
-        except JwtError:
-            return self._unauth(req, "invalid or expired token")
-        sub = claims.get("sub")
+        if token:
+            try:
+                claims = verify_jwt(token, self._secret, now=self._epoch())
+            except JwtError:
+                return self._unauth(req, "invalid or expired token")
+            sub = claims.get("sub")
+        else:
+            # Single sign-on: when the console and the owner web app share one
+            # domain (acctg), accept the owner app's `rgnr8_session` cookie too,
+            # verified with the session secret. One login grants both views.
+            sub = None
+            if self._session_secret:
+                sess = _cookie(req.headers, "rgnr8_session")
+                if sess:
+                    try:
+                        claims = verify_jwt(sess, self._session_secret, now=self._epoch())
+                    except JwtError:
+                        return self._unauth(req, "invalid or expired session")
+                    sub = claims.get("sub")
+            if sub is None:
+                return self._unauth(req, "missing bearer token")
         if not isinstance(sub, str) or not sub:
             return self._unauth(req, "token carries no subject")
         role = self._dir.platform_role(sub)

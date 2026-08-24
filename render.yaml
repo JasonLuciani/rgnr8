@@ -66,6 +66,10 @@ services:
     dockerfilePath: ./deploy/Dockerfile
     dockerContext: .
     autoDeploy: true
+    # Serve BOTH apps from this one public service: the combined entrypoint routes
+    # /operator/* to the staff console and everything else to the owner app, so
+    # acctg.rgnr8ventures.com is the single front door — one login, one origin.
+    dockerCommand: gunicorn combined_entry:application --workers 2 --bind 0.0.0.0:10000 --access-logfile -
     healthCheckPath: /ready
     domains:
       - acctg.rgnr8ventures.com
@@ -97,7 +101,10 @@ services:
       - key: RGNR8_SECURE_COOKIES
         value: "true"
       - key: RGNR8_OPERATOR_URL
-        value: https://rgnr8-operator.onrender.com
+        # Same origin now: this very service serves the console at /operator (the
+        # combined entrypoint), so staff-with-no-business and the post-login view
+        # chooser link stay on acctg instead of bouncing to the onrender URL.
+        value: /operator
 
   # --- the operator console: RGNR8-staff control plane ------------------------
   # Public so staff can reach it in a browser, but every route requires a platform

@@ -163,6 +163,48 @@ def render_signup_html(*, error: str | None = None) -> str:
     return _login_shell(err + form)
 
 
+def _choose_tile(*, href: str, title: str, subtitle: str, accent: bool) -> str:
+    """One selectable destination on the 'choose your view' screen."""
+    border = "var(--rg-sage)" if accent else "#e3e3e3"
+    badge = ('<span style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;'
+             'color:var(--rg-sage);font-weight:700">Staff</span>') if accent else ""
+    return (
+        f'<a href="{escape(href)}" style="display:block;text-decoration:none;border:1px solid {border};'
+        'border-radius:12px;padding:16px 18px;background:#fff">'
+        '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px">'
+        f'<span style="font:700 16px/1.2 var(--rg-sans);color:var(--rg-forest)">{escape(title)}</span>{badge}</div>'
+        f'<div style="margin-top:4px;font-size:13px;color:var(--rg-muted)">{escape(subtitle)}</div></a>'
+    )
+
+
+def render_choose_html(*, businesses, staff: bool, operator_url: str = "/operator",
+                       email: "str | None" = None) -> str:
+    """The post-login 'choose your view' screen. Lists the RGNR8 Fin OS (staff
+    console) tile when the user holds a platform role, plus one tile per business
+    they belong to. `businesses` is an iterable of (tenant_id, display_name)."""
+    tiles = []
+    if staff:
+        tiles.append(_choose_tile(
+            href=operator_url or "/operator", title="RGNR8 Fin OS",
+            subtitle="Operator console — onboard & manage businesses", accent=True))
+    for tid, name in businesses:
+        tiles.append(_choose_tile(
+            href=f"/choose/enter?tenant={escape(str(tid))}", title=str(name or tid),
+            subtitle="Enter this business", accent=False))
+    heading = ('<div style="text-align:center;font:700 18px/1.2 var(--rg-sans);'
+               'color:var(--rg-forest);margin-bottom:4px">Choose your view</div>')
+    who = (f'<div style="text-align:center;color:var(--rg-muted);font-size:12px;'
+           f'margin-bottom:18px">Signed in as {escape(email)}</div>') if email else '<div style="height:14px"></div>'
+    if tiles:
+        body = '<div style="display:flex;flex-direction:column;gap:12px">' + "".join(tiles) + "</div>"
+    else:
+        body = ('<div class="card" style="text-align:center;color:var(--rg-muted)">'
+                "No businesses or consoles are available for this account yet.</div>")
+    footer = ('<p style="text-align:center;margin-top:18px;font-size:13px">'
+              '<a href="/logout" style="color:var(--rg-muted)">Sign out</a></p>')
+    return _login_shell(heading + who + body + footer)
+
+
 def _nav_html(
     tenant: str, permissions: frozenset[Permission], active: str, *, hide_provisional: bool = False,
 ) -> str:

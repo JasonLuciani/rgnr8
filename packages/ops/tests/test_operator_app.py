@@ -106,6 +106,38 @@ def test_browser_navigation_without_session_redirects_to_login() -> None:
     assert app.handle(Request("GET", "/operator")).status == 401
 
 
+def test_shared_owner_session_cookie_grants_the_console() -> None:
+    # Single sign-on across the unified front door: the owner web app's login sets
+    # an `rgnr8_session` cookie signed with the session secret. Given that same
+    # secret, the console must accept it so a staffer logs in once, not twice.
+    from rgnr8_web import sign_jwt
+
+    session_secret = "shared-session-secret"
+    billing = BillingService(InMemoryAccountStore(), FakeBillingProvider(),
+                             clock=lambda: NOW_EPOCH)
+    fleet = Fleet(jwt_secret=SECRET, clock=lambda: NOW_EPOCH)
+    directory = InMemoryUserDirectory()
+    audit = InMemoryAuditLog()
+    app = OperatorApp(fleet, billing, directory, audit, SECRET,
+                      clock=lambda: NOW, session_secret=session_secret)
+
+    # a staffer whose owner-app session cookie is presented to the console
+    directory.set_platform_role("boss@rgnr8.co", Role.OPERATOR)
+    sess = sign_jwt({"sub": "boss@rgnr8.co", "exp": NOW_EPOCH + 3600}, session_secret)
+    r = app.handle(Request("GET", "/operator", {"cookie": f"rgnr8_session={sess}"}))
+    assert r.status == 200
+
+    # a valid session for a NON-staff subject is still refused (403, not staff)
+    stranger = sign_jwt({"sub": "nobody@x.com", "exp": NOW_EPOCH + 3600}, session_secret)
+    assert app.handle(
+        Request("GET", "/operator", {"cookie": f"rgnr8_session={stranger}"})).status == 403
+
+    # without the session secret wired, the same cookie is ignored (API 401)
+    no_sso = OperatorApp(fleet, billing, directory, audit, SECRET, clock=lambda: NOW)
+    assert no_sso.handle(
+        Request("GET", "/operator", {"cookie": f"rgnr8_session={sess}"})).status == 401
+
+
 def test_support_can_view_but_cannot_onboard() -> None:
     app, fleet, admin, _billing, _dir, _audit = _app()
     _bootstrap_tenant(admin)

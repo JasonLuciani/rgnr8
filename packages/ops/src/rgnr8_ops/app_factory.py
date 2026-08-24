@@ -388,5 +388,8 @@ def create_operator_application(
         onboarding=onboarding,
         ledger=ledger,
         auth_service=auth_service,
+        # Accept the owner web app's session cookie too, so one login at acctg
+        # grants the console (single sign-on across the unified front door).
+        session_secret=settings.session_secret,
     )
     return operator_wsgi(app)

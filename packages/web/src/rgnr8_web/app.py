@@ -184,6 +184,7 @@ from .ask_screens import render_ask, render_ask_unavailable
 from .copilot_bridge import AskService, LedgerReaderAdapter, copilot_scopes
 from rgnr8_copilot import AskAnswer, Conversation, LLMProvider
 from .shell import (
+    render_choose_html,
     render_app_home,
     render_audit_log,
     render_login_html,
@@ -985,6 +986,14 @@ class WebApp:
             return self._password_reset_post(req)
         if route == "/logout":
             return _redirect("/login", (("Set-Cookie", "rgnr8_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"),))
+
+        # --- post-login "choose your view" (authenticated by session `sub`, which
+        # exists before any business/tenant is selected, so it runs ahead of the
+        # tenant-scoped principal gate below) ---
+        if route == "/choose" and req.method == "GET":
+            return self._choose_page(req)
+        if route == "/choose/enter" and req.method == "GET":
+            return self._choose_enter(req)
 
         # --- QBO OAuth callback (public: Intuit redirects the owner's browser
         # here; the signed `state` is the CSRF boundary and carries the tenant) ---
@@ -4394,31 +4403,101 @@ class WebApp:
             self._users.upsert_user(user)
             subject = user.id
             self._bootstrap_staff(email, subject)
-        tenant = self._resolve_login_tenant(email, data.get("tenant"))
-        if tenant is None:
-            # A staff member with no business yet belongs in the operator console,
-            # not at a dead end; everyone else is told nothing is provisioned.
-            if self._users is not None and self._users.platform_role(subject) is not None:
-                op = os.environ.get("RGNR8_OPERATOR_URL", "").strip()
-                if op:
-                    return _redirect(op)
+        _ = role_raw  # retained for the dev UI only; not authorization-bearing
+        # One login, then a chooser. Gather this user's destinations: every
+        # business they belong to, plus the RGNR8 Fin OS console if they hold a
+        # platform (staff) role.
+        businesses = self._all_memberships_of(subject) if self._users is not None else []
+        is_staff = (self._users is not None
+                    and self._users.platform_role(subject) is not None)
+        # No membership yet: fall back to the deployment's tenant resolution (an
+        # explicitly requested tenant, or a single-tenant install), preserving the
+        # smooth "straight into the one business" path and seating the owner. Skip
+        # it for staff — a staffer with no business belongs in the console, not
+        # auto-seated as a viewer of whatever single tenant happens to exist.
+        if not businesses and not is_staff:
+            resolved = self._resolve_login_tenant(email, data.get("tenant"))
+            if resolved is not None:
+                if self._users is not None and self._users.membership(subject, resolved) is None:
+                    self._users.set_membership(subject, resolved, Role.VIEWER)
+                businesses = [resolved]
+        total = len(businesses) + (1 if is_staff else 0)
+        if total == 0:
             return _html(400, render_login_html(
                 error="No business is provisioned to sign into yet.",
                 credentials=self._auth_service is not None))
-        # NEVER take the effective role from the client (the `role` field is
-        # cosmetic). A brand-new user with no membership gets the least-privilege
-        # default; elevation happens only via an invitation or an admin.
-        if self._users is not None and self._users.membership(subject, tenant) is None:
-            self._users.set_membership(subject, tenant, Role.VIEWER)
-        _ = role_raw  # retained for the dev UI only; not authorization-bearing
-        token = sign_jwt(
-            {"sub": subject, "tenant": tenant, "exp": self._session_clock() + 8 * 3600},
-            self._session_secret,
-        )
+        # Exactly one business and not staff → skip the chooser, straight in.
+        if total == 1 and not is_staff:
+            return _redirect("/app", (("Set-Cookie",
+                self._session_cookie(sub=subject, tenant=businesses[0])),))
+        # Staff, or more than one destination → the "choose your view" screen.
+        # The cookie carries only `sub` until a business is picked.
+        return _redirect("/choose", (("Set-Cookie", self._session_cookie(sub=subject)),))
+
+    def _session_cookie(self, *, sub: str, tenant: "str | None" = None) -> str:
+        """Build the `rgnr8_session` Set-Cookie value. Carries `sub` always and a
+        `tenant` only once a business is chosen (the chooser runs before that)."""
+        claims: dict[str, object] = {"sub": sub, "exp": self._session_clock() + 8 * 3600}
+        if tenant is not None:
+            claims["tenant"] = tenant
+        token = sign_jwt(claims, self._session_secret)
         cookie = f"rgnr8_session={token}; Path=/; Max-Age=28800; HttpOnly; SameSite=Lax"
         if self._secure_cookies:
             cookie += "; Secure"
-        return _redirect("/app", (("Set-Cookie", cookie),))
+        return cookie
+
+    def _session_subject(self, req: Request) -> "str | None":
+        """The logged-in user id from the session cookie, WITHOUT requiring a
+        tenant claim — the chooser authenticates before a business is selected.
+        Mirrors `_principal`'s cookie verification (authenticator, then the self-
+        issued session secret)."""
+        cookie = _cookie(req.headers, "rgnr8_session")
+        if cookie is None:
+            return None
+        if self._auth is not None:
+            pf = getattr(self._auth, "principal_for", None)
+            if callable(pf):
+                result = pf({"authorization": f"Bearer {cookie}"})
+                if result is not None:
+                    return result[1]
+        if self._session_secret is not None:
+            try:
+                claims = verify_jwt(cookie, self._session_secret, now=self._session_clock())
+            except JwtError:
+                claims = {}
+            sub = claims.get("sub")
+            if isinstance(sub, str):
+                return sub
+        return None
+
+    def _choose_page(self, req: Request) -> Response:
+        """The post-login 'choose your view' screen."""
+        subject = self._session_subject(req)
+        if subject is None:
+            return _redirect("/login")
+        businesses = [(t, self._tenants[t].name) for t in self._all_memberships_of(subject)]
+        is_staff = self._users is not None and self._users.platform_role(subject) is not None
+        op = (os.environ.get("RGNR8_OPERATOR_URL", "/operator").strip() or "/operator")
+        email = subject
+        if self._users is not None:
+            u = self._users.get_user(subject)
+            if u is not None and getattr(u, "email", None):
+                email = u.email
+        return _html(200, render_choose_html(
+            businesses=businesses, staff=is_staff, operator_url=op, email=email))
+
+    def _choose_enter(self, req: Request) -> Response:
+        """Enter a chosen business: re-mint the session cookie with that tenant,
+        but only after verifying the subject actually belongs to it."""
+        subject = self._session_subject(req)
+        if subject is None:
+            return _redirect("/login")
+        tenant = req.query.get("tenant", "")
+        if (not tenant or tenant not in self._tenants or self._users is None
+                or self._users.membership(subject, tenant) is None):
+            return _redirect("/choose")
+        return _redirect("/app", (("Set-Cookie",
+            self._session_cookie(sub=subject, tenant=tenant)),))
 
     @staticmethod
     def _wants_json(req: Request) -> bool:
