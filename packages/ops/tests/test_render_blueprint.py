@@ -141,18 +141,23 @@ def test_the_worker_can_actually_deliver() -> None:
     )
 
 
-def test_only_the_web_service_is_public() -> None:
-    """The ledger is the system of record and the operator console is the staff
-    control plane. Neither belongs on public DNS."""
+def test_public_services_are_web_and_operator_only() -> None:
+    """The ledger (system of record) stays private. The owner app and the staff
+    operator console are both browser-facing surfaces, so they are the only web
+    services — the operator is public but every route is gated on a platform role
+    in-app (operator_app._staff), so its exposure is a login page and nothing more.
+    The custom domain belongs to the owner app alone; the console lives on its
+    onrender.com URL."""
     for service in _blueprint()["services"]:
         if service["type"] != "web":
             assert "domains" not in service, service["name"]
             assert "healthCheckPath" not in service, (
                 f"{service['name']}: healthCheckPath is web-services-only in the spec."
             )
-    web = [s for s in _blueprint()["services"] if s["type"] == "web"]
-    assert [s["name"] for s in web] == ["rgnr8-web"]
-    assert web[0]["domains"] == ["acctg.rgnr8ventures.com"]
+    web = {s["name"]: s for s in _blueprint()["services"] if s["type"] == "web"}
+    assert set(web) == {"rgnr8-web", "rgnr8-operator"}, set(web)
+    assert web["rgnr8-web"].get("domains") == ["acctg.rgnr8ventures.com"]
+    assert "domains" not in web["rgnr8-operator"], "the staff console gets no custom domain"
 
 
 def test_the_web_service_is_on_a_paid_plan() -> None:

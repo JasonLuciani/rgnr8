@@ -96,14 +96,42 @@ def _doc(title: str, body: str) -> str:
     )
 
 
-def render_login_html(*, action: str = "/login", sso: bool = False, error: str | None = None) -> str:
-    """The brand login screen. `sso=True` shows a 'Sign in with SSO' button
-    (real IdP); otherwise the dev email + role form posts to `action`."""
+def _login_shell(inner: str) -> str:
+    body = f"""<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;
+      background:radial-gradient(1100px 460px at 50% -10%, #12352b, var(--rg-forest) 60%)">
+      <div class="card" style="width:min(420px,92vw);padding:30px">
+        <div style="text-align:center;margin-bottom:6px">
+          <span style="font:800 22px/1 var(--rg-sans);letter-spacing:.18em;text-transform:uppercase;color:var(--rg-forest)">RGNR<span style="color:var(--rg-sage)">8</span></span>
+        </div>
+        <div style="text-align:center;color:var(--rg-muted);font-size:11px;letter-spacing:.16em;text-transform:uppercase;margin-bottom:20px">Bold. Timeless. Endless potential.</div>
+        {inner}
+      </div></div>"""
+    return _doc("RGNR8 — sign in", body)
+
+
+def render_login_html(*, action: str = "/login", sso: bool = False,
+                      credentials: bool = False, error: str | None = None,
+                      notice: str | None = None) -> str:
+    """The brand login screen. `sso=True` shows a 'Sign in with SSO' button (real
+    IdP). `credentials=True` shows the real email + password form (production
+    browser login) with a link to create an account. Otherwise the dev email +
+    role form is shown (static/dev mode)."""
     err = f'<div class="card" style="border-color:#F5C4C6;background:#FDECEC;color:#B02A2F">{escape(error)}</div>' if error else ""
+    note = f'<div class="card" style="border-color:#BFE3C9;background:#EAF7EE;color:#1f6f43">{escape(notice)}</div>' if notice else ""
     if sso:
         form = (
             '<a class="btn sage" style="display:block;text-align:center;text-decoration:none" '
             f'href="{escape(action)}">Sign in with SSO</a>'
+        )
+    elif credentials:
+        form = (
+            f'<form method="post" action="{escape(action)}">'
+            '<label>Work email</label><input name="email" type="email" placeholder="you@company.com" autocomplete="username" required>'
+            '<label>Password</label><input name="password" type="password" autocomplete="current-password" required>'
+            '<button class="btn" style="width:100%;margin-top:18px" type="submit">Sign in</button>'
+            "</form>"
+            '<p style="text-align:center;margin-top:16px;font-size:13px;color:var(--rg-muted)">'
+            'New here? <a href="/signup" style="color:var(--rg-forest);font-weight:600">Create an account</a></p>'
         )
     else:
         opts = "".join(
@@ -116,16 +144,23 @@ def render_login_html(*, action: str = "/login", sso: bool = False, error: str |
             '<button class="btn" style="width:100%;margin-top:18px" type="submit">Sign in</button>'
             "</form>"
         )
-    body = f"""<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;
-      background:radial-gradient(1100px 460px at 50% -10%, #12352b, var(--rg-forest) 60%)">
-      <div class="card" style="width:min(420px,92vw);padding:30px">
-        <div style="text-align:center;margin-bottom:6px">
-          <span style="font:800 22px/1 var(--rg-sans);letter-spacing:.18em;text-transform:uppercase;color:var(--rg-forest)">RGNR<span style="color:var(--rg-sage)">8</span></span>
-        </div>
-        <div style="text-align:center;color:var(--rg-muted);font-size:11px;letter-spacing:.16em;text-transform:uppercase;margin-bottom:20px">Bold. Timeless. Endless potential.</div>
-        {err}{form}
-      </div></div>"""
-    return _doc("RGNR8 — sign in", body)
+    return _login_shell(note + err + form)
+
+
+def render_signup_html(*, error: str | None = None) -> str:
+    """Create-an-account screen: email + password. Posts to /signup."""
+    err = f'<div class="card" style="border-color:#F5C4C6;background:#FDECEC;color:#B02A2F">{escape(error)}</div>' if error else ""
+    form = (
+        '<form method="post" action="/signup">'
+        '<label>Work email</label><input name="email" type="email" placeholder="you@company.com" autocomplete="username" required>'
+        '<label>Password</label><input name="password" type="password" autocomplete="new-password" '
+        'placeholder="at least 8 characters" required minlength="8">'
+        '<button class="btn" style="width:100%;margin-top:18px" type="submit">Create account</button>'
+        "</form>"
+        '<p style="text-align:center;margin-top:16px;font-size:13px;color:var(--rg-muted)">'
+        'Already have an account? <a href="/login" style="color:var(--rg-forest);font-weight:600">Sign in</a></p>'
+    )
+    return _login_shell(err + form)
 
 
 def _nav_html(

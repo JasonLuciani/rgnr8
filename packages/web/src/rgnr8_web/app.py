@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextvars
 import dataclasses
 import json
+import os
 import re
 import secrets
 import time
@@ -186,6 +187,7 @@ from .shell import (
     render_app_home,
     render_audit_log,
     render_login_html,
+    render_signup_html,
     render_shell,
     render_users_admin,
 )
@@ -961,10 +963,18 @@ class WebApp:
 
         # --- UI: login / logout (no auth required) ---
         if route == "/login" and req.method == "GET":
-            return _html(200, render_login_html(sso=self._sso_mode()))
+            return _html(200, render_login_html(
+                sso=self._sso_mode(),
+                credentials=self._auth_service is not None,
+                notice=("Account created — sign in." if req.query.get("notice") == "created" else None),
+            ))
         if route == "/login" and req.method == "POST":
             return self._login_post(req)
         # --- public end-user auth (self-service signup / verify / reset) ---
+        if route == "/signup" and req.method == "GET":
+            if self._auth_service is None:
+                return _redirect("/login")
+            return _html(200, render_signup_html())
         if route == "/signup" and req.method == "POST":
             return self._signup_post(req)
         if route == "/verify" and req.method == "POST":
@@ -4351,6 +4361,17 @@ class WebApp:
             pass
         return {k: v[0] for k, v in parse_qs(body).items()}
 
+    def _bootstrap_staff(self, email: str, subject: str) -> None:
+        """First-run founder bootstrap: promote the single configured email to a
+        staff (operator) role on sign-in, so the operator console is reachable
+        without a manual DB seed. Idempotent, and a no-op unless
+        RGNR8_BOOTSTRAP_STAFF_EMAIL matches the email signing in."""
+        boot = os.environ.get("RGNR8_BOOTSTRAP_STAFF_EMAIL", "").strip().lower()
+        if not boot or email.strip().lower() != boot or self._users is None:
+            return
+        if self._users.platform_role(subject) is None:
+            self._users.set_platform_role(subject, Role.OPERATOR)
+
     def _login_post(self, req: Request) -> Response:
         if self._session_secret is None:
             return _html(400, render_login_html(sso=True, error="Self-issued login is disabled — use SSO."))
@@ -4365,20 +4386,30 @@ class WebApp:
             authed = self._auth_service.login(email, str(data.get("password", "")))
             if authed is None:
                 return self._login_failure(req)
-        tenant = self._resolve_login_tenant(email, data.get("tenant"))
-        if tenant is None:
-            return _html(400, render_login_html(error="No business is provisioned to sign into yet."))
+        # Seat the user record first, so the founder bootstrap and the staff check
+        # below can run even before any business is provisioned.
         subject = email
         if self._users is not None:
             user = self._users.find_by_email(email) or User(id=email, email=email)
             self._users.upsert_user(user)
             subject = user.id
-            # NEVER take the effective role from the client (the `role` field is
-            # cosmetic). A brand-new user with no membership gets the least-
-            # privilege default; elevation happens only via an invitation or an
-            # admin. (Trusting the client role was a self-service priv-esc.)
-            if self._users.membership(subject, tenant) is None:
-                self._users.set_membership(subject, tenant, Role.VIEWER)
+            self._bootstrap_staff(email, subject)
+        tenant = self._resolve_login_tenant(email, data.get("tenant"))
+        if tenant is None:
+            # A staff member with no business yet belongs in the operator console,
+            # not at a dead end; everyone else is told nothing is provisioned.
+            if self._users is not None and self._users.platform_role(subject) is not None:
+                op = os.environ.get("RGNR8_OPERATOR_URL", "").strip()
+                if op:
+                    return _redirect(op)
+            return _html(400, render_login_html(
+                error="No business is provisioned to sign into yet.",
+                credentials=self._auth_service is not None))
+        # NEVER take the effective role from the client (the `role` field is
+        # cosmetic). A brand-new user with no membership gets the least-privilege
+        # default; elevation happens only via an invitation or an admin.
+        if self._users is not None and self._users.membership(subject, tenant) is None:
+            self._users.set_membership(subject, tenant, Role.VIEWER)
         _ = role_raw  # retained for the dev UI only; not authorization-bearing
         token = sign_jwt(
             {"sub": subject, "tenant": tenant, "exp": self._session_clock() + 8 * 3600},
@@ -4413,15 +4444,26 @@ class WebApp:
         data = self._form_or_json(req.body)
         email = str(data.get("email", "")).strip()
         password = str(data.get("password", ""))
+        browser = not self._wants_json(req)
         try:
             cred, token = self._auth_service.signup(email, password)
         except AuthError as exc:
+            if browser:
+                return _html(400, render_signup_html(error=str(exc)))
             return _json(400, {"error": str(exc)})
-        body: dict[str, object] = {"user_id": cred.user_id, "email": cred.email,
-                                   "verified": cred.verified}
         if self._emailer is not None:
             self._emailer(cred.email, "verify_email", token)
-        else:
+        elif browser:
+            # Beta has no outbound email seam, so a browser signup would otherwise
+            # strand the user on an unverified account they can't confirm. Auto-
+            # verify here so they can sign in immediately; wire an emailer to
+            # restore the confirm-your-email step in production.
+            self._auth_service.verify_email(token)
+        if browser:
+            return _redirect("/login?notice=created")
+        body: dict[str, object] = {"user_id": cred.user_id, "email": cred.email,
+                                   "verified": cred.verified}
+        if self._emailer is None:
             body["verify_token"] = token
         return _json(201, body)
 

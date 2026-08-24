@@ -21,6 +21,7 @@ action is audited. `operator_wsgi` wraps it as a WSGI callable, mirroring
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable, Iterable
 from datetime import datetime
 
@@ -162,6 +163,11 @@ class OperatorApp:
         subject = self._auth_service.login(email, password) if "@" in email else None
         if subject is None:
             return _html(401, render_operator_login(error="Invalid email or password."))
+        # First-run founder bootstrap: promote the one configured email to a staff
+        # (operator) role so the console is reachable without a manual DB seed.
+        boot = os.environ.get("RGNR8_BOOTSTRAP_STAFF_EMAIL", "").strip().lower()
+        if boot and email.strip().lower() == boot and self._dir.platform_role(subject) is None:
+            self._dir.set_platform_role(subject, Role.OPERATOR)
         role = self._dir.platform_role(subject)
         if role is None or not role.is_platform:
             # authenticated, but not RGNR8 staff — no console access
