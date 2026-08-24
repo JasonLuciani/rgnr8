@@ -56,7 +56,7 @@ def _row(r: TenantOpsRow, live: "frozenset[str]" = frozenset()) -> str:
     deliv = "✓ this week" if r.delivered_this_period else (
         f"last {_esc(r.last_delivered)}" if r.last_delivered else "not yet")
     return f"""<tr>
-      <td><strong>{_esc(r.name)}</strong>{live_badge}<br><span class="muted">{_esc(r.recipient)}</span></td>
+      <td><strong><a href="/operator/tenant/{_esc(r.tenant_id)}" style="color:var(--rg-ink)">{_esc(r.name)}</a></strong>{live_badge}<br><span class="muted">{_esc(r.recipient)}</span></td>
       <td><span class="dot" style="background:{_STATUS_COLOR.get(r.status, '#888')}"></span>{_esc(r.status)}</td>
       <td class="num">{_esc(r.cash_today)}</td>
       <td class="num">{_esc(r.floor)}</td>
@@ -176,6 +176,125 @@ def render_operator_console(
     </tbody>
   </table></div>
 </div>
+</body></html>"""
+
+
+_DETAIL_STYLE = f"""<style>
+{RG_TOKENS_CSS}
+{RG_BASE_CSS}
+  .rg-rolechip{{background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.16);border-radius:999px;
+    padding:3px 10px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--rg-sage)}}
+  .rg-who{{display:flex;align-items:center;gap:10px;color:#DDE6DD;font-size:13px}}
+  .wrap{{max-width:1120px;margin:0 auto;padding:24px 20px 56px}}
+  h1{{font-size:22px;margin:0 0 2px;font-weight:800;letter-spacing:-.01em}}
+  h2{{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--rg-muted);margin:0 0 12px}}
+  .sub{{color:var(--rg-muted);margin:0 0 16px;font-size:13px}}
+  label{{display:block;font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--rg-muted);margin:12px 0 6px}}
+  input,select{{width:100%;padding:11px 12px;border:1px solid var(--rg-line);border-radius:10px;font:inherit;background:#fff;color:var(--rg-ink)}}
+  .btn{{padding:11px 16px;margin-top:14px}}
+  .cards{{display:grid;grid-template-columns:1fr 1fr;gap:16px}}
+  table{{width:100%;border-collapse:collapse}}
+  th,td{{text-align:left;padding:8px 10px;border-bottom:1px solid var(--rg-line);font-size:14px}}
+  th{{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--rg-muted)}}
+  .num{{font-weight:700}} .muted{{color:var(--rg-muted);font-size:12px}}
+  .rg-live{{color:var(--rg-sage);font-size:11px;font-weight:800;letter-spacing:.06em}}
+  .grid{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}}
+  @media(max-width:760px){{.cards,.grid{{grid-template-columns:1fr}}}}
+</style>"""
+
+
+def render_client_detail(
+    *,
+    tenant_id: str,
+    name: str,
+    operator: str = "operator@rgnr8.co",
+    row: "TenantOpsRow | None" = None,
+    cutover: "dict | None" = None,
+    members: "list[dict] | None" = None,
+    assignable_roles: "list[str] | None" = None,
+    notice: str = "",
+    notice_kind: str = "ok",
+) -> str:
+    """A per-client control page: status snapshot, go-live state + mark-live, and
+    team (member/role) management. The forms post form-encoded to the existing
+    /operator/tenant/<id>/... routes and redirect back here with a flash."""
+    members = members or []
+    assignable_roles = assignable_roles or []
+    if notice:
+        c = ("#1f6f43", "#EAF7EE", "#BFE3C9") if notice_kind == "ok" else ("#B02A2F", "#FDECEC", "#F5C4C6")
+        flash = (f'<div class="card" style="border-color:{c[2]};background:{c[1]};color:{c[0]};'
+                 f'margin-bottom:14px">{_esc(notice)}</div>')
+    else:
+        flash = ""
+
+    if row is not None:
+        breach = (f"breaches in week {row.weeks_until_breach} · short {_esc(row.shortfall)}"
+                  if row.breached else "no covenant breach in the horizon")
+        status_card = (
+            '<div class="card"><h2>Status</h2>'
+            f'<div style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:16px">'
+            f'<span class="dot" style="background:{_STATUS_COLOR.get(row.status, "#888")}"></span>{_esc(row.status)}</div>'
+            '<table style="margin-top:10px">'
+            f'<tr><td>Cash today</td><td class="num">{_esc(row.cash_today)}</td></tr>'
+            f'<tr><td>Floor</td><td class="num">{_esc(row.floor)}</td></tr>'
+            f'<tr><td>Trough</td><td class="num">{_esc(row.trough)} <span class="muted">{_esc(row.trough_date)}</span></td></tr>'
+            f'<tr><td>Breach</td><td>{_esc(breach)}</td></tr></table></div>'
+        )
+    else:
+        status_card = '<div class="card"><h2>Status</h2><p class="muted">No forecast row yet.</p></div>'
+
+    if cutover:
+        golive_card = (
+            '<div class="card"><h2>Go-live</h2>'
+            '<p><span class="rg-live">● LIVE</span> — RGNR8 is the system of record.</p>'
+            '<table>'
+            f'<tr><td>Source</td><td>{_esc(cutover.get("source_system"))}</td></tr>'
+            f'<tr><td>Cutover date</td><td>{_esc(cutover.get("cutover_date"))}</td></tr>'
+            f'<tr><td>Marked by</td><td>{_esc(cutover.get("marked_by"))}</td></tr></table></div>'
+        )
+    else:
+        golive_card = (
+            '<div class="card"><h2>Go-live</h2>'
+            '<p class="muted">Not live yet — RGNR8 is not the system of record for this client.</p>'
+            f'<form method="post" action="/operator/tenant/{_esc(tenant_id)}/cutover">'
+            '<label>Source system</label>'
+            '<select name="source_system"><option value="quickbooks">QuickBooks</option>'
+            '<option value="xero">Xero</option><option value="other">Other</option></select>'
+            '<label>Cutover date</label><input name="cutover_date" type="date">'
+            '<button class="btn" type="submit">Mark live</button></form></div>'
+        )
+
+    role_opts = "".join(f'<option value="{_esc(r)}">{_esc(str(r).capitalize())}</option>'
+                        for r in assignable_roles)
+    member_rows = "".join(
+        f'<tr><td>{_esc(m.get("email") or m.get("user_id") or "")}</td>'
+        f'<td>{_esc(m.get("role") or "")}</td></tr>' for m in members
+    ) or '<tr><td colspan="2" class="muted">No members yet.</td></tr>'
+    team_card = (
+        '<div class="card" style="grid-column:1/-1"><h2>Team</h2>'
+        f'<table><thead><tr><th>Member</th><th>Role</th></tr></thead><tbody>{member_rows}</tbody></table>'
+        f'<form method="post" action="/operator/tenant/{_esc(tenant_id)}/users" style="margin-top:12px">'
+        '<div class="grid">'
+        '<div><label>Email</label><input name="email" type="email" placeholder="person@company.com"></div>'
+        '<div><label>Name (optional)</label><input name="name"></div>'
+        f'<div><label>Role</label><select name="role"><option value="">— remove access —</option>{role_opts}</select></div>'
+        '</div><button class="btn" type="submit">Add / update member</button></form></div>'
+    )
+
+    inner = (f'<p class="sub"><a href="/operator" style="color:var(--rg-forest)">← Back to fleet</a></p>'
+             f'<h1>{_esc(name)}</h1><p class="sub">{_esc(tenant_id)}</p>{flash}'
+             f'<div class="cards">{status_card}{golive_card}{team_card}</div>')
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RGNR8 — {_esc(name)}</title>
+{_DETAIL_STYLE}</head>
+<body>
+<header class="rg-bar">
+  <span class="rg-lockup">{mark_svg(22, "#F2EFE6")}<span class="rg-wordmark">RGNR<span class="rg-8">8</span></span></span>
+  <span class="rg-who"><span>{_esc(operator)}</span><span class="rg-rolechip">Operator</span><a href="/operator/logout" style="color:#DDE6DD;text-decoration:underline;font-size:12px">Sign out</a></span>
+</header>
+<div class="wrap">{inner}</div>
 </body></html>"""
 
 

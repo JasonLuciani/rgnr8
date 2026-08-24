@@ -262,6 +262,36 @@ def test_browser_form_onboards_a_client() -> None:
     assert bad.status == 302 and "err=" in dict(bad.headers).get("Location", "")
 
 
+def test_client_detail_page_and_form_actions() -> None:
+    # The per-client control page renders, and its browser forms (add member,
+    # mark live) post form-encoded and redirect back with a flash.
+    app, fleet, admin, _billing, directory, _audit = _app()
+    _bootstrap_tenant(admin)  # tenant "seed"
+    token = _staff_token(admin, fleet, "ops@rgnr8.co", Role.OPERATOR)
+    hdr = {"authorization": f"Bearer {token}"}
+    form = {"authorization": f"Bearer {token}",
+            "content-type": "application/x-www-form-urlencoded"}
+
+    d = app.handle(Request("GET", "/operator/tenant/seed", hdr))
+    assert d.status == 200 and "Seed Co" in d.body and "Team" in d.body
+
+    # unknown client → back to the fleet with an error flash
+    u = app.handle(Request("GET", "/operator/tenant/nope", hdr))
+    assert u.status == 302 and "/operator?err=" in dict(u.headers).get("Location", "")
+
+    # add a member via the browser form → redirect back to the detail page
+    add = app.handle(Request("POST", "/operator/tenant/seed/users", form,
+                             "email=cfo%40seed.com&name=CFO&role=controller"))
+    assert add.status == 302 and "/operator/tenant/seed?ok=" in dict(add.headers).get("Location", "")
+    assert "cfo@seed.com" in app.handle(Request("GET", "/operator/tenant/seed", hdr)).body
+
+    # mark live via the browser form → success flash, and the page shows LIVE
+    live = app.handle(Request("POST", "/operator/tenant/seed/cutover", form,
+                              "source_system=quickbooks&cutover_date=2026-08-31"))
+    assert live.status == 302 and "ok=" in dict(live.headers).get("Location", "")
+    assert "LIVE" in app.handle(Request("GET", "/operator/tenant/seed", hdr)).body
+
+
 def test_operator_can_launch_view_as_and_it_is_audited() -> None:
     from rgnr8_web import verify_jwt
     app, fleet, admin, _billing, directory, audit = _app()

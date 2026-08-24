@@ -40,7 +40,7 @@ from rgnr8_web import (
     verify_jwt,
 )
 
-from .console import render_operator_console, render_operator_login
+from .console import render_client_detail, render_operator_console, render_operator_login
 from .fleet import BetaTenant, Fleet
 from .onboarding import (
     OnboardingError,
@@ -295,6 +295,11 @@ class OperatorApp:
         # --- parameterized management routes ---
         parts = [p for p in route.split("/") if p]
 
+        # /operator/tenant/<id> — the per-client control page (browser)
+        if (len(parts) == 3 and parts[0] == "operator" and parts[1] == "tenant"
+                and req.method == "GET"):
+            return self._client_detail(parts[2], subject, req)
+
         # /operator/tenant/<id>/users — per-tenant user & role management
         if len(parts) == 4 and parts[0] == "operator" and parts[1] == "tenant" and parts[3] == "users":
             tenant_id = parts[2]
@@ -344,6 +349,32 @@ class OperatorApp:
                 notice, notice_kind = req.query.get("err", ""), "err"
         return _html(200, render_operator_console(
             report, operator=operator, coa_templates=category_catalog(), live_tenants=live,
+            notice=notice, notice_kind=notice_kind,
+        ))
+
+    def _client_detail(self, tenant_id: str, operator: str, req: Request) -> Response:
+        """The per-client control page — status, go-live, and team management for
+        one tenant. Unknown tenant → back to the fleet with an error flash."""
+        bt = self._fleet.tenants.get(tenant_id)
+        if bt is None:
+            return _redirect(f"/operator?err={_q('unknown client ' + tenant_id)}")
+        report = build_ops_report(self._fleet, self._clock())
+        row = next((r for r in report.rows if r.tenant_id == tenant_id), None)
+        rec = self._onboarding.cutover(tenant_id)
+        cutover = None if rec is None else {
+            "source_system": rec.source_system,
+            "cutover_date": rec.cutover_date,
+            "marked_by": rec.marked_by,
+        }
+        notice, notice_kind = "", "ok"
+        if req.query.get("ok"):
+            notice, notice_kind = req.query.get("ok", ""), "ok"
+        elif req.query.get("err"):
+            notice, notice_kind = req.query.get("err", ""), "err"
+        return _html(200, render_client_detail(
+            tenant_id=tenant_id, name=bt.name, operator=operator, row=row,
+            cutover=cutover, members=self._admin.list_members(tenant_id),
+            assignable_roles=[r.value for r in Role if not r.is_platform],
             notice=notice, notice_kind=notice_kind,
         ))
 
@@ -511,18 +542,24 @@ class OperatorApp:
         {"source_system": "quickbooks|xero|other", "cutover_date": "YYYY-MM-DD",
         "opening_entry_id"?: "..."}. The opening-balance journal itself is posted
         by the TS core; this records the go-live for the console + audit trail."""
+        rawb = req.body or ""
+        browser = not rawb.lstrip().startswith("{")
+        back = f"/operator/tenant/{tenant_id}"
         if tenant_id not in self._fleet.tenants:
-            return _json(404, {"error": f"unknown tenant {tenant_id}"})
-        try:
-            data = json.loads(req.body) if req.body else {}
-        except json.JSONDecodeError:
-            return _json(400, {"error": "invalid JSON body"})
+            return self._detail_fail(browser, back, f"unknown tenant {tenant_id}", 404)
+        if browser:
+            data = self._form_or_json(rawb)
+        else:
+            try:
+                data = json.loads(rawb) if rawb.strip() else {}
+            except json.JSONDecodeError:
+                return _json(400, {"error": "invalid JSON body"})
         if not isinstance(data, dict):
-            return _json(400, {"error": "body must be a JSON object"})
+            return self._detail_fail(browser, back, "body must be a JSON object", 400)
         source_system = str(data.get("source_system", "")).strip()
         cutover_date = str(data.get("cutover_date", "")).strip()
         if not cutover_date:
-            return _json(400, {"error": "cutover_date is required"})
+            return self._detail_fail(browser, back, "A cutover date is required.", 400)
         try:
             rec = self._onboarding.mark_cutover(
                 tenant_id, source_system, cutover_date,
@@ -530,9 +567,11 @@ class OperatorApp:
                 opening_entry_id=str(data.get("opening_entry_id", "")),
             )
         except OnboardingError as exc:
-            return _json(400, {"error": str(exc)})
+            return self._detail_fail(browser, back, str(exc), 400)
         self._audit.record(operator, "tenant.cutover", self._epoch(), tenant_id=tenant_id,
                            detail=f"{rec.source_system}@{rec.cutover_date}")
+        if browser:
+            return _redirect(f"{back}?ok={_q('marked live · ' + rec.source_system + ' @ ' + rec.cutover_date)}")
         return _json(200, {"tenant_id": tenant_id, "live": True,
                            "source_system": rec.source_system, "cutover_date": rec.cutover_date})
 
@@ -617,14 +656,20 @@ class OperatorApp:
     def _tenant_users_set(self, req: Request, tenant_id: str, operator: str) -> Response:
         """Add/change/remove a client member. Body: {"email": "...", "name"?: "...",
         "role": "owner|controller|bookkeeper|accountant|viewer"|null}."""
+        raw = req.body or ""
+        browser = not raw.lstrip().startswith("{")
+        back = f"/operator/tenant/{tenant_id}"
         if tenant_id not in self._fleet.tenants:
-            return _json(404, {"error": f"unknown tenant {tenant_id}"})
-        try:
-            data = json.loads(req.body) if req.body else {}
-        except json.JSONDecodeError:
-            return _json(400, {"error": "invalid JSON body"})
+            return self._detail_fail(browser, back, f"unknown tenant {tenant_id}", 404)
+        if browser:
+            data = self._form_or_json(raw)
+        else:
+            try:
+                data = json.loads(raw) if raw.strip() else {}
+            except json.JSONDecodeError:
+                return _json(400, {"error": "invalid JSON body"})
         if not isinstance(data, dict) or not str(data.get("email", "")).strip():
-            return _json(400, {"error": "email is required"})
+            return self._detail_fail(browser, back, "email is required", 400)
         email = str(data["email"]).strip()
         name = str(data.get("name", ""))
         role_raw = data.get("role")
@@ -633,12 +678,23 @@ class OperatorApp:
             try:
                 role = Role(str(role_raw))
             except ValueError:
-                return _json(400, {"error": f"unknown role {role_raw!r}"})
+                return self._detail_fail(browser, back, f"unknown role {role_raw!r}", 400)
         try:
             self._admin.set_member_role(tenant_id, email, role, operator=operator, name=name)
         except PlatformError as exc:
-            return _json(403, {"error": str(exc)})
+            return self._detail_fail(browser, back, str(exc), 403)
+        if browser:
+            msg = f"removed {email}" if role is None else f"{email} set to {role.value}"
+            return _redirect(f"{back}?ok={_q(msg)}")
         return _json(200, {"tenant_id": tenant_id, "members": self._admin.list_members(tenant_id)})
+
+    @staticmethod
+    def _detail_fail(browser: bool, back: str, message: str, status: int) -> Response:
+        """A client-detail action rejection: redirect-with-flash for the browser
+        forms, JSON error for the API."""
+        if browser:
+            return _redirect(f"{back}?err={_q(message)}")
+        return _json(status, {"error": message})
 
     def _account_plan(self, req: Request, account_id: str, operator: str) -> Response:
         """Change a client's billing plan. Body: {"tier": "self_serve|assisted|co_delivery"}."""
