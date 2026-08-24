@@ -126,6 +126,21 @@ class OperatorApp:
         return int(self._clock().timestamp())
 
     # --- auth ----------------------------------------------------------------
+    @staticmethod
+    def _is_browser(req: Request) -> bool:
+        """A top-level browser navigation (GET that accepts HTML), as opposed to
+        an API/XHR client. Used to send humans to the sign-in page instead of a
+        raw JSON 401."""
+        return req.method == "GET" and "text/html" in req.headers.get("accept", "")
+
+    def _unauth(self, req: Request, reason: str) -> Response:
+        """No valid session. A browser is redirected to the console's sign-in
+        page (mirrors the owner web app's root→/login behaviour); API clients get
+        a JSON 401 so integrations still see a clean, machine-readable error."""
+        if self._is_browser(req):
+            return _redirect("/operator/login")
+        return _json(401, {"error": reason})
+
     def _staff(self, req: Request) -> "tuple[str, Role] | Response":
         """Resolve the authenticated RGNR8-staff principal, or a 401/403.
 
@@ -138,14 +153,14 @@ class OperatorApp:
             # browser session: the login cookie the console's sign-in set
             token = _cookie(req.headers, "rgnr8_operator")
         if not token:
-            return _json(401, {"error": "missing bearer token"})
+            return self._unauth(req, "missing bearer token")
         try:
             claims = verify_jwt(token, self._secret, now=self._epoch())
         except JwtError:
-            return _json(401, {"error": "invalid or expired token"})
+            return self._unauth(req, "invalid or expired token")
         sub = claims.get("sub")
         if not isinstance(sub, str) or not sub:
-            return _json(401, {"error": "token carries no subject"})
+            return self._unauth(req, "token carries no subject")
         role = self._dir.platform_role(sub)
         if role is None or not role.is_platform:
             return _json(403, {"error": "not RGNR8 staff"})
@@ -217,7 +232,10 @@ class OperatorApp:
             return principal
         subject, role = principal
 
-        if route == "/operator" and req.method == "GET":
+        # Bare root is the console too: a signed-in staffer landing on "/" sees
+        # the console; an unauthenticated browser was already redirected to the
+        # sign-in page by `_staff` above (so "/" never shows a raw JSON 401).
+        if route in ("", "/", "/operator") and req.method == "GET":
             return self._console(subject)
 
         if route == "/operator/onboard" and req.method == "POST":

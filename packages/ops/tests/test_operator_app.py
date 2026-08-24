@@ -92,6 +92,20 @@ def test_non_staff_token_is_rejected() -> None:
                               {"authorization": "Bearer not.a.jwt"})).status == 401
 
 
+def test_browser_navigation_without_session_redirects_to_login() -> None:
+    # A human hitting the console in a browser (GET, Accept: text/html) with no
+    # session must land on the sign-in page, not a raw JSON 401. Bare root "/"
+    # and "/operator" both behave this way; API/XHR clients still get JSON 401.
+    app, *_ = _app()
+    html = {"accept": "text/html,application/xhtml+xml"}
+    for route in ("/", "/operator"):
+        r = app.handle(Request("GET", route, html))
+        assert r.status in (302, 303), route
+        assert dict(r.headers).get("Location") == "/operator/login", route
+    # no Accept header → treated as an API client → JSON 401 (unchanged)
+    assert app.handle(Request("GET", "/operator")).status == 401
+
+
 def test_support_can_view_but_cannot_onboard() -> None:
     app, fleet, admin, _billing, _dir, _audit = _app()
     _bootstrap_tenant(admin)
