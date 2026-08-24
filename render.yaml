@@ -57,6 +57,8 @@ services:
     dockerContext: .
     autoDeploy: true
     healthCheckPath: /ready
+    domains:
+      - acctg.rgnr8ventures.com
     # Release phase: run the (idempotent) Python schema migration before the new
     # version takes traffic. The TS ledger self-migrates on boot under its own
     # advisory lock, so the two never race.
