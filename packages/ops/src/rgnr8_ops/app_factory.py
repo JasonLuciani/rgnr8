@@ -366,10 +366,27 @@ def create_operator_application(
         if settings.ledger_url else None
     )
 
+    # Staff browser sign-in: a credential store makes GET/POST /operator/login a
+    # real email+password check. The console mints its own session cookie signed
+    # with the JWT secret (no separate session secret needed, unlike the owner web
+    # app). In jwks (SSO) mode staff come in through the IdP with a bearer token,
+    # so the password form stays off. Without this the console's login page
+    # returned {"error": "browser login is not configured"}.
+    auth_service = None
+    if settings.auth_mode != "jwks":
+        if conn is not None:
+            creds = SqlCredentialStore(conn, placeholder=settings.placeholder)  # type: ignore[arg-type]
+            with ddl_bootstrap_lock(conn, settings.placeholder):
+                creds.create_schema()
+            auth_service = AuthService(credentials=creds)
+        else:
+            auth_service = AuthService(credentials=InMemoryCredentialStore())
+
     app = OperatorApp(
         fleet, prov.billing, users, audit, secret,
         clock=lambda: datetime.now(timezone.utc),
         onboarding=onboarding,
         ledger=ledger,
+        auth_service=auth_service,
     )
     return operator_wsgi(app)
