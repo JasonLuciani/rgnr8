@@ -73,11 +73,27 @@ def render_operator_console(
     onboard_action: str = "/operator/onboard",
     coa_templates: "list[dict[str, str]] | None" = None,
     live_tenants: "frozenset[str] | None" = None,
+    notice: str = "",
+    notice_kind: str = "ok",
 ) -> str:
     """The full operator console page: forest chrome + operator identity, a fleet
     health banner, the onboarding panel (with a COA-template picker), and the
-    worst-first fleet table (with a system-of-record 'live' badge)."""
+    worst-first fleet table (with a system-of-record 'live' badge). `notice` shows
+    a one-off flash (e.g. after onboarding); `notice_kind` is 'ok' or 'err'."""
     live = live_tenants or frozenset()
+    # A one-off flash from the last action (onboard succeeded / failed).
+    if notice:
+        col = ("#1f6f43", "#EAF7EE", "#BFE3C9") if notice_kind == "ok" else ("#B02A2F", "#FDECEC", "#F5C4C6")
+        flash = (f'<div class="card" style="border-color:{col[2]};background:{col[1]};'
+                 f'color:{col[0]};margin-bottom:14px">{_esc(notice)}</div>')
+    else:
+        flash = ""
+    # A ready-to-submit default DTO so onboarding works out of the box: today's
+    # date, zero opening cash. `available` is minor units (cents) — 0 = $0.00,
+    # 9000000 = $90,000.00. Edit it, or connect a live source to fill it.
+    as_of = report.as_of[:10] if getattr(report, "as_of", "") else "2026-01-01"
+    default_dto = _esc('{"opening": {"as_of": "' + as_of
+                       + '", "available": {"minor": 0, "currency": "USD"}, "verified": false}}')
     rows = "\n".join(_row(r, live) for r in report.rows)
     # COA template <select> for onboarding — the chart seeded for the new client.
     if coa_templates:
@@ -135,7 +151,7 @@ def render_operator_console(
   <h1>Operator console</h1>
   <p class="sub">as of {_esc(report.as_of[:16])} · {report.delivered}/{report.total} briefed this week · {report.closes_done}/{report.total} closed</p>
   <div class="banner {banner_cls}">{banner}</div>
-
+  {flash}
   <div class="card">
     <h2>Onboard a client</h2>
     <form method="post" action="{_esc(onboard_action)}">
@@ -146,7 +162,7 @@ def render_operator_console(
       </div>
       {coa_field}
       <label>forecast-inputs/1 DTO</label>
-      <textarea name="dto" placeholder='{{"opening":{{"as_of":"2026-08-31","available":"90000.00","currency":"USD"}}, ...}}'></textarea>
+      <textarea name="dto">{default_dto}</textarea>
       <p class="note">Both onboarding paths land here: the <strong>overlay</strong> (bank balances + open AR/AP on top of QBO) and the full <strong>migration</strong> (QBO ledger imported into RGNR8) each emit this same DTO. Connect a live source at onboarding to fill it automatically.</p>
       <button class="btn" type="submit">Onboard client</button>
     </form>

@@ -234,6 +234,34 @@ def test_bad_json_body_is_400() -> None:
     assert "JSON" in r.body
 
 
+def test_browser_form_onboards_a_client() -> None:
+    # The console's <form> posts form-encoded fields (name/recipient/minimum_cash/
+    # coa_category/dto) — NOT the JSON the API takes. The handler must accept it,
+    # slug the tenant/account ids from the business name, seat the recipient as
+    # owner, and redirect back to the console with a success flash.
+    from urllib.parse import quote
+
+    app, fleet, admin, _billing, directory, _audit = _app()
+    _bootstrap_tenant(admin)  # a tenant to mint the staff token against
+    token = _staff_token(admin, fleet, "ops@rgnr8.co", Role.OPERATOR)
+    hdr = {"authorization": f"Bearer {token}",
+           "content-type": "application/x-www-form-urlencoded"}
+    dto = quote('{"opening":{"as_of":"2026-08-31","available":{"minor":0,"currency":"USD"},"verified":false}}')
+    body = ("name=RGNR8+Ventures&recipient=jason%40rgnr8ventures.com"
+            f"&minimum_cash=25000.00&coa_category=&dto={dto}")
+    r = app.handle(Request("POST", "/operator/onboard", hdr, body))
+    assert r.status == 302
+    assert "/operator?ok=" in dict(r.headers).get("Location", "")
+    assert "rgnr8-ventures" in fleet.tenants                       # slugged + onboarded
+    # the recipient is seated as the business owner (so it shows in their chooser)
+    assert directory.membership("jason@rgnr8ventures.com", "rgnr8-ventures") is not None
+
+    # a form post with a bad email / missing DTO redirects back with an error flash
+    bad = app.handle(Request("POST", "/operator/onboard", hdr,
+                             "name=X&recipient=notanemail&dto="))
+    assert bad.status == 302 and "err=" in dict(bad.headers).get("Location", "")
+
+
 def test_operator_can_launch_view_as_and_it_is_audited() -> None:
     from rgnr8_web import verify_jwt
     app, fleet, admin, _billing, directory, audit = _app()

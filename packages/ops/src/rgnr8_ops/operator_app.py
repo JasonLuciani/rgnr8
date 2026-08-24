@@ -58,6 +58,12 @@ def _redirect(location: str, extra: "tuple[tuple[str, str], ...]" = ()) -> Respo
     return Response(302, "", "text/html; charset=utf-8", (("Location", location), *extra))
 
 
+def _q(text: str) -> str:
+    """URL-encode a short flash message for a redirect query string."""
+    from urllib.parse import quote
+    return quote(text, safe="")
+
+
 def _cookie(headers: "dict[str, str]", name: str) -> str | None:
     for part in headers.get("cookie", "").split(";"):
         k, _, v = part.strip().partition("=")
@@ -257,7 +263,7 @@ class OperatorApp:
         # the console; an unauthenticated browser was already redirected to the
         # sign-in page by `_staff` above (so "/" never shows a raw JSON 401).
         if route in ("", "/", "/operator") and req.method == "GET":
-            return self._console(subject)
+            return self._console(subject, req)
 
         if route == "/operator/onboard" and req.method == "POST":
             # provisioning is operator-only; support is read-only.
@@ -327,43 +333,81 @@ class OperatorApp:
         return _json(404, {"error": "not found"})
 
     # --- handlers ------------------------------------------------------------
-    def _console(self, operator: str) -> Response:
+    def _console(self, operator: str, req: "Request | None" = None) -> Response:
         report = build_ops_report(self._fleet, self._clock())
         live = frozenset(t for t in self._fleet.tenants if self._onboarding.is_live(t))
+        notice, notice_kind = "", "ok"
+        if req is not None:
+            if req.query.get("ok"):
+                notice, notice_kind = req.query.get("ok", ""), "ok"
+            elif req.query.get("err"):
+                notice, notice_kind = req.query.get("err", ""), "err"
         return _html(200, render_operator_console(
             report, operator=operator, coa_templates=category_catalog(), live_tenants=live,
+            notice=notice, notice_kind=notice_kind,
         ))
 
+    @staticmethod
+    def _slug(text: str) -> str:
+        """A URL/id-safe slug from a business name: lowercased, non-alphanumerics
+        collapsed to single hyphens (e.g. 'RGNR8 Ventures' → 'rgnr8-ventures')."""
+        out: list[str] = []
+        prev_dash = False
+        for ch in text.strip().lower():
+            if ch.isalnum():
+                out.append(ch)
+                prev_dash = False
+            elif not prev_dash:
+                out.append("-")
+                prev_dash = True
+        return "".join(out).strip("-")
+
     def _onboard(self, req: Request, operator: str) -> Response:
-        try:
-            data = json.loads(req.body) if req.body else {}
-        except json.JSONDecodeError:
-            return _json(400, {"error": "invalid JSON body"})
+        # Accept BOTH the console's browser <form> (form-encoded: name, recipient,
+        # minimum_cash, coa_category, dto) and the JSON API (which may also pass
+        # account_id / tenant_id / owner_email / tier explicitly). For the form we
+        # derive the machine fields the human isn't asked for: the account and
+        # tenant ids are slugged from the business name, and the owner is the
+        # briefing recipient. Browser posts redirect back to the console with a
+        # flash; API posts get the JSON summary (or a JSON error) as before.
+        raw = req.body or ""
+        browser = not raw.lstrip().startswith("{")
+        if browser:
+            data = self._form_or_json(raw)
+        else:
+            # A body that declares itself JSON but doesn't parse is a clean 400,
+            # not a silent empty dict (the API contract).
+            try:
+                data = json.loads(raw) if raw.strip() else {}
+            except json.JSONDecodeError:
+                return _json(400, {"error": "invalid JSON body"})
         if not isinstance(data, dict):
-            return _json(400, {"error": "body must be a JSON object"})
+            return self._onboard_fail(browser, "body must be a JSON object", 400)
 
-        try:
-            account_id = str(data["account_id"])
-            tenant_id = str(data["tenant_id"])
-            name = str(data["name"])
-            recipient = str(data["recipient"])
-            owner_email = str(data["owner_email"])
-            dto = data["dto"]
-        except KeyError as exc:
-            return _json(400, {"error": f"missing required field {exc.args[0]!r}"})
-        if not isinstance(dto, (dict, str)):
-            return _json(400, {"error": "dto must be a forecast-inputs/1 object or JSON string"})
+        name = str(data.get("name", "")).strip()
+        recipient = str(data.get("recipient", "")).strip()
+        owner_email = str(data.get("owner_email", "") or recipient).strip()
+        account_id = str(data.get("account_id", "") or self._slug(name)).strip()
+        tenant_id = str(data.get("tenant_id", "") or self._slug(name)).strip()
+        dto = data.get("dto", "")
 
-        # Optional chart-of-accounts template choice (validated before any side
-        # effects). Recorded on success so the TS core seeds the right chart.
+        if not name or not tenant_id:
+            return self._onboard_fail(browser, "A business name is required.", 400)
+        if "@" not in recipient:
+            return self._onboard_fail(browser, "A valid owner/recipient email is required.", 400)
+        if not isinstance(dto, (dict, str)) or (isinstance(dto, str) and not dto.strip()):
+            return self._onboard_fail(
+                browser, "Paste a forecast-inputs/1 DTO (opening cash), or connect a "
+                "live source to fill it.", 400)
+
         coa_category = str(data.get("coa_category", "")).strip()
         if coa_category and not is_valid_category(coa_category):
-            return _json(400, {"error": f"unknown COA category {coa_category!r}"})
+            return self._onboard_fail(browser, f"unknown COA category {coa_category!r}", 400)
 
         try:
-            minimum_cash = Money.from_decimal(str(data.get("minimum_cash")))
+            minimum_cash = Money.from_decimal(str(data.get("minimum_cash") or "0"))
         except ValueError:
-            return _json(400, {"error": "minimum_cash is not a valid amount"})
+            return self._onboard_fail(browser, "Minimum-cash floor is not a valid amount.", 400)
 
         try:
             # Provision the billing account first if it doesn't exist yet, then
@@ -379,21 +423,30 @@ class OperatorApp:
                 owner_email, operator=operator,
             )
         except EntitlementError as exc:
-            # the plan forbids another business — a clean, retryable 402, never a 500
-            return _json(402, {"error": str(exc)})
+            return self._onboard_fail(browser, str(exc), 402)
         except PlatformError as exc:
-            return _json(403, {"error": str(exc)})
+            return self._onboard_fail(browser, str(exc), 403)
         except BillingError as exc:
-            return _json(409, {"error": str(exc)})
+            return self._onboard_fail(browser, str(exc), 409)
         except (ValueError, KeyError, TypeError) as exc:
             # a malformed DTO / bad amount surfaces as a 400, not a 500
-            return _json(400, {"error": f"could not onboard: {exc}"})
+            return self._onboard_fail(browser, f"could not onboard: {exc}", 400)
 
         if coa_category:
             self._onboarding.set_coa_category(tenant_id, coa_category)
+        if browser:
+            return _redirect(f"/operator?ok={_q(name + ' onboarded')}")
         summary = self._summary(bt, account_id, owner_email)
         summary["coa_category"] = coa_category or None
         return _json(201, summary)
+
+    @staticmethod
+    def _onboard_fail(browser: bool, message: str, status: int) -> Response:
+        """Onboarding rejection — a redirect-with-flash for the console's browser
+        form, a JSON error for the API."""
+        if browser:
+            return _redirect(f"/operator?err={_q(message)}")
+        return _json(status, {"error": message})
 
     def _view_as(self, req: Request, subject: str) -> Response:
         """Launch a view-as session: mint a token to see a tenant as a client role.
