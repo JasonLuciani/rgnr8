@@ -173,3 +173,33 @@ def test_create_application_builds_in_memory_dev_app_with_edge_hardening() -> No
     header_names = {k.lower() for k, _ in headers}
     assert "content-security-policy" in header_names
     assert "x-frame-options" in header_names
+
+
+def test_scheme_less_ledger_url_gets_a_scheme() -> None:
+    """Render's Blueprint `fromService`/`hostport` hands us `host:port`, no scheme.
+
+    A blueprint cannot interpolate that into `http://...`, and the private hostname
+    carries a Render-assigned random suffix so it cannot be hardcoded either. If the
+    scheme were not defaulted here, the ledger client would be built with a
+    transport target urllib cannot open and every books screen would fail at
+    request time rather than at boot.
+    """
+    s = Settings.from_env({"RGNR8_JWT_SECRET": "x",
+                           "RGNR8_LEDGER_URL": "rgnr8-ledger-a1b2:8181"})
+    assert s.ledger_url == "http://rgnr8-ledger-a1b2:8181"
+    # an explicit scheme is left exactly as given, http or https
+    for given in ("http://ledger:8181", "https://ledger.example.com"):
+        assert Settings.from_env({"RGNR8_JWT_SECRET": "x",
+                                  "RGNR8_LEDGER_URL": given}).ledger_url == given
+    # blank stays absent → the books screens say "not configured"
+    for blank in ("", "   "):
+        assert Settings.from_env({"RGNR8_JWT_SECRET": "x",
+                                  "RGNR8_LEDGER_URL": blank}).ledger_url is None
+
+
+def test_scheme_less_ledger_url_actually_wires_a_client() -> None:
+    """The end the deployment cares about: a hostport value produces a live client."""
+    app = build_web_app(Settings.from_env({"RGNR8_JWT_SECRET": "x",
+                                           "RGNR8_LEDGER_URL": "rgnr8-ledger-a1b2:8181",
+                                           "RGNR8_LEDGER_TOKEN": "svc"}))
+    assert app._ledger is not None

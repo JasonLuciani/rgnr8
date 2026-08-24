@@ -14,7 +14,7 @@ import os
 
 import _pathsetup  # noqa: F401
 
-from rgnr8_ops import Settings, create_operator_application
+from rgnr8_ops import Settings, check_rls_posture, create_operator_application
 from db import open_connection
 
 
@@ -23,7 +23,19 @@ def _build():  # pragma: no cover - exercised in deployment, not unit tests
     for w in settings.warnings:
         print(f"[config] warning: {w}")
     print(f"[config] operator console {settings.redacted()}")
-    conn, _dialect, _ph = open_connection(settings.database_url)
+    conn, _dialect, ph = open_connection(settings.database_url)
+    # Same posture gate as the owner app (entry.py). This console reads and writes
+    # ACROSS every client's books, so it is the surface least tolerable to boot on a
+    # superuser / BYPASSRLS role where the FORCE'd row-level security is silently
+    # inert. RGNR8_REQUIRE_RLS=1 makes that a refusal to start, not a log line.
+    posture, fatal = check_rls_posture(conn, ph, os.environ)
+    for w in posture:
+        print(f"[security] {'FATAL' if fatal else 'warning'}: {w}")
+    if fatal:
+        raise SystemExit(
+            "[security] operator console refusing to boot: RGNR8_REQUIRE_RLS=1 and "
+            "this connection cannot enforce row-level security (see above)."
+        )
     return create_operator_application(
         os.environ, conn=conn if settings.is_production_db else None
     )

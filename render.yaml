@@ -18,13 +18,26 @@
 # Role posture: every service starts on the database's own (owner) role via
 # fromDatabase. On Render that role is a non-superuser without BYPASSRLS, and the
 # Python-owned tables FORCE RLS, so isolation is real from first boot —
-# RGNR8_REQUIRE_RLS=1 makes the web app refuse to start if that ever stops being
-# true. Runbook §1's least-privilege `rgnr8_app` role is the post-provisioning
-# tightening step: create it, then replace the DSNs here.
+# RGNR8_REQUIRE_RLS=1 makes the web app AND the operator console refuse to start
+# if that ever stops being true. Runbook §1's least-privilege `rgnr8_app` role is
+# the post-provisioning tightening step: create it, then replace the DSNs here.
 #
 # Host-only cookies: acctg.rgnr8ventures.com shares a parent domain with
 # corporate email — the app must never set Domain=rgnr8ventures.com cookies
 # (it doesn't; keep it that way).
+#
+# ── Secrets that MUST hold the same value in more than one service ──────────
+# RGNR8_JWT_SECRET is in the shared env group precisely so web / operator /
+# worker cannot drift: the operator console MINTS tenant tokens (Fleet.mint_token)
+# that the web app VALIDATES (JwtAuthenticator). Two different secrets means every
+# tenant go-live hands out a token the app rejects.
+#
+# RGNR8_SECRET_KEY (Fernet, tokens-at-rest) cannot live in the group — Render does
+# not allow `sync: false` inside an environment group — so it is declared on both
+# the web service and the worker. PASTE THE IDENTICAL VALUE INTO BOTH. The worker
+# decrypts webhook endpoint secrets the web app encrypted; a mismatch is silent.
+# BACK IT UP SEPARATELY FROM THE DATABASE (runbook §2) — losing it orphans every
+# stored QBO token, and a database restore will not bring it back.
 
 previews:
   generation: off
@@ -35,6 +48,12 @@ envVarGroups:
       # Web -> ledger bearer token; both services read the same value.
       - key: RGNR8_LEDGER_TOKEN
         generateValue: true
+      # Tenant-token signing key. Shared on purpose — see the note above.
+      # Also load-bearing for the cron worker: Settings.from_env() raises
+      # ConfigError under the default hs256 auth mode when this is unset, so
+      # without it every worker run would crash before doing any work.
+      - key: RGNR8_JWT_SECRET
+        generateValue: true
 
 databases:
   - name: rgnr8-db
@@ -42,6 +61,9 @@ databases:
     region: oregon
     postgresMajorVersion: "16"
     ipAllowList: []            # internal-only; no public database access
+                               # NOTE: this also blocks YOUR psql. Runbook §1
+                               # (create the least-privilege rgnr8_app role) needs
+                               # a temporary entry here, or a shell on a service.
 
 services:
   # ---- Owner web app (public) -------------------------------------------------
@@ -49,14 +71,19 @@ services:
     name: rgnr8-web
     runtime: docker
     region: oregon
-    plan: starter
+    plan: starter              # must be a PAID plan: preDeployCommand is not
+                               # available on free instances
+    branch: main
+    autoDeploy: true
     dockerfilePath: ./deploy/Dockerfile
     dockerContext: .
-    healthCheckPath: /ready
+    healthCheckPath: /ready    # web services only — do not copy to the pservs
     domains:
       - acctg.rgnr8ventures.com
     # Release phase: Python-owned schema (incl. RLS policies), before traffic.
     # Runs from /app/deploy (the image's WORKDIR), same as the compose service.
+    # Supported on Docker services; it runs on a separate instance, so it must not
+    # depend on the web instance's filesystem or disk (migrate.py doesn't).
     preDeployCommand: python migrate.py
     envVars:
       - fromGroup: rgnr8-shared
@@ -66,8 +93,12 @@ services:
         value: "10000"
       - key: RGNR8_WORKERS
         value: "4"
+      # Render's private hostnames carry a service-specific random suffix
+      # (`rgnr8-ledger-a1b2:8181`), so the address is NOT knowable before the
+      # service exists and must not be hardcoded. `hostport` yields host:port with
+      # no scheme; Settings.from_env() defaults a scheme-less value to http://.
       - key: RGNR8_LEDGER_URL
-        value: http://rgnr8-ledger:8181   # Render private-service hostname
+        fromService: { name: rgnr8-ledger, type: pserv, property: hostport }
       - key: RGNR8_REQUIRE_RLS            # inert RLS = refuse to boot, not a log line
         value: "1"
       - key: RGNR8_AUTH_MODE
@@ -76,21 +107,30 @@ services:
         value: "1"
       - key: RGNR8_TRUST_FORWARDED_FOR    # TLS terminates at Render's proxy
         value: "1"
-      - key: RGNR8_JWT_SECRET
+      - key: RGNR8_SESSION_SECRET         # browser login; only this service serves it
         generateValue: true
-      - key: RGNR8_SESSION_SECRET
-        generateValue: true
-      # Fernet key for tokens-at-rest. Set by hand and BACK IT UP SEPARATELY
-      # from the database (runbook §2) — losing it orphans stored QBO tokens.
+      # Fernet key for tokens-at-rest. MUST equal the worker's value. See header.
       - key: RGNR8_SECRET_KEY
         sync: false
+      # ---- QuickBooks Online (deferred) ----------------------------------------
+      # Left unset on purpose. Settings.from_env() FAILS CLOSED: client id + secret
+      # + a database and no RGNR8_SECRET_KEY raises rather than writing OAuth
+      # tokens in cleartext — and a half-set pair would take the web app down on
+      # boot. With none of them set, the connect surface simply reports "not
+      # configured". Add all four in the dashboard when Intuit credentials exist:
+      #   RGNR8_QBO_CLIENT_ID, RGNR8_QBO_CLIENT_SECRET,
+      #   RGNR8_QBO_REDIRECT_URI=https://acctg.rgnr8ventures.com/oauth/qbo/callback,
+      #   RGNR8_QBO_ENVIRONMENT=production
 
   # ---- Ledger service (PRIVATE — the system of record) ------------------------
   - type: pserv
     name: rgnr8-ledger
     runtime: docker
-    region: oregon
+    region: oregon             # must match the other services: Render's private
+                               # network only spans one region + one workspace
     plan: starter
+    branch: main
+    autoDeploy: true
     dockerfilePath: ./deploy/Dockerfile.ledger
     dockerContext: .
     envVars:
@@ -98,7 +138,8 @@ services:
       - key: DATABASE_URL
         fromDatabase: { name: rgnr8-db, property: connectionString }
       - key: RGNR8_LEDGER_PORT
-        value: "8181"
+        value: "8181"          # NOT 10000 — Render reserves that port on the
+                               # private network (also 18012, 18013, 19099)
       # First boot only, per runbook §1: also set RGNR8_PROVISION_APP_ROLE /
       # RGNR8_PROVISION_APP_PASSWORD here to create the least-privilege role,
       # then remove them and switch the DSNs above to rgnr8_app.
@@ -109,19 +150,22 @@ services:
     runtime: docker
     region: oregon
     plan: starter
+    branch: main
+    autoDeploy: true
     dockerfilePath: ./deploy/Dockerfile
     dockerContext: .
     dockerCommand: sh -c "gunicorn operator_entry:application --workers ${RGNR8_OPERATOR_WORKERS:-2} --bind 0.0.0.0:${RGNR8_PORT:-8090} --access-logfile -"
     envVars:
-      - fromGroup: rgnr8-shared
+      - fromGroup: rgnr8-shared   # RGNR8_JWT_SECRET here must match the web app's:
+                                  # this console mints the tenant tokens it validates
       - key: RGNR8_DATABASE_URL
         fromDatabase: { name: rgnr8-db, property: connectionString }
       - key: RGNR8_PORT
         value: "8090"
       - key: RGNR8_LEDGER_URL
-        value: http://rgnr8-ledger:8181
-      - key: RGNR8_JWT_SECRET
-        sync: false   # staff-console signing key; set by hand, distinct from the web app's
+        fromService: { name: rgnr8-ledger, type: pserv, property: hostport }
+      - key: RGNR8_REQUIRE_RLS    # the surface that reads ACROSS every client's
+        value: "1"                # books — the last one that should boot RLS-inert
 
   # ---- Delivery worker (cron — one idempotent tick per run) -------------------
   - type: cron
@@ -129,12 +173,25 @@ services:
     runtime: docker
     region: oregon
     plan: starter
+    branch: main
     schedule: "0 * * * *"   # hourly; briefings fire on their per-tenant window,
                             # webhook-outbox retries drain each tick. Tune freely.
     dockerfilePath: ./deploy/Dockerfile
     dockerContext: .
     dockerCommand: python worker.py
     envVars:
-      - fromGroup: rgnr8-shared
+      - fromGroup: rgnr8-shared   # RGNR8_JWT_SECRET — without it worker.py raises
+                                  # ConfigError on line one of every run
       - key: RGNR8_DATABASE_URL
         fromDatabase: { name: rgnr8-db, property: connectionString }
+      # Same Fernet key as the web app, or the worker gets a NullCipher and cannot
+      # decrypt the webhook endpoint secrets the web app wrote. Fails silently.
+      - key: RGNR8_SECRET_KEY
+        sync: false
+      # Without a SendGrid key worker.py falls through to RecordingDeliverer and
+      # runs hourly forever without sending a single briefing — a "successful" run
+      # every time. Set both, or accept that delivery is a dry run.
+      - key: RGNR8_SENDGRID_API_KEY
+        sync: false
+      - key: RGNR8_DELIVERY_FROM  # must be a SendGrid-verified sender
+        sync: false
