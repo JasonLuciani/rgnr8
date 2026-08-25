@@ -60,7 +60,7 @@ def _python_services() -> list[dict]:
 def test_discovery_finds_the_python_services() -> None:
     """Guard the guard: an empty list would make every assertion below vacuous."""
     names = {s["name"] for s in _python_services()}
-    assert {"rgnr8-web", "rgnr8-operator", "rgnr8-worker"} <= names, names
+    assert names == {"rgnr8-web", "rgnr8-worker"}, names
 
 
 @pytest.mark.parametrize("service", _python_services(), ids=lambda s: s["name"])
@@ -141,23 +141,38 @@ def test_the_worker_can_actually_deliver() -> None:
     )
 
 
-def test_public_services_are_web_and_operator_only() -> None:
-    """The ledger (system of record) stays private. The owner app and the staff
-    operator console are both browser-facing surfaces, so they are the only web
-    services — the operator is public but every route is gated on a platform role
-    in-app (operator_app._staff), so its exposure is a login page and nothing more.
-    The custom domain belongs to the owner app alone; the console lives on its
-    onrender.com URL."""
-    for service in _blueprint()["services"]:
+def test_only_one_service_is_public() -> None:
+    """The ledger is the system of record and stays private. The operator console
+    is NOT a second public service: deploy/combined_entry.py dispatches /operator/*
+    to it from inside rgnr8-web, so the staff control plane sits behind the same
+    login on the same origin.
+
+    It used to be its own public web service on an onrender.com URL. That was a
+    second, unlinked front door to the console — nothing referenced it once
+    RGNR8_OPERATOR_URL became the same-origin /operator — so it was removed. This
+    test is what stops a blueprint sync from quietly standing it back up."""
+    blueprint = _blueprint()
+    for service in blueprint["services"]:
         if service["type"] != "web":
             assert "domains" not in service, service["name"]
             assert "healthCheckPath" not in service, (
                 f"{service['name']}: healthCheckPath is web-services-only in the spec."
             )
-    web = {s["name"]: s for s in _blueprint()["services"] if s["type"] == "web"}
-    assert set(web) == {"rgnr8-web", "rgnr8-operator"}, set(web)
-    assert web["rgnr8-web"].get("domains") == ["acctg.rgnr8ventures.com"]
-    assert "domains" not in web["rgnr8-operator"], "the staff console gets no custom domain"
+    web = {s["name"]: s for s in blueprint["services"] if s["type"] == "web"}
+    assert set(web) == {"rgnr8-web"}, set(web)
+    assert web["rgnr8-web"]["domains"] == ["acctg.rgnr8ventures.com"]
+
+
+def test_the_one_public_service_serves_the_console_too() -> None:
+    """Dropping the standalone service is only safe because the surviving one
+    actually serves the console. Pin both halves of that: the combined entrypoint
+    is what boots, and the chooser points at the same origin rather than the old
+    onrender URL."""
+    web = next(s for s in _blueprint()["services"] if s["name"] == "rgnr8-web")
+    assert "combined_entry:application" in web["dockerCommand"], web["dockerCommand"]
+    operator_url = next(
+        e for e in web["envVars"] if e.get("key") == "RGNR8_OPERATOR_URL")
+    assert operator_url["value"] == "/operator", operator_url
 
 
 def test_the_web_service_is_on_a_paid_plan() -> None:
