@@ -414,6 +414,9 @@ def render_connect_page(
     realm_id: str | None,
     last_sync: "dict[str, str] | None" = None,
     sync_flag: str = "",
+    migrate_flag: str = "",
+    migrate_message: str = "",
+    ledger_migrated: bool = False,
     ledger_sync: "dict[str, str] | None" = None,
 ) -> str:
     """The connections page: QuickBooks Online status + a connect / reconnect /
@@ -422,6 +425,7 @@ def render_connect_page(
     connect_href = f"/t/{escape(tenant)}/connect/qbo"
     disconnect_href = f"/t/{escape(tenant)}/connect/qbo/disconnect"
     sync_href = f"/t/{escape(tenant)}/connect/qbo/sync"
+    migrate_href = f"/t/{escape(tenant)}/connect/qbo/migrate"
 
     if not configured:
         body = (
@@ -463,7 +467,39 @@ def render_connect_page(
                      'try Sync again in a moment.</div>')
     elif sync_flag == "partial":
         sync_note = ('<div class="banner warn">Synced, but some records couldn\'t be '
-                     'brought into your books — see below.</div>')
+                     'brought into your books — bring the full chart of accounts over below, '
+                     'then sync again.</div>')
+
+    # migration (go-live) result banner — shows the specific message when present
+    migrate_note = ""
+    if migrate_flag:
+        cls = "good" if migrate_flag == "ok" else "warn"
+        default = ("Brought your QuickBooks chart of accounts and opening balances into the books — "
+                   "Sync now to pull open items and bank activity."
+                   if migrate_flag == "ok" else "Couldn't bring the ledger over just now.")
+        migrate_note = f'<div class="banner {cls}">{escape(migrate_message or default)}</div>'
+
+    # The one-time "bring the full ledger across" action (go-live): seeds the chart
+    # of accounts + opening trial balance so the books mirror QuickBooks. Only
+    # meaningful once connected, and hidden once it has run.
+    migrate_block = ""
+    if is_connected and not ledger_migrated:
+        migrate_block = (
+            '<div class="card"><h2>Bring your full ledger across</h2>'
+            '<p>Sync keeps your cash outlook and open items current. This is the one-time '
+            'step that brings your QuickBooks <strong>chart of accounts and opening balances</strong> '
+            'into RGNR8\'s books, so the ledger, trial balance, and financial statements mirror '
+            'QuickBooks. Do this once, before your first full sync.</p>'
+            f'<form method="post" action="{migrate_href}" style="margin-top:8px">'
+            '<button class="btn" type="submit">Bring over chart of accounts + balances</button></form></div>'
+        )
+    elif is_connected and ledger_migrated:
+        migrate_block = (
+            '<div class="card"><h2>Ledger</h2>'
+            '<p class="muted">Your QuickBooks chart of accounts and opening balances are in your '
+            'books — the ledger mirrors QuickBooks. Use <strong>Sync now</strong> above to keep '
+            'open items and bank activity current.</p></div>'
+        )
 
     # last-sync summary table
     sync_block = ""
@@ -523,6 +559,7 @@ def render_connect_page(
     return f"""<h1>Connections</h1>
     <p class="sub">{escape(tenant)} · connect QuickBooks Online to keep the books current</p>
     {sync_note}
+    {migrate_note}
     <div class="card">
       <h2>QuickBooks Online</h2>
       {banner}
@@ -532,6 +569,7 @@ def render_connect_page(
       your QuickBooks password.</p>
       <div style="margin-top:12px">{action}</div>
     </div>
+    {migrate_block}
     {sync_block}
     {ledger_block}"""
 
