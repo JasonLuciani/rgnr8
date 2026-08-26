@@ -187,6 +187,7 @@ from .shell import (
     render_choose_html,
     render_app_home,
     render_audit_log,
+    render_legal_html,
     render_login_html,
     render_signup_html,
     render_shell,
@@ -999,6 +1000,13 @@ class WebApp:
             return self._password_reset_post(req)
         if route == "/logout":
             return _redirect("/login", (("Set-Cookie", "rgnr8_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"),))
+
+        # --- public legal pages (no auth: Intuit's production review and end users
+        # must reach the app's EULA / privacy policy without signing in) ---
+        if route == "/legal/eula" and req.method == "GET":
+            return _html(200, render_legal_html("eula"))
+        if route == "/legal/privacy" and req.method == "GET":
+            return _html(200, render_legal_html("privacy"))
 
         # --- post-login "choose your view" (authenticated by session `sub`, which
         # exists before any business/tenant is selected, so it runs ahead of the

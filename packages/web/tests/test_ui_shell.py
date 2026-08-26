@@ -48,6 +48,16 @@ def test_login_page_renders_without_auth() -> None:
     assert "http://" not in r.body and "https://" not in r.body  # self-contained
 
 
+def test_legal_pages_public_and_self_contained() -> None:
+    app = _app()
+    for path, needle in (("/legal/eula", "End-User License Agreement"),
+                         ("/legal/privacy", "Privacy Policy")):
+        r = app.handle(Request("GET", path))
+        assert r.status == 200, path          # no auth required
+        assert needle in r.body and "QuickBooks" in r.body
+        assert "http://" not in r.body and "https://" not in r.body  # self-contained
+
+
 def test_login_sets_a_session_cookie_and_redirects() -> None:
     app = _app()
     r = app.handle(Request("POST", "/login", {"content-type": "application/x-www-form-urlencoded"},

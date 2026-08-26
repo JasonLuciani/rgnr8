@@ -163,6 +163,160 @@ def render_signup_html(*, error: str | None = None) -> str:
     return _login_shell(err + form)
 
 
+_LEGAL_EFFECTIVE = "August 26, 2026"
+
+_EULA_BODY = """
+<h1>RGNR8 End-User License Agreement</h1>
+<p class="eff">Effective {eff}</p>
+<p>This End-User License Agreement ("Agreement") is a contract between you ("you"
+or "Customer") and RGNR8 Ventures ("RGNR8", "we", "us") governing your use of the
+RGNR8 financial operations application and related services (the "Service"). By
+creating an account or using the Service, you agree to this Agreement.</p>
+
+<h2>1. License</h2>
+<p>Subject to this Agreement, RGNR8 grants you a limited, non-exclusive,
+non-transferable, revocable license to access and use the Service for your own
+business bookkeeping, reporting, and cash-planning purposes. You may not resell,
+sublicense, reverse-engineer, or use the Service to build a competing product.</p>
+
+<h2>2. Connecting QuickBooks Online</h2>
+<p>The Service can connect to your QuickBooks Online company at your direction
+through Intuit's authorized OAuth flow. You authorize RGNR8 to access the
+QuickBooks data needed to provide the Service — including your chart of accounts,
+account balances, and transactions — solely to mirror your ledger and produce the
+reports and forecasts you request. RGNR8 never receives your Intuit password. You
+may disconnect QuickBooks at any time from the Connect screen, which revokes that
+access going forward.</p>
+
+<h2>3. Your Data</h2>
+<p>As between you and RGNR8, you own your business data. You grant RGNR8 the
+rights needed to host and process that data to provide the Service. RGNR8 acts as
+your data processor with respect to data imported from QuickBooks and processes it
+only on your behalf.</p>
+
+<h2>4. Acceptable Use</h2>
+<p>You agree not to use the Service unlawfully, to upload content you lack the
+right to use, to interfere with the Service's operation or security, or to attempt
+to access accounts or data that are not yours.</p>
+
+<h2>5. No Professional Advice</h2>
+<p>The Service organizes and presents financial information. It does not provide
+accounting, tax, legal, or investment advice, and its outputs — including reports,
+trial balances, and cash forecasts — are informational. You are responsible for
+verifying your books and for decisions you make. Consult a qualified professional
+where appropriate.</p>
+
+<h2>6. Warranty Disclaimer</h2>
+<p>The Service is provided "as is" and "as available" without warranties of any
+kind, whether express or implied, including merchantability, fitness for a
+particular purpose, and non-infringement, to the fullest extent permitted by law.</p>
+
+<h2>7. Limitation of Liability</h2>
+<p>To the fullest extent permitted by law, RGNR8 will not be liable for any
+indirect, incidental, special, consequential, or punitive damages, or for lost
+profits or data, arising from your use of the Service.</p>
+
+<h2>8. Term and Termination</h2>
+<p>This Agreement applies while you use the Service. You may stop using the
+Service and disconnect QuickBooks at any time. We may suspend or terminate access
+for violation of this Agreement or as needed to protect the Service.</p>
+
+<h2>9. Changes</h2>
+<p>We may update this Agreement from time to time. Material changes will be
+reflected on this page with a new effective date; continued use after an update
+constitutes acceptance.</p>
+
+<h2>10. Contact</h2>
+<p>Questions about this Agreement: <a href="mailto:privacy@rgnr8ventures.com">privacy@rgnr8ventures.com</a>.</p>
+
+<p class="foot"><a href="/legal/privacy">Privacy Policy</a> &middot; <a href="/login">Return to sign in</a></p>
+"""
+
+_PRIVACY_BODY = """
+<h1>RGNR8 Privacy Policy</h1>
+<p class="eff">Effective {eff}</p>
+<p>This Privacy Policy explains how RGNR8 Ventures ("RGNR8", "we", "us") collects,
+uses, and protects information in connection with the RGNR8 financial operations
+application (the "Service").</p>
+
+<h2>1. Information We Collect</h2>
+<p><strong>Account information</strong> you provide, such as your email address and
+authentication credentials. <strong>QuickBooks data</strong> you authorize us to
+access through Intuit's OAuth flow, such as your chart of accounts, account
+balances, and transactions. <strong>Usage and technical data</strong> such as log
+and diagnostic information generated when you use the Service.</p>
+
+<h2>2. How We Use Information</h2>
+<p>We use this information only to provide and operate the Service — to mirror your
+QuickBooks ledger, produce trial balances, financial statements, and cash
+forecasts, and to secure and support your account. We do not sell your information,
+and we do not use QuickBooks data for advertising.</p>
+
+<h2>3. QuickBooks / Intuit Data</h2>
+<p>Data obtained from QuickBooks Online is used solely to provide the Service you
+request and is handled in accordance with Intuit's requirements. You may disconnect
+QuickBooks at any time, which revokes our access to your QuickBooks company going
+forward.</p>
+
+<h2>4. How We Protect Information</h2>
+<p>We protect data in transit with TLS encryption and encrypt sensitive
+credentials, including QuickBooks access tokens, at rest. The Service is hosted on
+managed cloud infrastructure located in the United States. Access to production
+data is limited to what is necessary to operate the Service.</p>
+
+<h2>5. Sharing</h2>
+<p>We do not sell your information. We share it only with service providers that
+help us host and operate the Service (for example, our cloud hosting provider),
+under obligations to protect it, or where required by law.</p>
+
+<h2>6. Data Retention and Deletion</h2>
+<p>We retain your information for as long as your account is active or as needed to
+provide the Service. Disconnecting QuickBooks stops further access to your
+QuickBooks company. You may request deletion of your account data by contacting us,
+subject to any legal retention obligations.</p>
+
+<h2>7. Your Choices</h2>
+<p>You can disconnect QuickBooks from the Connect screen, and you can request
+access to or deletion of your data by contacting us.</p>
+
+<h2>8. Changes</h2>
+<p>We may update this Policy from time to time. Material changes will be reflected
+on this page with a new effective date.</p>
+
+<h2>9. Contact</h2>
+<p>Questions about this Policy or your data: <a href="mailto:privacy@rgnr8ventures.com">privacy@rgnr8ventures.com</a>.</p>
+
+<p class="foot"><a href="/legal/eula">End-User License Agreement</a> &middot; <a href="/login">Return to sign in</a></p>
+"""
+
+_LEGAL_CSS = """<style>
+  .legal-wrap{max-width:760px;margin:0 auto;padding:56px 22px 80px}
+  .legal-wrap h1{font:800 26px/1.2 var(--rg-sans);color:var(--rg-forest);margin:0 0 4px}
+  .legal-wrap h2{font:700 16px/1.3 var(--rg-sans);color:var(--rg-forest);margin:28px 0 6px}
+  .legal-wrap p{font:400 15px/1.65 var(--rg-sans);color:#2b2b2b;margin:0 0 12px}
+  .legal-wrap a{color:var(--rg-forest);font-weight:600}
+  .legal-wrap .eff{color:var(--rg-muted);font-size:13px;letter-spacing:.04em;text-transform:uppercase;margin-bottom:22px}
+  .legal-wrap .foot{margin-top:34px;padding-top:18px;border-top:1px solid #e3e3e3;font-size:14px}
+  .legal-brand{font:800 20px/1 var(--rg-sans);letter-spacing:.18em;text-transform:uppercase;color:var(--rg-forest);display:block;margin-bottom:34px}
+  .legal-brand span{color:var(--rg-sage)}
+</style>"""
+
+
+def render_legal_html(kind: str) -> str:
+    """Public (no-login) legal pages — the app's EULA and Privacy Policy, whose
+    URLs are registered with Intuit for production. `kind` is 'eula' or 'privacy'.
+    Static, self-contained content; no inline scripts (CSP-safe)."""
+    body_tpl = _PRIVACY_BODY if kind == "privacy" else _EULA_BODY
+    title = "RGNR8 — Privacy Policy" if kind == "privacy" else "RGNR8 — End-User License Agreement"
+    inner = body_tpl.format(eff=_LEGAL_EFFECTIVE)
+    body = (
+        f"{_LEGAL_CSS}<div class=\"legal-wrap\">"
+        "<a class=\"legal-brand\" href=\"/login\">RGNR<span>8</span></a>"
+        f"{inner}</div>"
+    )
+    return _doc(title, body)
+
+
 def _choose_tile(*, href: str, title: str, subtitle: str, accent: bool) -> str:
     """One selectable destination on the 'choose your view' screen."""
     border = "var(--rg-sage)" if accent else "#e3e3e3"
