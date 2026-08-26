@@ -533,6 +533,13 @@ class WebApp:
         # last successful QBO sync summary, per tenant (for the connect page).
         self._qbo_last_sync: dict[str, QboSyncSummary] = {}
         self._qbo_last_ledger_sync: dict[str, LedgerSyncSummary] = {}
+        # Tenants whose QBO chart of accounts + opening balances have been brought
+        # across (go-live). Drives the connect page's migrate card; a restart
+        # re-derives it from the ledger having a chart of accounts.
+        self._qbo_migrated: set[str] = set()
+        # The last migration's human message per tenant (success detail or the
+        # specific failure), shown on the connect page after a migrate attempt.
+        self._qbo_migrate_msg: dict[str, str] = {}
         # What the books last told the forecast, so a screen can say where a
         # number came from rather than presenting facts and guesses alike.
         self._ledger_facts: dict[str, LedgerFacts] = {}
@@ -1168,8 +1175,9 @@ class WebApp:
         # /t/<tenant>/connect -> the connections page (QBO status + connect button)
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "connect":
             sync_flag = req.query.get("sync", "")
+            migrate_flag = req.query.get("migrate", "")
             return self._require(subject, token_tenant, parts[1], P.MANAGE_CONNECTORS,
-                                 lambda t: self._connect_page(subject, t, sync_flag))
+                                 lambda t: self._connect_page(subject, t, sync_flag, migrate_flag))
 
         # /t/<tenant>/connect/qbo -> start the QBO OAuth flow (redirect to Intuit)
         if len(parts) == 4 and parts[0] == "t" and parts[2] == "connect" and parts[3] == "qbo":
@@ -1187,6 +1195,13 @@ class WebApp:
                 and parts[3] == "qbo" and parts[4] == "sync" and req.method == "POST"):
             return self._require(subject, token_tenant, parts[1], P.MANAGE_CONNECTORS,
                                  lambda t: self._qbo_sync(subject, t))
+
+        # /t/<tenant>/connect/qbo/migrate -> bring QBO's chart of accounts +
+        # opening trial balance across (go-live), so the ledger has a real chart.
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "connect"
+                and parts[3] == "qbo" and parts[4] == "migrate" and req.method == "POST"):
+            return self._require(subject, token_tenant, parts[1], P.MANAGE_CONNECTORS,
+                                 lambda t: self._qbo_migrate(subject, t))
 
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "packages":
             return self._require(subject, token_tenant, parts[1], P.VIEW_PACKAGE,
@@ -5366,7 +5381,8 @@ class WebApp:
                            "sections": [s.kind for s in spec.sections]})
 
     # --- QuickBooks Online connect (rgnr8-qbo) -------------------------------
-    def _connect_page(self, subject: str, t: _Tenant, sync_flag: str = "") -> Response:
+    def _connect_page(self, subject: str, t: _Tenant, sync_flag: str = "",
+                      migrate_flag: str = "") -> Response:
         """The connections page: QBO status + a Connect / Reconnect / Disconnect
         control, a Sync-now action, and the last sync's summary. Shows a "not
         configured" note when no `QboConnectService` is seated."""
@@ -5402,6 +5418,9 @@ class WebApp:
                            render_connect_page(t.tenant_id, configured=configured,
                                                status=status, realm_id=realm,
                                                last_sync=last_sync, sync_flag=sync_flag,
+                                               migrate_flag=migrate_flag,
+                                               migrate_message=self._qbo_migrate_msg.get(t.tenant_id, ""),
+                                               ledger_migrated=t.tenant_id in self._qbo_migrated,
                                                ledger_sync=ledger_sync))
 
     def _qbo_begin(self, t: _Tenant) -> Response:
@@ -5464,6 +5483,35 @@ class WebApp:
             if not ledger_summary.ok:
                 return _redirect(f"/t/{t.tenant_id}/connect?sync=partial")
         return _redirect(f"/t/{t.tenant_id}/connect?sync=ok")
+
+    def _qbo_migrate(self, subject: str, t: _Tenant) -> Response:
+        """Bring QuickBooks' chart of accounts + opening trial balance into the
+        ledger (go-live), so the books mirror QuickBooks and every account code
+        resolves. One-time; `Sync now` then keeps open items current. 501 if QBO
+        isn't configured; a reconnect prompt if the connection lapsed; a soft error
+        (with the specific reason) on the connect page if the ledger refuses it."""
+        if self._qbo is None:
+            return _json(501, {"error": "QuickBooks connect is not configured"})
+        if self._ledger is None:
+            self._qbo_migrate_msg[t.tenant_id] = "no ledger service is configured for this deployment"
+            return _redirect(f"/t/{t.tenant_id}/connect?migrate=error")
+        client = self._qbo.api_client(t.tenant_id)
+        if client is None:
+            return _redirect(f"/t/{t.tenant_id}/connect")
+        from .qbo_migrate import migrate_qbo_to_ledger
+        cutover = date.fromtimestamp(self._session_clock()).isoformat()
+        result = migrate_qbo_to_ledger(
+            client, self._ledger, t.tenant_id,
+            cutover_date=cutover, currency=t.config.currency,
+        )
+        self._qbo_migrate_msg[t.tenant_id] = result.describe()
+        if self._audit is not None:
+            self._audit.record(subject, "qbo.migrated", self._session_clock(),
+                               tenant_id=t.tenant_id, detail=result.describe())
+        if not result.ok:
+            return _redirect(f"/t/{t.tenant_id}/connect?migrate=error")
+        self._qbo_migrated.add(t.tenant_id)
+        return _redirect(f"/t/{t.tenant_id}/connect?migrate=ok")
 
     def _qbo_callback(self, req: Request) -> Response:
         """Intuit's OAuth redirect target. Verifies the signed `state` (which

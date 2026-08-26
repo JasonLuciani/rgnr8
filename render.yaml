@@ -106,6 +106,21 @@ services:
         # combined entrypoint), so staff-with-no-business and the post-login view
         # chooser link stay on acctg instead of bouncing to the onrender URL.
         value: /operator
+      # --- QuickBooks Online connect ------------------------------------------
+      # The Client ID + Secret are pasted by hand (sync:false) so they never pass
+      # through source control or a tool. The redirect URI must match EXACTLY what
+      # is registered on the Intuit app. RGNR8_SECRET_KEY (above) encrypts the
+      # OAuth tokens at rest and is REQUIRED whenever QBO is enabled — the app
+      # refuses to store tokens in cleartext. Start in `sandbox` (a test QuickBooks
+      # company); switch to `production` once Intuit approves the app.
+      - key: RGNR8_QBO_CLIENT_ID
+        sync: false
+      - key: RGNR8_QBO_CLIENT_SECRET
+        sync: false
+      - key: RGNR8_QBO_REDIRECT_URI
+        value: https://acctg.rgnr8ventures.com/oauth/qbo/callback
+      - key: RGNR8_QBO_ENVIRONMENT
+        value: sandbox
 
   # --- the delivery worker: briefings + durable webhook outbox, on a schedule --
   - type: cron

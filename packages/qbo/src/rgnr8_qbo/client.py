@@ -26,6 +26,24 @@ from .oauth import JSON_CONTENT_TYPE, HttpClient, QboOAuthError
 MINOR_VERSION = "65"
 
 
+def _to_minor(v: object) -> int:
+    """A QBO decimal-dollar string ('1,201.00', '', '-50', '$3.50') → integer
+    cents. Empty/garbage → 0. Half-cent inputs are truncated at two places (QBO
+    reports are already 2dp), so no rounding surprises."""
+    s = str(v if v is not None else "").strip().replace(",", "").replace("$", "")
+    if not s:
+        return 0
+    neg = s.startswith("-")
+    s = s.lstrip("+-")
+    whole, _, frac = s.partition(".")
+    frac = (frac + "00")[:2]
+    try:
+        cents = int(whole or "0") * 100 + int(frac or "0")
+    except ValueError:
+        return 0
+    return -cents if neg else cents
+
+
 class QboApiError(QboOAuthError):
     """A QuickBooks Accounting API request failed."""
 
@@ -232,6 +250,85 @@ class QboApiClient:
             )
 
         return sorted(out, key=lambda t: (t.txn_date, t.id))
+
+    def chart_of_accounts(self) -> list[dict[str, str]]:
+        """Every active account: its QBO id, number (`code`), name, and QBO type.
+        This is the chart brought across at go-live, and the join table that turns
+        a TrialBalance report's account rows into coded, typed source accounts.
+        Accounts with no number fall back to the QBO id as the code so a migration
+        never drops an account for lacking a human number."""
+        qr = self.query("select * from Account where Active = true")
+        out: list[dict[str, str]] = []
+        for r in self._rows(qr, "Account"):
+            acct_id = self._s(r, "Id")
+            out.append({
+                "id": acct_id,
+                "code": self._s(r, "AcctNum") or acct_id,
+                "name": self._s(r, "Name"),
+                "account_type": self._s(r, "AccountType"),
+            })
+        return out
+
+    def report(self, name: str, params: "Mapping[str, str] | None" = None) -> dict[str, object]:
+        """Fetch a QuickBooks report (e.g. 'TrialBalance') from the Reports API and
+        return its JSON object. Reports are a separate endpoint from `query`."""
+        q = dict(params or {})
+        q["minorversion"] = self.minor_version
+        url = f"{self.api_base}/v3/company/{self.realm_id}/reports/{name}?{urllib.parse.urlencode(q)}"
+        resp = self.http.get(url, self._headers())
+        if resp.status < 200 or resp.status >= 300:
+            raise QboApiError(f"report {name} returned {resp.status}: {resp.body[:300]}")
+        try:
+            data = json.loads(resp.body)
+        except json.JSONDecodeError as exc:
+            raise QboApiError(f"report {name} returned invalid JSON") from exc
+        return data if isinstance(data, dict) else {}
+
+    @classmethod
+    def _report_coldata(cls, container: object) -> list[list[dict[str, object]]]:
+        """Flatten a QBO report's (possibly nested) Rows into a list of ColData
+        arrays — one per data row. Section groupings nest under Rows/Row; account
+        rows carry ColData. Summary rows use a Summary key and are ignored here."""
+        rows = container.get("Row") if isinstance(container, dict) else None
+        out: list[list[dict[str, object]]] = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            cols = row.get("ColData")
+            if isinstance(cols, list):
+                out.append([c for c in cols if isinstance(c, dict)])
+            nested = row.get("Rows")
+            if isinstance(nested, dict):
+                out.extend(cls._report_coldata(nested))
+        return out
+
+    def trial_balance(self, *, as_of: str = "") -> list[dict[str, object]]:
+        """The company's trial balance as go-live `source_accounts` input rows —
+        {code, name, account_type, debit_minor, credit_minor} — ready for
+        `qbo_trial_balance_to_source_accounts`. Debit/credit come from the
+        TrialBalance report (already balanced by QuickBooks); the code and QBO
+        account type come from the chart of accounts, joined by QBO account id.
+        `as_of` is an ISO date (default: today in the company's books). Rows with
+        no joinable account id — section headers and totals — are skipped."""
+        by_id = {a["id"]: a for a in self.chart_of_accounts()}
+        params = {"start_date": as_of, "end_date": as_of} if as_of else {"date_macro": "Today"}
+        report = self.report("TrialBalance", params)
+        out: list[dict[str, object]] = []
+        for cols in self._report_coldata(report.get("Rows")):
+            if len(cols) < 3:
+                continue
+            acct_id = str(cols[0].get("id", "")).strip()
+            acct = by_id.get(acct_id)
+            if acct is None:
+                continue  # totals / non-account rows carry no joinable id
+            out.append({
+                "code": acct["code"],
+                "name": acct["name"] or str(cols[0].get("value", "")),
+                "account_type": acct["account_type"],
+                "debit_minor": _to_minor(cols[1].get("value")),
+                "credit_minor": _to_minor(cols[2].get("value")),
+            })
+        return out
 
     def company_info(self) -> QboCompany:
         """The connected company's name (and country)."""
