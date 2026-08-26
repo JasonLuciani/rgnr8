@@ -120,7 +120,7 @@ services:
       - key: RGNR8_QBO_REDIRECT_URI
         value: https://acctg.rgnr8ventures.com/oauth/qbo/callback
       - key: RGNR8_QBO_ENVIRONMENT
-        value: sandbox
+        value: production
 
   # --- the delivery worker: briefings + durable webhook outbox, on a schedule --
   - type: cron
