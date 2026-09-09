@@ -14,8 +14,10 @@ from rgnr8_web import (
     AuthService,
     InMemoryAuditLog,
     InMemoryCredentialStore,
+    InMemoryInvitationStore,
     InMemoryUserDirectory,
     InMemoryVerificationTokenStore,
+    InvitationService,
     Request,
     Role,
     User,
@@ -52,15 +54,23 @@ def _make_app(clock_ref: dict[str, int], audit: InMemoryAuditLog | None = None) 
         reset_ttl_hours=1,
     )
     users = InMemoryUserDirectory()
+    # Production shape: a user directory (so signup is invitation-only), an
+    # invitation service to mint the tokens, and an emailer so the verify/reset
+    # round trip stays real rather than being auto-verified away.
+    outbox: list[tuple[str, str, str]] = []
     app = WebApp(
         users=users,
         session_secret=SECRET,
         session_clock=lambda: clock_ref["t"],
         auth_service=svc,
+        invitations=InvitationService(users, InMemoryInvitationStore(), audit,
+                                      clock=lambda: clock_ref["t"]),
+        emailer=lambda to, purpose, tok: outbox.append((to, purpose, tok)),
         audit=audit,
     )
     app.add_tenant("acme", "Acme Co", _inputs(),
                    ForecastConfig(minimum_cash=Money.from_decimal("10000.00")), token="unused")
+    app._outbox = outbox  # type: ignore[attr-defined]
     return app
 
 
@@ -72,29 +82,112 @@ def _cookie_from(resp: Any) -> str:
     return str(resp.headers.get("Set-Cookie", "")).split(";")[0]
 
 
+def _mailed(app: WebApp, purpose: str) -> str:
+    """The most recent token the app emailed for `purpose`."""
+    return [tok for (_to, p, tok) in app._outbox if p == purpose][-1]  # type: ignore[attr-defined]
+
+
+def _invite(app: WebApp, email: str, *, tenant: str = "acme", role: Role = Role.VIEWER) -> str:
+    """Mint an invitation the way an owner would, and return its token."""
+    assert app._invitations is not None
+    return app._invitations.invite(email, tenant, role, "owner@rgnr8.co").token
+
+
+def _signup(app: WebApp, email: str, password: str, *, tenant: str = "acme",
+            role: Role = Role.VIEWER) -> Any:
+    """Create an account the only way production allows: redeem an invitation.
+    Returns the /signup response; the verification token lands in the outbox."""
+    return _post(app, "/signup", {"token": _invite(app, email, tenant=tenant, role=role),
+                                  "password": password})
+
+
+def _signup_verified(app: WebApp, email: str, password: str, *, tenant: str = "acme",
+                     role: Role = Role.VIEWER) -> Any:
+    r = _signup(app, email, password, tenant=tenant, role=role)
+    _post(app, "/verify", {"token": _mailed(app, "verify_email")})
+    return r
+
+
 # --- signup / verify ---------------------------------------------------------
 
 
-def test_signup_returns_201_and_verify_token() -> None:
+def test_signup_redeems_an_invitation_into_an_account_and_a_membership() -> None:
     app = _make_app({"t": NOW})
-    r = _post(app, "/signup", {"email": "ada@acme.com", "password": "hunter2222"})
+    r = _signup(app, "ada@acme.com", "hunter2222", role=Role.BOOKKEEPER)
     assert r.status == 201
     body = json.loads(r.body)
     assert body["email"] == "ada@acme.com" and body["verified"] is False
-    assert body["verify_token"] == "tok-1"
+    # the invitation, not the request, decided which business and which role
+    assert body["tenant"] == "acme" and body["role"] == "bookkeeper"
+    assert app._users is not None
+    m = app._users.membership("ada@acme.com", "acme")
+    assert m is not None and m.role is Role.BOOKKEEPER
+    # with an emailer wired the token is sent, never returned in the response
+    assert "verify_token" not in body
+    assert _mailed(app, "verify_email") == "tok-1"
+
+
+def test_signup_without_an_invitation_is_refused() -> None:
+    # The audit's finding: open signup let anyone mint an account against the
+    # production app. With a user directory present there is no un-invited path.
+    app = _make_app({"t": NOW})
+    r = _post(app, "/signup", {"email": "stranger@evil.com", "password": "hunter2222"})
+    assert r.status == 403
+    assert "invitation" in json.loads(r.body)["error"]
+    # and no credential was created — the address can't then log in or reset
+    assert _post(app, "/login", {"email": "stranger@evil.com", "password": "hunter2222"}).status == 401
+    assert "reset_token" not in json.loads(
+        _post(app, "/password/reset-request", {"email": "stranger@evil.com"}).body)
+
+
+def test_signup_with_a_dead_invitation_is_refused_and_leaves_no_account() -> None:
+    app = _make_app({"t": NOW})
+    assert app._invitations is not None
+    token = _invite(app, "ada@acme.com")
+    app._invitations.revoke(token, "owner@rgnr8.co")
+    r = _post(app, "/signup", {"token": token, "password": "hunter2222"})
+    assert r.status == 400
+    # the credential is never minted, so a revoked invite leaves nothing behind
+    assert _post(app, "/login", {"email": "ada@acme.com", "password": "hunter2222"}).status == 401
+    assert app._users is not None and app._users.membership("ada@acme.com", "acme") is None
+    # an unknown token is refused the same way
+    assert _post(app, "/signup", {"token": "not-a-token", "password": "hunter2222"}).status == 400
+
+
+def test_an_invitation_is_single_use() -> None:
+    app = _make_app({"t": NOW})
+    token = _invite(app, "ada@acme.com")
+    assert _post(app, "/signup", {"token": token, "password": "hunter2222"}).status == 201
+    again = _post(app, "/signup", {"token": token, "password": "another11"})
+    assert again.status == 400
+
+
+def test_signup_ignores_an_email_supplied_by_the_caller() -> None:
+    # The credential and the membership must be the same person: posting someone
+    # else's address alongside a valid token must not fork them apart.
+    app = _make_app({"t": NOW})
+    token = _invite(app, "ada@acme.com", role=Role.VIEWER)
+    r = _post(app, "/signup", {"token": token, "email": "attacker@evil.com",
+                               "password": "hunter2222"})
+    assert r.status == 201
+    assert json.loads(r.body)["email"] == "ada@acme.com"
+    assert app._users is not None
+    assert app._users.membership("attacker@evil.com", "acme") is None
 
 
 def test_signup_rejects_weak_and_duplicate() -> None:
     app = _make_app({"t": NOW})
-    assert _post(app, "/signup", {"email": "ada@acme.com", "password": "x"}).status == 400
-    assert _post(app, "/signup", {"email": "ada@acme.com", "password": "hunter2222"}).status == 201
-    dup = _post(app, "/signup", {"email": "ada@acme.com", "password": "another11"})
+    assert _post(app, "/signup", {"token": _invite(app, "ada@acme.com"),
+                                  "password": "x"}).status == 400
+    assert _signup(app, "ada@acme.com", "hunter2222").status == 201
+    dup = _signup(app, "ada@acme.com", "another11")
     assert dup.status == 400
 
 
 def test_verify_endpoint_is_single_use() -> None:
     app = _make_app({"t": NOW})
-    token = json.loads(_post(app, "/signup", {"email": "ada@acme.com", "password": "hunter2222"}).body)["verify_token"]
+    _signup(app, "ada@acme.com", "hunter2222")
+    token = _mailed(app, "verify_email")
     assert _post(app, "/verify", {"token": token}).status == 200
     assert _post(app, "/verify", {"token": token}).status == 400        # consumed
 
@@ -104,7 +197,8 @@ def test_verify_endpoint_is_single_use() -> None:
 
 def test_login_blocked_until_verified_then_sets_cookie() -> None:
     app = _make_app({"t": NOW})
-    token = json.loads(_post(app, "/signup", {"email": "ada@acme.com", "password": "hunter2222"}).body)["verify_token"]
+    _signup(app, "ada@acme.com", "hunter2222", role=Role.OWNER)
+    token = _mailed(app, "verify_email")
     # not verified yet → 401, no cookie
     pre = _post(app, "/login", {"email": "ada@acme.com", "password": "hunter2222"})
     assert pre.status == 401 and "Set-Cookie" not in pre.headers
@@ -118,8 +212,7 @@ def test_login_blocked_until_verified_then_sets_cookie() -> None:
 
 def test_login_wrong_password_is_401_indistinguishable() -> None:
     app = _make_app({"t": NOW})
-    token = json.loads(_post(app, "/signup", {"email": "ada@acme.com", "password": "hunter2222"}).body)["verify_token"]
-    _post(app, "/verify", {"token": token})
+    _signup_verified(app, "ada@acme.com", "hunter2222", role=Role.OWNER)
     bad = _post(app, "/login", {"email": "ada@acme.com", "password": "WRONG"})
     unknown = _post(app, "/login", {"email": "ghost@acme.com", "password": "hunter2222"})
     assert bad.status == 401 and unknown.status == 401
@@ -129,11 +222,39 @@ def test_login_wrong_password_is_401_indistinguishable() -> None:
 
 def test_verified_login_can_reach_the_app() -> None:
     app = _make_app({"t": NOW})
-    token = json.loads(_post(app, "/signup", {"email": "ada@acme.com", "password": "hunter2222"}).body)["verify_token"]
-    _post(app, "/verify", {"token": token})
+    _signup_verified(app, "ada@acme.com", "hunter2222", role=Role.OWNER)
     cookie = _cookie_from(_post(app, "/login", {"email": "ada@acme.com", "password": "hunter2222"}))
     home = app.handle(Request("GET", "/app", {"cookie": cookie}))
     assert home.status == 200                                          # authenticated session works
+
+
+def test_an_account_with_no_membership_reaches_no_business() -> None:
+    # The other half of closing the tenant fallback: even a real, verified
+    # credential must land nowhere until an invitation grants it a membership.
+    # Previously the sole tenant was handed to any authenticated caller.
+    app = _make_app({"t": NOW})
+    assert app._auth_service is not None
+    _cred, tok = app._auth_service.signup("stranger@evil.com", "hunter2222")
+    app._auth_service.verify_email(tok)
+    login = _post(app, "/login", {"email": "stranger@evil.com", "password": "hunter2222"})
+    assert login.status == 403 and "Set-Cookie" not in login.headers
+    assert "isn&#x27;t a member of any business" in login.body
+    assert app._users is not None
+    assert app._users.membership("stranger@evil.com", "acme") is None   # never auto-seated
+
+
+def test_login_cannot_seat_itself_by_naming_a_tenant() -> None:
+    # Naming a business in the login body used to resolve it and mint a VIEWER
+    # membership on the spot — an invitation gate you could walk around.
+    app = _make_app({"t": NOW})
+    assert app._auth_service is not None
+    _cred, tok = app._auth_service.signup("stranger@evil.com", "hunter2222")
+    app._auth_service.verify_email(tok)
+    r = _post(app, "/login", {"email": "stranger@evil.com", "password": "hunter2222",
+                              "tenant": "acme"})
+    assert r.status == 403 and "Set-Cookie" not in r.headers
+    assert app._users is not None
+    assert app._users.membership("stranger@evil.com", "acme") is None
 
 
 def test_browser_session_cookie_works_with_an_hs256_authenticator() -> None:
@@ -154,16 +275,22 @@ def test_browser_session_cookie_works_with_an_hs256_authenticator() -> None:
         clock=lambda: clock["t"], token_factory=token,
         salt_factory=lambda: b"0123456789abcdef", min_password_length=8,
     )
+    users = InMemoryUserDirectory()
     app = WebApp(
-        users=InMemoryUserDirectory(),
+        users=users,
         authenticator=JwtAuthenticator("JWT-secret-not-the-session-one"),  # different key
         session_secret="SESSION-secret",
         session_clock=lambda: clock["t"],
         auth_service=svc,
+        invitations=InvitationService(users, InMemoryInvitationStore(),
+                                      clock=lambda: clock["t"]),
     )
     app.add_tenant("acme", "Acme Co", _inputs(),
                    ForecastConfig(minimum_cash=Money.from_decimal("10000.00")), token="unused")
-    tok = json.loads(_post(app, "/signup", {"email": "ada@acme.com", "password": "hunter2222"}).body)["verify_token"]
+    assert app._invitations is not None
+    inv = app._invitations.invite("ada@acme.com", "acme", Role.OWNER, "owner@rgnr8.co")
+    tok = json.loads(_post(app, "/signup", {"token": inv.token,
+                                            "password": "hunter2222"}).body)["verify_token"]
     _post(app, "/verify", {"token": tok})
     login = _post(app, "/login", {"email": "ada@acme.com", "password": "hunter2222"})
     assert login.status == 302 and login.headers.get("Location") == "/app"   # single tenant → straight in
@@ -179,8 +306,12 @@ def test_staff_login_lands_on_the_view_chooser() -> None:
     # chooser showing the RGNR8 Fin OS (operator console) tile — not auto-seated
     # into some tenant, and not bounced to a dead end.
     app = _make_app({"t": NOW})
-    token = json.loads(_post(app, "/signup", {"email": "boss@rgnr8.co", "password": "hunter2222"}).body)["verify_token"]
-    _post(app, "/verify", {"token": token})
+    # Staff have no business to be invited into, so their credential is created
+    # directly (as the platform onboarding path does) rather than via /signup.
+    assert app._auth_service is not None
+    _cred, token = app._auth_service.signup("boss@rgnr8.co", "hunter2222")
+    app._auth_service.verify_email(token)
+    assert app._users is not None
     app._users.set_platform_role("boss@rgnr8.co", Role.OPERATOR)
     ok = _post(app, "/login", {"email": "boss@rgnr8.co", "password": "hunter2222"})
     assert ok.status == 302 and ok.headers.get("Location") == "/choose"
@@ -197,10 +328,8 @@ def test_multi_business_chooser_and_authorized_enter() -> None:
                    ForecastConfig(minimum_cash=Money.from_decimal("10000.00")), token="unused")
     app.add_tenant("gamma", "Gamma Inc", _inputs(),
                    ForecastConfig(minimum_cash=Money.from_decimal("10000.00")), token="unused")
-    token = json.loads(_post(app, "/signup", {"email": "ada@acme.com", "password": "hunter2222"}).body)["verify_token"]
-    _post(app, "/verify", {"token": token})
-    app._users.upsert_user(User(id="ada@acme.com", email="ada@acme.com"))
-    app._users.set_membership("ada@acme.com", "acme", Role.OWNER)
+    _signup_verified(app, "ada@acme.com", "hunter2222", role=Role.OWNER)
+    assert app._users is not None
     app._users.set_membership("ada@acme.com", "beta", Role.OWNER)   # member of two, not gamma
 
     ok = _post(app, "/login", {"email": "ada@acme.com", "password": "hunter2222"})
@@ -231,11 +360,11 @@ def test_choose_requires_a_session() -> None:
 
 def test_password_reset_flow_over_http() -> None:
     app = _make_app({"t": NOW})
-    token = json.loads(_post(app, "/signup", {"email": "ada@acme.com", "password": "hunter2222"}).body)["verify_token"]
-    _post(app, "/verify", {"token": token})
+    _signup_verified(app, "ada@acme.com", "hunter2222", role=Role.OWNER)
     req = _post(app, "/password/reset-request", {"email": "ada@acme.com"})
     assert req.status == 202
-    reset_token = json.loads(req.body)["reset_token"]
+    assert "reset_token" not in json.loads(req.body)   # emailed, never in the response
+    reset_token = _mailed(app, "password_reset")
     done = _post(app, "/password/reset", {"token": reset_token, "password": "brand-new-pass"})
     assert done.status == 200
     # old password no longer works; new one does
@@ -253,9 +382,9 @@ def test_reset_request_for_unknown_email_still_202_without_token() -> None:
 def test_reset_with_expired_token_fails() -> None:
     clock = {"t": NOW}
     app = _make_app(clock)
-    token = json.loads(_post(app, "/signup", {"email": "ada@acme.com", "password": "hunter2222"}).body)["verify_token"]
-    _post(app, "/verify", {"token": token})
-    reset_token = json.loads(_post(app, "/password/reset-request", {"email": "ada@acme.com"}).body)["reset_token"]
+    _signup_verified(app, "ada@acme.com", "hunter2222", role=Role.OWNER)
+    _post(app, "/password/reset-request", {"email": "ada@acme.com"})
+    reset_token = _mailed(app, "password_reset")
     clock["t"] = NOW + 2 * HOUR                                        # past the 1h TTL
     assert _post(app, "/password/reset", {"token": reset_token, "password": "brand-new-pass"}).status == 400
 
@@ -266,12 +395,15 @@ def test_reset_with_expired_token_fails() -> None:
 def test_audit_events_recorded_for_signup_verify_reset() -> None:
     audit = InMemoryAuditLog()
     app = _make_app({"t": NOW}, audit=audit)
-    token = json.loads(_post(app, "/signup", {"email": "ada@acme.com", "password": "hunter2222"}).body)["verify_token"]
-    _post(app, "/verify", {"token": token})
-    reset_token = json.loads(_post(app, "/password/reset-request", {"email": "ada@acme.com"}).body)["reset_token"]
-    _post(app, "/password/reset", {"token": reset_token, "password": "brand-new-pass"})
+    _signup_verified(app, "ada@acme.com", "hunter2222", role=Role.OWNER)
+    _post(app, "/password/reset-request", {"email": "ada@acme.com"})
+    _post(app, "/password/reset", {"token": _mailed(app, "password_reset"),
+                                   "password": "brand-new-pass"})
     actions = [e.action for e in audit.events()]
-    assert actions == ["user.signup", "user.verified", "password.reset"]
+    # the invitation and the membership it grants are auditable too, so the
+    # whole "how did this person get in" chain is on the record
+    assert actions == ["invite.created", "user.signup", "membership.set",
+                       "user.verified", "password.reset"]
 
 
 # --- data export (owner-gated) ----------------------------------------------
@@ -284,15 +416,11 @@ def _login_cookie(app: WebApp, email: str, password: str) -> str:
 def test_export_is_owner_gated_and_returns_bundle() -> None:
     audit = InMemoryAuditLog()
     app = _make_app({"t": NOW}, audit=audit)
-    # sign up + verify two users; make one an owner, leave the other a viewer default
-    for who in ("owner@acme.com", "view@acme.com"):
-        tok = json.loads(_post(app, "/signup", {"email": who, "password": "hunter2222"}).body)["verify_token"]
-        _post(app, "/verify", {"token": tok})
-    # elevate the owner directly in the directory
+    # invite two people at different roles; the invitation is what seats them
+    _signup_verified(app, "owner@acme.com", "hunter2222", role=Role.OWNER)
+    _signup_verified(app, "view@acme.com", "hunter2222", role=Role.VIEWER)
     directory = app._users
     assert directory is not None
-    directory.upsert_user(User("owner@acme.com", "owner@acme.com"))
-    directory.set_membership("owner@acme.com", "acme", Role.OWNER)
     # a tenant-scoped audit event should appear in the export (auth events are global)
     audit.record("owner@acme.com", "close.sealed", NOW, tenant_id="acme", detail="2026-08")
 

@@ -384,6 +384,16 @@ class AuthService:
         self._tokens.save(tok)
         return tok
 
+    def has_credential(self, email: str) -> bool:
+        """Whether an account already exists for this address.
+
+        A pure read, and deliberately so: `request_password_reset` answers a
+        similar question but *mints a token* doing it, which makes it unusable
+        as a probe. Bootstrap/onboarding code needs to ask "can this person
+        already sign in?" without side effects. Not exposed over HTTP — that
+        would turn it into an account-enumeration oracle."""
+        return self._creds.get_by_email(email.strip()) is not None
+
     def signup(self, email: str, password: str) -> tuple[Credential, str]:
         """Create an UNVERIFIED credential + a verification token. Rejects a bad or
         duplicate email and a weak/short password. Returns (credential, token)."""

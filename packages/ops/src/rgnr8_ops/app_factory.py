@@ -45,22 +45,24 @@ from rgnr8_web import (
     HttpJwksProvider,
     InMemoryAuditLog,
     InMemoryCredentialStore,
+    InMemoryInvitationStore,
     InMemoryTenantStore,
     InMemoryUserDirectory,
+    InvitationService,
+    InvitationStore,
     JwksAuthenticator,
     JwtAuthenticator,
     LedgerClient,
     RateLimiter,
-    Role,
     make_rate_limit_key,
     SqlAuditLog,
     SqlCredentialStore,
+    SqlInvitationStore,
     SqlTenantStore,
     SqlUserDirectory,
     StaticTokenAuthenticator,
     UrllibJwksSource,
     UrllibTransport,
-    User,
     UserDirectory,
     WebApp,
     wsgi_app,
@@ -139,6 +141,22 @@ def build_web_app(
             credentials.create_schema()
         auth_service = AuthService(credentials=credentials)
 
+    # --- invitations -----------------------------------------------------
+    # The gate on account creation. Wired whenever there is a directory to grant
+    # membership in AND a signup path to gate; without it `WebApp` refuses every
+    # un-invited signup, so a production composition that forgot this fails
+    # closed (no accounts) rather than open (anyone can register).
+    invitations = None
+    if users is not None and auth_service is not None:
+        inv_store: InvitationStore
+        if conn is not None:
+            sql_invites = SqlInvitationStore(conn, placeholder=settings.placeholder)  # type: ignore[arg-type]
+            sql_invites.create_schema()
+            inv_store = sql_invites
+        else:
+            inv_store = InMemoryInvitationStore()
+        invitations = InvitationService(users, inv_store)
+
     # --- QuickBooks Online connect (optional) ----------------------------
     # Only wired when the Intuit app credentials are present. Tokens are
     # encrypted at rest via the Fernet key (config.from_env fails closed when a
@@ -192,6 +210,7 @@ def build_web_app(
         session_secret=session_secret,
         credentials=credentials,
         auth_service=auth_service,
+        invitations=invitations,
         qbo=qbo,
         ask_llm=ask_llm,
         secure_cookies=settings.secure_cookies,
@@ -208,16 +227,21 @@ def build_web_app(
 
 
 def _seat_owner(app: WebApp, email: str, tenant_id: str) -> None:
-    """Ensure the tenant's owner exists + is seated as OWNER in the directory, so
-    an IdP token for that email resolves to real owner permissions (rather than
-    landing with no membership → 403 everywhere)."""
-    directory = app._users  # the app's configured directory
-    if directory is None or not email or "@" not in email:
+    """Ensure the tenant's declared owner can actually reach it.
+
+    Seats them as OWNER in the directory (so an IdP token for that email
+    resolves to real owner permissions rather than landing with no membership →
+    403 everywhere) AND, since signup became invitation-only, issues their
+    invitation when they have no account yet. Without that second half a brand
+    new business would be unreachable: inviting requires MANAGE_USERS, which
+    requires already being in the business, so its first owner would have nobody
+    to let them in.
+
+    `ensure_owner_access` is idempotent, so running this for every fleet tenant
+    on every boot is a no-op once each owner has signed in."""
+    if not email:
         return
-    user = directory.find_by_email(email) or User(id=email, email=email)
-    directory.upsert_user(user)
-    if directory.membership(user.id, tenant_id) is None:
-        directory.set_membership(user.id, tenant_id, Role.OWNER)
+    app.ensure_owner_access(email, tenant_id)
 
 
 def load_fleet(

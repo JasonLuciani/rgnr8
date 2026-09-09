@@ -105,6 +105,24 @@ class InvitationService:
                                target=email, detail=role.value)
         return inv
 
+    def preview(self, token: str) -> Invitation:
+        """Validate a token WITHOUT redeeming it — for rendering the signup page
+        and for pre-flighting a redemption before a credential is created.
+
+        Deliberately a pure read: unlike `accept`, an expired token seen here is
+        not persisted as EXPIRED, so a GET can never mutate an invitation.
+        Raises `InvitationError` for unknown, already-used, revoked or expired
+        tokens — the caller must not distinguish these to the browser beyond
+        "this invite is no longer valid"."""
+        inv = self._store.get(token)
+        if inv is None:
+            raise InvitationError("unknown invitation")
+        if inv.status is not InvitationStatus.PENDING:
+            raise InvitationError(f"invitation is {inv.status.value}")
+        if inv.is_expired(self._clock()):
+            raise InvitationError("invitation has expired")
+        return inv
+
     def accept(self, token: str, *, name: str = "") -> Membership:
         now = self._clock()
         inv = self._store.get(token)

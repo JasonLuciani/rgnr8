@@ -111,11 +111,13 @@ def _login_shell(inner: str) -> str:
 
 def render_login_html(*, action: str = "/login", sso: bool = False,
                       credentials: bool = False, error: str | None = None,
-                      notice: str | None = None) -> str:
+                      notice: str | None = None, signup_open: bool = False) -> str:
     """The brand login screen. `sso=True` shows a 'Sign in with SSO' button (real
     IdP). `credentials=True` shows the real email + password form (production
-    browser login) with a link to create an account. Otherwise the dev email +
-    role form is shown (static/dev mode)."""
+    browser login). Otherwise the dev email + role form is shown (static/dev
+    mode). `signup_open` adds the create-an-account link — off by default,
+    because RGNR8 is invitation-only wherever a user directory exists and an
+    open link there just sends people to a dead end."""
     err = f'<div class="card" style="border-color:#F5C4C6;background:#FDECEC;color:#B02A2F">{escape(error)}</div>' if error else ""
     note = f'<div class="card" style="border-color:#BFE3C9;background:#EAF7EE;color:#1f6f43">{escape(notice)}</div>' if notice else ""
     if sso:
@@ -130,9 +132,12 @@ def render_login_html(*, action: str = "/login", sso: bool = False,
             '<label>Password</label><input name="password" type="password" autocomplete="current-password" required>'
             '<button class="btn" style="width:100%;margin-top:18px" type="submit">Sign in</button>'
             "</form>"
-            '<p style="text-align:center;margin-top:16px;font-size:13px;color:var(--rg-muted)">'
-            'New here? <a href="/signup" style="color:var(--rg-forest);font-weight:600">Create an account</a></p>'
         )
+        if signup_open:
+            form += (
+                '<p style="text-align:center;margin-top:16px;font-size:13px;color:var(--rg-muted)">'
+                'New here? <a href="/signup" style="color:var(--rg-forest);font-weight:600">Create an account</a></p>'
+            )
     else:
         opts = "".join(
             f'<option value="{r.value}">{r.value.capitalize()}</option>' for r in _ASSIGNABLE_ROLES
@@ -147,9 +152,36 @@ def render_login_html(*, action: str = "/login", sso: bool = False,
     return _login_shell(note + err + form)
 
 
-def render_signup_html(*, error: str | None = None) -> str:
-    """Create-an-account screen: email + password. Posts to /signup."""
+def render_signup_html(*, error: str | None = None, token: str = "", email: str = "",
+                       business: str = "") -> str:
+    """Create-an-account screen. With a `token` this is the INVITED form: the
+    address is fixed to the one that was invited (the account and the membership
+    must be the same person, and the invite link is the proof of that address),
+    so the field is read-only and the server ignores anything posted for it.
+    Without a token it is the open dev form — reachable only in a composition
+    that has no user directory."""
     err = f'<div class="card" style="border-color:#F5C4C6;background:#FDECEC;color:#B02A2F">{escape(error)}</div>' if error else ""
+    if token:
+        who = f" to {escape(business)}" if business else ""
+        intro = (
+            '<div class="card" style="border-color:#BFE3C9;background:#EAF7EE;color:#1f6f43">'
+            f"You've been invited{who}. Choose a password to finish setting up "
+            f"<strong>{escape(email)}</strong>.</div>"
+        )
+        form = (
+            '<form method="post" action="/signup">'
+            f'<input type="hidden" name="token" value="{escape(token)}">'
+            '<label>Work email</label>'
+            f'<input name="email" type="email" value="{escape(email)}" readonly '
+            'autocomplete="username" style="background:#F4F5F3;color:var(--rg-muted)">'
+            '<label>Password</label><input name="password" type="password" autocomplete="new-password" '
+            'placeholder="at least 8 characters" required minlength="8" autofocus>'
+            '<button class="btn" style="width:100%;margin-top:18px" type="submit">Accept invitation</button>'
+            "</form>"
+            '<p style="text-align:center;margin-top:16px;font-size:13px;color:var(--rg-muted)">'
+            'Already have an account? <a href="/login" style="color:var(--rg-forest);font-weight:600">Sign in</a></p>'
+        )
+        return _login_shell(intro + err + form)
     form = (
         '<form method="post" action="/signup">'
         '<label>Work email</label><input name="email" type="email" placeholder="you@company.com" autocomplete="username" required>'
@@ -470,9 +502,20 @@ def render_app_home(
       <div class="row"><div class="grow">Latest sealed financial package</div>{pkg_link}</div></div>"""
 
 
-def render_users_admin(tenant: str, members: Sequence[tuple[Membership, User | None]]) -> str:
-    """The users/roles admin body (list + change-role + invite). Posts to the
-    RBAC `/api/<tenant>/users` route via a small inline form."""
+def render_users_admin(
+    tenant: str,
+    members: Sequence[tuple[Membership, User | None]],
+    *,
+    pending: Sequence[tuple[str, str, str]] = (),
+    origin: str = "",
+) -> str:
+    """The users/roles admin body (members + change-role + invitations).
+
+    Role changes still post to `/api/<tenant>/users`. Inviting posts to
+    `/api/<tenant>/invitations`, which mints a single-use token — the ONLY way a
+    new person can create an account. `pending` is (email, role, token) per open
+    invitation; until an outbound emailer is wired the owner copies the link and
+    sends it themselves, so the tokens are shown here."""
     def role_opts(cur: Role) -> str:
         return "".join(
             f'<option value="{r.value}"{" selected" if r == cur else ""}>{r.value.capitalize()}</option>'
@@ -497,6 +540,26 @@ def render_users_admin(tenant: str, members: Sequence[tuple[Membership, User | N
         f'<option value="{r.value}">{r.value.capitalize()}</option>'
         for r in _ASSIGNABLE_ROLES if r != Role.OWNER
     )
+    pending_rows = ""
+    for p_email, p_role, p_token in pending:
+        link = f"{origin}/signup?token={p_token}"
+        pending_rows += (
+            "<tr><td class='muted'>" + escape(p_email) + "</td>"
+            "<td>" + escape(p_role.capitalize()) + "</td>"
+            "<td><input readonly value='" + escape(link) + "' "
+            "style='width:100%;font-size:12px' onclick='this.select()'></td>"
+            "<td style='text-align:right'><button class='btn ghost' onclick=\"revoke('"
+            + escape(p_token) + "')\">Revoke</button></td></tr>"
+        )
+    pending_html = (
+        "<div class='card' style='margin-top:16px'><h2 style='margin-top:0;font-size:12px;"
+        "text-transform:uppercase;letter-spacing:.08em;color:var(--rg-muted)'>Open invitations</h2>"
+        "<div class='table-scroll'><table><thead><tr><th>Email</th><th>Role</th>"
+        "<th>Invitation link</th><th></th></tr></thead><tbody>" + pending_rows + "</tbody></table></div>"
+        "<p class='muted' style='font-size:12px;margin-top:10px'>Send the link to the person you "
+        "invited — it is the only way for them to create an account, it works once, and it "
+        "expires in 7 days.</p></div>"
+    ) if pending_rows else ""
     body = f"""<h1>Team &amp; roles</h1>
     <p class="sub">Who can see and do what in {escape(tenant)}. Changes take effect immediately.</p>
     <div id="rgErr" class="banner warn" role="alert" style="display:none;margin-bottom:12px"></div>
@@ -507,25 +570,31 @@ def render_users_admin(tenant: str, members: Sequence[tuple[Membership, User | N
       <button id="invBtn" class="btn" onclick="invite()">Send invite</button></div>
       <p class="muted" style="font-size:12px;margin-top:10px">Owner &amp; Controller can publish the close · Bookkeeper reconciles but can't seal · Accountant is your external CPA · Viewer is read-only.</p>
     </div>
+    {pending_html}
     {script_open()}
       const T={tenant!r};
       function rgErr(m){{ var b=document.getElementById('rgErr'); if(b){{ b.textContent=m||''; b.style.display=m?'block':'none'; }} }}
       function rgBusy(el,on,label){{ if(!el)return; el.disabled=on; if(el.tagName==='BUTTON'){{ if(on){{ el.dataset.rgPrev=el.dataset.rgPrev||el.textContent; el.textContent=label||'Working…'; }} else if(el.dataset.rgPrev!=null){{ el.textContent=el.dataset.rgPrev; }} }} }}
-      function api(method, body){{ return fetch('/api/'+T+'/users', {{method, headers:{{'content-type':'application/json'}}, body: body?JSON.stringify(body):undefined, credentials:'same-origin'}}); }}
-      async function run(ctl, label, body){{
+      function post(path, body){{ return fetch(path, {{method:'POST', headers:{{'content-type':'application/json'}}, body: body?JSON.stringify(body):undefined, credentials:'same-origin'}}); }}
+      async function run(ctl, label, path, body){{
         rgErr(''); rgBusy(ctl, true, label);
         try{{
-          const r = await api('POST', body);
+          const r = await post(path, body);
           if(!r.ok){{ rgErr('Could not save the change (HTTP '+r.status+'). Nothing was changed.'); rgBusy(ctl, false); return; }}
           location.reload();
         }} catch(e){{ rgErr('Network error — please try again.'); rgBusy(ctl, false); }}
       }}
-      function setRole(sel){{ return run(sel, null, {{email: sel.dataset.user, role: sel.value}}); }}
+      function setRole(sel){{ return run(sel, null, '/api/'+T+'/users', {{email: sel.dataset.user, role: sel.value}}); }}
       function removeMember(email){{ if(!confirm('Remove '+email+' from the team? They lose access to this business immediately.')) return;
-        return run(null, null, {{email, role: null}}); }}
+        return run(null, null, '/api/'+T+'/users', {{email, role: null}}); }}
+      // Inviting mints a single-use token; it does NOT seat the person. They
+      // become a member only when they redeem the link and set a password.
       function invite(){{ const e=document.getElementById('invEmail').value.trim();
         if(!e.includes('@')){{ rgErr('Enter a valid email address.'); return; }}
-        return run(document.getElementById('invBtn'), 'Sending…', {{email:e, role: document.getElementById('invRole').value}}); }}
+        return run(document.getElementById('invBtn'), 'Creating…', '/api/'+T+'/invitations',
+                   {{email:e, role: document.getElementById('invRole').value}}); }}
+      function revoke(token){{ if(!confirm('Revoke this invitation? The link stops working immediately.')) return;
+        return run(null, null, '/api/'+T+'/invitations/'+encodeURIComponent(token)+'/revoke', null); }}
     </script>"""
     return body
 
