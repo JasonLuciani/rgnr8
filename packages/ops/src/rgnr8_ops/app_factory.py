@@ -54,7 +54,6 @@ from rgnr8_web import (
     JwtAuthenticator,
     LedgerClient,
     RateLimiter,
-    Role,
     make_rate_limit_key,
     SqlAuditLog,
     SqlCredentialStore,
@@ -64,7 +63,6 @@ from rgnr8_web import (
     StaticTokenAuthenticator,
     UrllibJwksSource,
     UrllibTransport,
-    User,
     UserDirectory,
     WebApp,
     wsgi_app,
@@ -229,16 +227,21 @@ def build_web_app(
 
 
 def _seat_owner(app: WebApp, email: str, tenant_id: str) -> None:
-    """Ensure the tenant's owner exists + is seated as OWNER in the directory, so
-    an IdP token for that email resolves to real owner permissions (rather than
-    landing with no membership → 403 everywhere)."""
-    directory = app._users  # the app's configured directory
-    if directory is None or not email or "@" not in email:
+    """Ensure the tenant's declared owner can actually reach it.
+
+    Seats them as OWNER in the directory (so an IdP token for that email
+    resolves to real owner permissions rather than landing with no membership →
+    403 everywhere) AND, since signup became invitation-only, issues their
+    invitation when they have no account yet. Without that second half a brand
+    new business would be unreachable: inviting requires MANAGE_USERS, which
+    requires already being in the business, so its first owner would have nobody
+    to let them in.
+
+    `ensure_owner_access` is idempotent, so running this for every fleet tenant
+    on every boot is a no-op once each owner has signed in."""
+    if not email:
         return
-    user = directory.find_by_email(email) or User(id=email, email=email)
-    directory.upsert_user(user)
-    if directory.membership(user.id, tenant_id) is None:
-        directory.set_membership(user.id, tenant_id, Role.OWNER)
+    app.ensure_owner_access(email, tenant_id)
 
 
 def load_fleet(

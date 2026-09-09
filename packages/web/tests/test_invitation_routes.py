@@ -219,6 +219,86 @@ def test_signup_page_with_a_dead_token_does_not_consume_it() -> None:
     assert bad.status == 400 and "no longer valid" in bad.body
 
 
+# --- bootstrapping a new business's first owner ------------------------------
+# Invitation-only signup closes a door that a brand-new business needs open
+# exactly once: inviting requires MANAGE_USERS, MANAGE_USERS requires already
+# being a member, so tenant #2's first owner would have nobody to let them in.
+# Provisioning declares who the owner is, so provisioning issues their key.
+
+
+def test_provisioning_seats_the_owner_and_issues_their_invitation() -> None:
+    app = _make_app()
+    token = app.ensure_owner_access("founder@newco.com", "beta")
+    assert token is not None
+    # seated as OWNER...
+    assert app._users is not None
+    m = app._users.membership("founder@newco.com", "beta")
+    assert m is not None and m.role is Role.OWNER
+    # ...and holding a real invitation, not a bypass: the same single-use,
+    # expiring token any other invitee gets.
+    r = _get(app, f"/signup?token={token}")
+    assert r.status == 200 and "founder@newco.com" in r.body
+    redeem = app.handle(Request("POST", "/signup", {"content-type": "application/json"},
+                                json.dumps({"token": token, "password": "hunter2222"})))
+    assert redeem.status == 201
+    assert json.loads(redeem.body)["role"] == "owner"
+
+
+def test_owner_bootstrap_is_idempotent_across_restarts() -> None:
+    # It runs for every fleet tenant on every boot, so it must not pile up
+    # invitations — one live link at a time, and none at all once they can sign in.
+    app = _make_app()
+    first = app.ensure_owner_access("founder@newco.com", "beta")
+    assert first is not None
+    for _ in range(3):
+        assert app.ensure_owner_access("founder@newco.com", "beta") is None
+    assert app._invitations is not None
+    assert len(app._invitations.pending_for("beta")) == 1
+
+    app.handle(Request("POST", "/signup", {"content-type": "application/json"},
+                       json.dumps({"token": first, "password": "hunter2222"})))
+    # they have an account now — never issue another
+    assert app.ensure_owner_access("founder@newco.com", "beta") is None
+    assert app._invitations.pending_for("beta") == []
+
+
+def test_owner_bootstrap_reissues_an_expired_link() -> None:
+    # A link that expires unredeemed must not strand the business. `pending_for`
+    # reports expired-but-unaccepted invitations as pending, so the check has to
+    # validate the token rather than trust that list.
+    clock = {"t": NOW}
+    users = InMemoryUserDirectory()
+    svc = AuthService(InMemoryCredentialStore(), InMemoryVerificationTokenStore(), None,
+                      clock=lambda: clock["t"], min_password_length=8)
+    app = WebApp(users=users, session_secret=SECRET, session_clock=lambda: clock["t"],
+                 auth_service=svc, require_rbac=True,
+                 invitations=InvitationService(users, InMemoryInvitationStore(),
+                                               clock=lambda: clock["t"]))
+    app.add_tenant("beta", "Beta LLC", _inputs(),
+                   ForecastConfig(minimum_cash=Money.from_decimal("10000.00")), token="unused")
+    stale = app.ensure_owner_access("founder@newco.com", "beta")
+    assert stale is not None
+    clock["t"] = NOW + 8 * 86_400                       # past the 7-day TTL
+    fresh = app.ensure_owner_access("founder@newco.com", "beta")
+    assert fresh is not None and fresh != stale
+    assert app.handle(Request("GET", f"/signup?token={stale}")).status == 400
+    assert app.handle(Request("GET", f"/signup?token={fresh}")).status == 200
+
+
+def test_owner_bootstrap_does_not_widen_anyone_else_s_reach() -> None:
+    # The whole point of doing it this way: no platform role gains cross-tenant
+    # MANAGE_USERS, and the bootstrap grants exactly one business to exactly the
+    # address provisioning declared.
+    app = _make_app()
+    app.ensure_owner_access("founder@newco.com", "beta")
+    assert app._users is not None
+    assert app._users.membership("founder@newco.com", "acme") is None
+    # an unknown tenant grants nothing at all
+    assert app.ensure_owner_access("founder@newco.com", "no-such-tenant") is None
+    assert app._invitations is not None
+    assert app._invitations.pending_for("no-such-tenant") == []
+
+
 def test_login_page_offers_no_create_account_link() -> None:
     app = _make_app()
     r = _get(app, "/login")

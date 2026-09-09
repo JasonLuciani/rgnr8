@@ -1920,6 +1920,49 @@ class WebApp:
         self._users.set_membership(user.id, t.tenant_id, role)
         return _json(200, {"user_id": user.id, "email": user.email, "role": role.value})
 
+    def ensure_owner_access(self, email: str, tenant_id: str, *, name: str = "") -> str | None:
+        """Guarantee the declared owner of `tenant_id` can actually get into it.
+
+        Seats them as OWNER in the directory and — when they have no account yet
+        and no live invitation — mints one, emails it if an emailer is wired, and
+        returns its token. Returns None when they already have a way in, or when
+        this composition has nothing to grant.
+
+        **Why this exists.** Signup is invitation-only, and the right to invite
+        (`MANAGE_USERS`) comes only from already being a member of the business.
+        So a new business's FIRST owner has nobody to invite them — closing the
+        registration hole would otherwise make onboarding business #2 impossible.
+        Provisioning is what declares who the owner is, so provisioning is what
+        issues their key. That keeps the trust boundary where it was: no platform
+        role gains cross-tenant `MANAGE_USERS`, and the owner's way in is the
+        same single-use, expiring, audited token everyone else gets.
+
+        Idempotent, and self-healing: safe to call on every boot, mints nothing
+        once they have an account, and re-issues if a link expired unredeemed.
+        """
+        if self._users is None or "@" not in email or tenant_id not in self._tenants:
+            return None
+        user = self._users.find_by_email(email) or User(id=email, email=email, name=name)
+        self._users.upsert_user(user)
+        if self._users.membership(user.id, tenant_id) is None:
+            self._users.set_membership(user.id, tenant_id, Role.OWNER)
+        if self._invitations is None or self._auth_service is None:
+            return None
+        if self._auth_service.has_credential(email):
+            return None  # they can already sign in; nothing to issue
+        for existing in self._invitations.pending_for(tenant_id):
+            if existing.email.lower() != email.lower():
+                continue
+            try:
+                self._invitations.preview(existing.token)
+                return None  # a still-valid link is already out there
+            except InvitationError:
+                break  # stale/expired — fall through and issue a fresh one
+        inv = self._invitations.invite(email, tenant_id, Role.OWNER, "system:provisioning")
+        if self._emailer is not None:
+            self._emailer(inv.email, "invitation", inv.token)
+        return inv.token
+
     # --- invitations ---------------------------------------------------------
     # An invitation is the credential-creation gate: `/signup` refuses anyone
     # without a live token, and redeeming one is what writes the membership. So
