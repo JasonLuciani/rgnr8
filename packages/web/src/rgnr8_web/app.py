@@ -1834,6 +1834,12 @@ class WebApp:
             "packages": self._packages is not None,
             "auth": auth_mode,
             "rbac": self._policy is not None,
+            # The two things that decide whether a person can get in at all:
+            # whether invitations can be minted, and whether the link that
+            # carries one can actually be delivered. Both are silent failures
+            # otherwise — the app boots fine and nobody can sign up.
+            "invitations": self._invitations is not None,
+            "account_mail": self._emailer is not None,
             "version": __version__,
         }
 
