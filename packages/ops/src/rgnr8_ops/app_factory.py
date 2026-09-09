@@ -23,6 +23,7 @@ from rgnr8_obs import (
     StreamLogSink,
     StructuredLogger,
 )
+from rgnr8_briefing import HttpEmailTransport, UrllibHttpClient
 from rgnr8_runtime.subscriptions import SqlSubscriptionStore
 from rgnr8_copilot import anthropic_llm
 from rgnr8_qbo import (
@@ -70,6 +71,7 @@ from rgnr8_web import (
 
 from datetime import datetime, timezone
 
+from .account_mail import account_emailer
 from .config import ConfigError, Settings
 from .ddl_lock import ddl_bootstrap_lock
 from .fleet import Fleet
@@ -157,6 +159,21 @@ def build_web_app(
             inv_store = InMemoryInvitationStore()
         invitations = InvitationService(users, inv_store)
 
+    # --- account email ---------------------------------------------------
+    # Delivers the invitation / verify / password-reset links. Off unless BOTH a
+    # provider key and a public base URL are configured (see
+    # `Settings.account_mail_enabled`); off means the tokens still exist and the
+    # owner copies invite links from the team page, which is how the beta runs
+    # until SendGrid is wired.
+    emailer = None
+    if settings.account_mail_enabled:
+        assert settings.sendgrid_api_key is not None and settings.public_base_url is not None
+        emailer = account_emailer(
+            HttpEmailTransport(UrllibHttpClient(), api_key=settings.sendgrid_api_key,
+                               from_email=settings.delivery_from),
+            settings.public_base_url,
+        )
+
     # --- QuickBooks Online connect (optional) ----------------------------
     # Only wired when the Intuit app credentials are present. Tokens are
     # encrypted at rest via the Fernet key (config.from_env fails closed when a
@@ -211,9 +228,11 @@ def build_web_app(
         credentials=credentials,
         auth_service=auth_service,
         invitations=invitations,
+        emailer=emailer,
         qbo=qbo,
         ask_llm=ask_llm,
         secure_cookies=settings.secure_cookies,
+        public_base_url=settings.public_base_url,
     )
 
     # --- ledger (the accounting system of record) ------------------------

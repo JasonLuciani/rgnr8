@@ -111,13 +111,16 @@ def _login_shell(inner: str) -> str:
 
 def render_login_html(*, action: str = "/login", sso: bool = False,
                       credentials: bool = False, error: str | None = None,
-                      notice: str | None = None, signup_open: bool = False) -> str:
+                      notice: str | None = None, signup_open: bool = False,
+                      reset_open: bool = False) -> str:
     """The brand login screen. `sso=True` shows a 'Sign in with SSO' button (real
     IdP). `credentials=True` shows the real email + password form (production
     browser login). Otherwise the dev email + role form is shown (static/dev
     mode). `signup_open` adds the create-an-account link — off by default,
     because RGNR8 is invitation-only wherever a user directory exists and an
-    open link there just sends people to a dead end."""
+    open link there just sends people to a dead end. `reset_open` adds the
+    forgot-password link, which is only honest once account email can actually
+    deliver the reset — otherwise it leads somewhere nothing arrives from."""
     err = f'<div class="card" style="border-color:#F5C4C6;background:#FDECEC;color:#B02A2F">{escape(error)}</div>' if error else ""
     note = f'<div class="card" style="border-color:#BFE3C9;background:#EAF7EE;color:#1f6f43">{escape(notice)}</div>' if notice else ""
     if sso:
@@ -133,6 +136,11 @@ def render_login_html(*, action: str = "/login", sso: bool = False,
             '<button class="btn" style="width:100%;margin-top:18px" type="submit">Sign in</button>'
             "</form>"
         )
+        if reset_open:
+            form += (
+                '<p style="text-align:center;margin-top:14px;font-size:13px;color:var(--rg-muted)">'
+                '<a href="/password/forgot" style="color:var(--rg-forest)">Forgot your password?</a></p>'
+            )
         if signup_open:
             form += (
                 '<p style="text-align:center;margin-top:16px;font-size:13px;color:var(--rg-muted)">'
@@ -191,6 +199,51 @@ def render_signup_html(*, error: str | None = None, token: str = "", email: str 
         "</form>"
         '<p style="text-align:center;margin-top:16px;font-size:13px;color:var(--rg-muted)">'
         'Already have an account? <a href="/login" style="color:var(--rg-forest);font-weight:600">Sign in</a></p>'
+    )
+    return _login_shell(err + form)
+
+
+def render_password_forgot_html(*, sent: bool = False) -> str:
+    """Ask for the address to send a reset link to.
+
+    After submitting, the same wording is shown whether or not the address is
+    registered — the endpoint behind it already answers 202 either way, and a
+    page that said "no such account" would undo that."""
+    if sent:
+        return _login_shell(
+            '<div class="card" style="border-color:#BFE3C9;background:#EAF7EE;color:#1f6f43">'
+            "If that address has an RGNR8 account, a reset link is on its way. "
+            "The link works once and expires in an hour.</div>"
+            '<p style="text-align:center;margin-top:16px;font-size:13px;color:var(--rg-muted)">'
+            '<a href="/login" style="color:var(--rg-forest);font-weight:600">Back to sign in</a></p>'
+        )
+    form = (
+        '<form method="post" action="/password/forgot">'
+        '<label>Work email</label><input name="email" type="email" '
+        'placeholder="you@company.com" autocomplete="username" required autofocus>'
+        '<button class="btn" style="width:100%;margin-top:18px" type="submit">Email me a reset link</button>'
+        "</form>"
+        '<p style="text-align:center;margin-top:16px;font-size:13px;color:var(--rg-muted)">'
+        '<a href="/login" style="color:var(--rg-forest);font-weight:600">Back to sign in</a></p>'
+    )
+    return _login_shell(form)
+
+
+def render_password_reset_html(*, token: str, error: str | None = None) -> str:
+    """The 'set a new password' screen an emailed reset link lands on.
+
+    The token rides in a hidden field rather than staying in the URL for the POST,
+    and the page carries no links or external assets — a reset page is the one
+    screen where a stray outbound request could leak a live token in a Referer."""
+    err = f'<div class="card" style="border-color:#F5C4C6;background:#FDECEC;color:#B02A2F">{escape(error)}</div>' if error else ""
+    form = (
+        '<form method="post" action="/password/reset">'
+        f'<input type="hidden" name="token" value="{escape(token)}">'
+        '<label>New password</label><input name="password" type="password" '
+        'autocomplete="new-password" placeholder="at least 8 characters" required '
+        'minlength="8" autofocus>'
+        '<button class="btn" style="width:100%;margin-top:18px" type="submit">Set new password</button>'
+        "</form>"
     )
     return _login_shell(err + form)
 

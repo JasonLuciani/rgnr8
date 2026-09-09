@@ -122,6 +122,20 @@ services:
       - key: RGNR8_QBO_ENVIRONMENT
         value: production
 
+      # --- account email: invitation / verify / password-reset links ---------
+      # Signup is invitation-only, so until this key is set every invite link has
+      # to be copied out of the team page by hand. The app boots either way and
+      # says which mode it is in (`/ready` → config.account_mail).
+      # RGNR8_PUBLIC_BASE_URL is what makes those links clickable; it is set
+      # explicitly rather than read from a request Host header, which the caller
+      # controls — a forged Host would mail a live token to someone else's domain.
+      - key: RGNR8_SENDGRID_API_KEY
+        sync: false
+      - key: RGNR8_PUBLIC_BASE_URL
+        value: https://acctg.rgnr8ventures.com
+      - key: RGNR8_DELIVERY_FROM
+        value: no-reply@rgnr8ventures.com
+
   # --- the delivery worker: briefings + durable webhook outbox, on a schedule --
   - type: cron
     name: rgnr8-worker
