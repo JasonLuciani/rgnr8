@@ -45,8 +45,11 @@ from rgnr8_web import (
     HttpJwksProvider,
     InMemoryAuditLog,
     InMemoryCredentialStore,
+    InMemoryInvitationStore,
     InMemoryTenantStore,
     InMemoryUserDirectory,
+    InvitationService,
+    InvitationStore,
     JwksAuthenticator,
     JwtAuthenticator,
     LedgerClient,
@@ -55,6 +58,7 @@ from rgnr8_web import (
     make_rate_limit_key,
     SqlAuditLog,
     SqlCredentialStore,
+    SqlInvitationStore,
     SqlTenantStore,
     SqlUserDirectory,
     StaticTokenAuthenticator,
@@ -139,6 +143,22 @@ def build_web_app(
             credentials.create_schema()
         auth_service = AuthService(credentials=credentials)
 
+    # --- invitations -----------------------------------------------------
+    # The gate on account creation. Wired whenever there is a directory to grant
+    # membership in AND a signup path to gate; without it `WebApp` refuses every
+    # un-invited signup, so a production composition that forgot this fails
+    # closed (no accounts) rather than open (anyone can register).
+    invitations = None
+    if users is not None and auth_service is not None:
+        inv_store: InvitationStore
+        if conn is not None:
+            sql_invites = SqlInvitationStore(conn, placeholder=settings.placeholder)  # type: ignore[arg-type]
+            sql_invites.create_schema()
+            inv_store = sql_invites
+        else:
+            inv_store = InMemoryInvitationStore()
+        invitations = InvitationService(users, inv_store)
+
     # --- QuickBooks Online connect (optional) ----------------------------
     # Only wired when the Intuit app credentials are present. Tokens are
     # encrypted at rest via the Fernet key (config.from_env fails closed when a
@@ -192,6 +212,7 @@ def build_web_app(
         session_secret=session_secret,
         credentials=credentials,
         auth_service=auth_service,
+        invitations=invitations,
         qbo=qbo,
         ask_llm=ask_llm,
         secure_cookies=settings.secure_cookies,

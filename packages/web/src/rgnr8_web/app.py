@@ -142,6 +142,7 @@ from .inbox_screens import (
 )
 from .integration_screens import render_integrations, render_integrations_unavailable
 from .inventory_screens import render_inventory, render_inventory_unavailable
+from .invitations import InvitationError, InvitationService
 from .job_screens import render_job, render_jobs, render_jobs_unavailable
 from .ledger_client import LedgerClient, LedgerUnavailable
 from .ledger_forecast import LedgerFacts, forecast_from_ledger, provenance_split
@@ -514,6 +515,7 @@ class WebApp:
         usage_recorder: "Callable[[str, str, int], None] | None" = None,
         credentials: CredentialStore | None = None,
         auth_service: AuthService | None = None,
+        invitations: InvitationService | None = None,
         audit: AuditSink | None = None,
         emailer: "Callable[[str, str, str], None] | None" = None,
         saved_reports: SavedReportStore | None = None,
@@ -588,6 +590,12 @@ class WebApp:
         self._auth_service = auth_service
         if self._auth_service is None and credentials is not None:
             self._auth_service = AuthService(credentials=credentials, audit=audit)
+        # Team invitations. Wherever a user directory exists, an invitation is the
+        # ONLY way to create an account: `_signup_is_open` refuses an un-tokened
+        # signup, and redeeming the token is what sets the membership. A
+        # directory-less (dev/static) composition has no memberships to grant, so
+        # signup there stays open and this may be None.
+        self._invitations = invitations
         # audit sink for auth events + the data-export bundle (None → no log)
         self._audit = audit
         # emailer seam: (email, purpose, token). In prod the verify/reset token is
@@ -978,18 +986,15 @@ class WebApp:
 
         # --- UI: login / logout (no auth required) ---
         if route == "/login" and req.method == "GET":
-            return _html(200, render_login_html(
-                sso=self._sso_mode(),
-                credentials=self._auth_service is not None,
+            return self._login_page(
+                200,
                 notice=("Account created — sign in." if req.query.get("notice") == "created" else None),
-            ))
+            )
         if route == "/login" and req.method == "POST":
             return self._login_post(req)
-        # --- public end-user auth (self-service signup / verify / reset) ---
+        # --- end-user auth (invitation signup / verify / reset) ---
         if route == "/signup" and req.method == "GET":
-            if self._auth_service is None:
-                return _redirect("/login")
-            return _html(200, render_signup_html())
+            return self._signup_get(req)
         if route == "/signup" and req.method == "POST":
             return self._signup_post(req)
         if route == "/verify" and req.method == "POST":
@@ -1675,6 +1680,14 @@ class WebApp:
             if resource == "users" and req.method == "POST":
                 return self._require(subject, token_tenant, tenant, P.MANAGE_USERS,
                                      lambda t: self._users_set(t, req.body))
+            # Invitations — minting one is the only way a new person can create an
+            # account, so it carries the same MANAGE_USERS gate as seating a member.
+            if resource == "invitations" and req.method == "GET":
+                return self._require(subject, token_tenant, tenant, P.MANAGE_USERS,
+                                     self._invitations_list)
+            if resource == "invitations" and req.method == "POST":
+                return self._require(subject, token_tenant, tenant, P.MANAGE_USERS,
+                                     lambda t: self._invitation_create(subject, t, req.body))
             if resource == "today" and req.method == "GET":
                 return self._require(subject, token_tenant, tenant, P.VIEW_CASH, self._today_json)
             if resource == "briefing.txt" and req.method == "GET":
@@ -1754,6 +1767,13 @@ class WebApp:
             if resource == "audit" and req.method == "GET":
                 return self._require(subject, token_tenant, tenant, P.MANAGE_USERS,
                                      lambda t: self._audit_json(t, req.query.get("actor")))
+
+        # /api/<tenant>/invitations/<token>/revoke  -> kill an open invite
+        if (len(parts) == 5 and parts[0] == "api" and parts[2] == "invitations"
+                and parts[4] == "revoke" and req.method == "POST"):
+            inv_token = parts[3]
+            return self._require(subject, token_tenant, parts[1], P.MANAGE_USERS,
+                                 lambda t: self._invitation_revoke(subject, t, inv_token))
 
         # /api/<tenant>/close/publish  -> seal the period (PUBLISH_CLOSE)
         if (len(parts) == 4 and parts[0] == "api" and parts[2] == "close"
@@ -1899,6 +1919,66 @@ class WebApp:
             return _json(400, {"error": "platform roles are not assignable per-business"})
         self._users.set_membership(user.id, t.tenant_id, role)
         return _json(200, {"user_id": user.id, "email": user.email, "role": role.value})
+
+    # --- invitations ---------------------------------------------------------
+    # An invitation is the credential-creation gate: `/signup` refuses anyone
+    # without a live token, and redeeming one is what writes the membership. So
+    # these three endpoints are the only supply of new accounts, and all three
+    # sit behind MANAGE_USERS in the route table.
+    def _invitations_list(self, t: _Tenant) -> Response:
+        if self._invitations is None:
+            return _json(501, {"error": "invitations are not configured"})
+        return _json(200, {"tenant": t.tenant_id, "invitations": [
+            {"email": i.email, "role": i.role.value, "token": i.token,
+             "invited_by": i.invited_by, "expires_at": i.expires_at}
+            for i in self._invitations.pending_for(t.tenant_id)
+        ]})
+
+    def _invitation_create(self, subject: str, t: _Tenant, body: str) -> Response:
+        """Mint a single-use invitation. Body: {"email": "...", "role": "viewer"}.
+        Does NOT seat the person — they become a member only on redemption, so a
+        mistyped address never silently grants access to the books."""
+        if self._invitations is None:
+            return _json(501, {"error": "invitations are not configured"})
+        try:
+            data = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            return _json(400, {"error": "invalid JSON body"})
+        email = data.get("email")
+        if not isinstance(email, str) or "@" not in email:
+            return _json(400, {"error": "a valid email is required"})
+        try:
+            role = Role(str(data.get("role", Role.VIEWER.value)))
+        except ValueError:
+            return _json(400, {"error": f"unknown role {data.get('role')!r}",
+                               "roles": [r.value for r in Role if not r.is_platform]})
+        try:
+            inv = self._invitations.invite(email.strip(), t.tenant_id, role, subject)
+        except InvitationError as exc:
+            return _json(400, {"error": str(exc)})
+        # The token IS the invitation link. Until an outbound emailer is wired it
+        # comes back here so the inviter can send it; with `_emailer` configured
+        # we deliver it and still return it to the *inviter* (who is already
+        # MANAGE_USERS-authorized for this business and needs to be able to
+        # re-send it) — it is never exposed to an unauthenticated caller.
+        if self._emailer is not None:
+            self._emailer(inv.email, "invitation", inv.token)
+        return _json(201, {"email": inv.email, "role": inv.role.value, "token": inv.token,
+                           "expires_at": inv.expires_at})
+
+    def _invitation_revoke(self, subject: str, t: _Tenant, token: str) -> Response:
+        if self._invitations is None:
+            return _json(501, {"error": "invitations are not configured"})
+        # Scope the revoke to THIS business before touching the store: tokens are
+        # global, so without this an owner of tenant A could revoke tenant B's
+        # invitation by guessing (or replaying) its token.
+        if not any(i.token == token for i in self._invitations.pending_for(t.tenant_id)):
+            return _json(404, {"error": "unknown invitation"})
+        try:
+            self._invitations.revoke(token, subject)
+        except InvitationError as exc:
+            return _json(400, {"error": str(exc)})
+        return _json(200, {"revoked": True})
 
     # --- UI (server-rendered app shell) -------------------------------------
     def _sso_mode(self) -> bool:
@@ -4416,7 +4496,7 @@ class WebApp:
         data = self._form_or_json(req.body)
         email = str(data.get("email", "")).strip()
         if "@" not in email:
-            return _html(400, render_login_html(error="Enter a valid work email."))
+            return self._login_page(400, error="Enter a valid work email.")
         role_raw = str(data.get("role", "owner"))
         # Real credential login (public track): verify the password + verified email
         # via the AuthService. On any failure, respond without distinguishing why.
@@ -4439,22 +4519,22 @@ class WebApp:
         businesses = self._all_memberships_of(subject) if self._users is not None else []
         is_staff = (self._users is not None
                     and self._users.platform_role(subject) is not None)
-        # No membership yet: fall back to the deployment's tenant resolution (an
-        # explicitly requested tenant, or a single-tenant install), preserving the
-        # smooth "straight into the one business" path and seating the owner. Skip
-        # it for staff — a staffer with no business belongs in the console, not
-        # auto-seated as a viewer of whatever single tenant happens to exist.
-        if not businesses and not is_staff:
+        # No membership yet. In a directory-less dev composition, fall back to the
+        # deployment's tenant resolution so a single-tenant install still lands
+        # straight in. Wherever a directory EXISTS this must not run: it used to
+        # mint a VIEWER membership for any caller who authenticated — including
+        # for whatever tenant they named in `tenant` — which handed a business to
+        # people who were never invited to it and made the invitation gate
+        # decorative. Membership is now the only way in.
+        if not businesses and not is_staff and self._users is None:
             resolved = self._resolve_login_tenant(email, data.get("tenant"))
             if resolved is not None:
-                if self._users is not None and self._users.membership(subject, resolved) is None:
-                    self._users.set_membership(subject, resolved, Role.VIEWER)
                 businesses = [resolved]
         total = len(businesses) + (1 if is_staff else 0)
         if total == 0:
-            return _html(400, render_login_html(
-                error="No business is provisioned to sign into yet.",
-                credentials=self._auth_service is not None))
+            return self._login_page(
+                403, error="This account isn't a member of any business yet. "
+                           "Ask the owner to send you an invitation.")
         # Exactly one business and not staff → skip the chooser, straight in.
         if total == 1 and not is_staff:
             return _redirect("/app", (("Set-Cookie",
@@ -4550,45 +4630,147 @@ class WebApp:
             return True
         return req.body.lstrip().startswith("{")
 
+    def _login_page(self, status: int, *, error: str | None = None,
+                    notice: str | None = None) -> Response:
+        """Render the sign-in page in the mode this deployment actually uses.
+
+        Every failure path must come through here. Calling `render_login_html`
+        bare leaves `sso`/`credentials` False, which falls through to the dev
+        role-picker — in production that replaces the password form with a
+        "Sign in as (demo)" dropdown, which looks like a demo app and
+        misrepresents the access model."""
+        return _html(status, render_login_html(
+            sso=self._sso_mode(),
+            credentials=self._auth_service is not None,
+            signup_open=self._auth_service is not None and self._signup_is_open(),
+            error=error, notice=notice,
+        ))
+
     def _login_failure(self, req: Request) -> Response:
         """A single, non-committal login rejection — never reveals whether the email
         is unknown, the password wrong, or the account unverified."""
         if self._wants_json(req):
             return _json(401, {"error": "invalid email or password"})
-        return _html(401, render_login_html(error="Invalid email or password."))
+        return self._login_page(401, error="Invalid email or password.")
 
-    # --- public end-user auth (self-service) --------------------------------
+    # --- end-user auth (invitation-gated signup) ----------------------------
+    _INVITE_ONLY = ("RGNR8 is invitation-only. Ask the owner of your business "
+                    "to send you an invite.")
+    _BAD_INVITE = "That invitation link is no longer valid. Ask for a fresh one."
+
+    def _signup_is_open(self) -> bool:
+        """Whether anyone may create an account WITHOUT an invitation.
+
+        True only in a composition with no user directory — dev/static, where
+        there are no memberships to grant and `_resolve_login_tenant` hands out
+        the sole dev tenant anyway. Wherever a directory exists (every production
+        composition) this is False: an account with no membership can reach no
+        business, so open signup only manufactures dead accounts, and the
+        invitation is what actually grants access."""
+        return self._users is None
+
+    def _signup_get(self, req: Request) -> Response:
+        """The create-account page. With `?token=` it renders the invited form
+        bound to the invited address; without one it is refused unless signup is
+        open. Purely a read — an expired token seen here is not consumed."""
+        if self._auth_service is None:
+            return _redirect("/login")
+        token = req.query.get("token", "")
+        if token:
+            if self._invitations is None:
+                return self._login_page(403, error=self._INVITE_ONLY)
+            try:
+                inv = self._invitations.preview(token)
+            except InvitationError:
+                return self._login_page(400, error=self._BAD_INVITE)
+            t = self._tenants.get(inv.tenant_id)
+            return _html(200, render_signup_html(
+                token=token, email=inv.email,
+                business=t.name if t is not None else inv.tenant_id,
+            ))
+        if not self._signup_is_open():
+            return self._login_page(403, error=self._INVITE_ONLY)
+        return _html(200, render_signup_html())
+
     def _signup_post(self, req: Request) -> Response:
-        """Create an unverified credential and issue an email-verification token.
-        Body (form or JSON): {email, password}. In dev the token is returned in the
-        body; with an `emailer` seam it is sent and withheld from the response."""
+        """Redeem an invitation into a real account: create the credential, then
+        set the membership the invitation grants. Body (form or JSON):
+        {token, password}. The email is taken from the INVITATION, never from the
+        request — the credential and the membership must be the same person.
+
+        Where signup is open (dev/static only) the token is not required and an
+        {email, password} body still works."""
         if self._auth_service is None:
             return _json(501, {"error": "signup is not configured"})
         data = self._form_or_json(req.body)
-        email = str(data.get("email", "")).strip()
+        token = str(data.get("token", "")).strip()
         password = str(data.get("password", ""))
         browser = not self._wants_json(req)
+
+        inv = None
+        if token:
+            if self._invitations is None:
+                return (self._login_page(403, error=self._INVITE_ONLY) if browser
+                        else _json(403, {"error": "invitations are not configured"}))
+            try:
+                inv = self._invitations.preview(token)
+            except InvitationError:
+                # Pre-flight the token BEFORE minting a credential, so a dead
+                # invitation never leaves an orphan account behind.
+                return (self._login_page(400, error=self._BAD_INVITE) if browser
+                        else _json(400, {"error": "invalid or expired invitation"}))
+            email = inv.email
+        else:
+            if not self._signup_is_open():
+                return (self._login_page(403, error=self._INVITE_ONLY) if browser
+                        else _json(403, {"error": "signup is by invitation only"}))
+            email = str(data.get("email", "")).strip()
+
         try:
-            cred, token = self._auth_service.signup(email, password)
+            cred, verify_token = self._auth_service.signup(email, password)
         except AuthError as exc:
             if browser:
-                return _html(400, render_signup_html(error=str(exc)))
+                return _html(400, render_signup_html(
+                    error=str(exc), token=token, email=email,
+                    business=(self._tenant_name(inv.tenant_id) if inv is not None else ""),
+                ))
             return _json(400, {"error": str(exc)})
+
         if self._emailer is not None:
-            self._emailer(cred.email, "verify_email", token)
-        elif browser:
-            # Beta has no outbound email seam, so a browser signup would otherwise
-            # strand the user on an unverified account they can't confirm. Auto-
-            # verify here so they can sign in immediately; wire an emailer to
-            # restore the confirm-your-email step in production.
-            self._auth_service.verify_email(token)
+            self._emailer(cred.email, "verify_email", verify_token)
+        else:
+            # No outbound email seam. Both surviving paths are safe to verify
+            # here: an invited signup already proved control of the address (the
+            # invite link was delivered to it), and the un-invited path exists
+            # only in the directory-less dev composition. Wire an emailer to
+            # restore the confirm-your-email round trip.
+            self._auth_service.verify_email(verify_token)
+
+        membership = None
+        if inv is not None and self._invitations is not None:
+            try:
+                membership = self._invitations.accept(token, name=str(data.get("name", "")))
+            except InvitationError:
+                # Raced with a revoke or a second redemption between the preview
+                # above and here. The credential exists but carries no membership,
+                # so it reaches no business — fail closed and say so.
+                return (self._login_page(400, error=self._BAD_INVITE) if browser
+                        else _json(409, {"error": "invitation was already used or revoked"}))
+
         if browser:
             return _redirect("/login?notice=created")
         body: dict[str, object] = {"user_id": cred.user_id, "email": cred.email,
                                    "verified": cred.verified}
+        if membership is not None:
+            body["tenant"] = membership.tenant_id
+            body["role"] = membership.role.value
         if self._emailer is None:
-            body["verify_token"] = token
+            body["verify_token"] = verify_token
         return _json(201, body)
+
+    def _tenant_name(self, tenant_id: str) -> str:
+        t = self._tenants.get(tenant_id)
+        return t.name if t is not None else tenant_id
 
     def _verify_post(self, req: Request) -> Response:
         """Consume an email-verification token (single-use). Body: {token}."""
@@ -4637,7 +4819,13 @@ class WebApp:
                 for m in [mm for mm in self._all_memberships_of(u.id)]:
                     if m in self._tenants:
                         return m
-        if len(self._tenants) == 1:
+        if len(self._tenants) == 1 and self._users is None:
+            # Dev/static composition only: with no user directory there is no
+            # membership to check, so the sole tenant is the only sensible target.
+            # Whenever a directory exists (every production composition), membership
+            # is the ONLY way into a business — handing the sole tenant to any
+            # authenticated caller minted a session bound to a business the user was
+            # never granted, and leaned entirely on a downstream RBAC 403 to contain it.
             return next(iter(self._tenants))
         return None
 
@@ -4651,7 +4839,7 @@ class WebApp:
             return _redirect("/login")
         perms, role = self._perms_role(subject, tenant)
         if not perms:
-            return _html(403, render_login_html(error="You don't have access to this business."))
+            return self._login_page(403, error="You don't have access to this business.")
         t = self._tenants[tenant]
         fc = self._forecast(t)
         b = self._briefing(t)
@@ -4668,7 +4856,11 @@ class WebApp:
         members = []
         if self._users is not None:
             members = [(m, self._users.get_user(m.user_id)) for m in self._users.members(t.tenant_id)]
-        body = render_users_admin(t.tenant_id, members)
+        pending = []
+        if self._invitations is not None:
+            pending = [(i.email, i.role.value, i.token)
+                       for i in self._invitations.pending_for(t.tenant_id)]
+        body = render_users_admin(t.tenant_id, members, pending=pending)
         return _html(200, render_shell(tenant=t.tenant_id, display_name=t.name, role=role,
                                        permissions=perms, active="team", body_html=body, subject=subject))
 
