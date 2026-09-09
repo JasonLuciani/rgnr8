@@ -43,6 +43,18 @@ def _normalize_ledger_url(raw: str | None) -> str | None:
     return f"http://{value}"
 
 
+def _origin_of(url: str | None) -> str | None:
+    """The scheme://host[:port] of an absolute URL, or None.
+
+    Used to derive the public base URL from the QBO redirect URI, which Intuit
+    forces to be the real public origin — so one correct value covers both."""
+    if not url or "://" not in url:
+        return None
+    scheme, _, rest = url.partition("://")
+    host = rest.split("/", 1)[0]
+    return f"{scheme}://{host}" if host else None
+
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -79,6 +91,11 @@ class Settings:
     sendgrid_api_key: str | None = None
     fcm_api_key: str | None = None
     delivery_from: str = "briefings@rgnr8.app"
+    # Where this deployment is reachable, used to build the absolute links in
+    # invitation / verify / password-reset email. Deliberately configured rather
+    # than derived from a request's Host header, which the caller controls — a
+    # forged Host would send a live single-use token to an attacker's domain.
+    public_base_url: str | None = None
 
     # --- connectors / QBO (optional until you connect data) ---
     plaid_client_id: str | None = None
@@ -103,6 +120,16 @@ class Settings:
     @property
     def qbo_enabled(self) -> bool:
         return bool(self.qbo_client_id and self.qbo_client_secret)
+
+    @property
+    def account_mail_enabled(self) -> bool:
+        """Whether invitation / verify / reset email can actually be delivered.
+
+        Needs BOTH a provider key and somewhere to point the links. A key without
+        a base URL would send mail whose only call to action is a dead relative
+        path, which is worse than sending nothing — the recipient can't act, and
+        the sender believes they were reached."""
+        return bool(self.sendgrid_api_key and self.public_base_url)
 
     @property
     def placeholder(self) -> str:
@@ -153,6 +180,25 @@ class Settings:
                 "no RGNR8_LEDGER_URL — the books/ledger screens will show 'not configured'"
             )
 
+        # Where this deployment is reachable, for the links in account email. Fall
+        # back to the origin of the QBO redirect URI, which already has to be the
+        # real public origin (Intuit rejects it otherwise), so a correctly
+        # configured deployment usually needs no extra variable.
+        public_base_url = (e.get("RGNR8_PUBLIC_BASE_URL") or "").strip().rstrip("/") or None
+        if public_base_url is None:
+            public_base_url = _origin_of(e.get("RGNR8_QBO_REDIRECT_URI"))
+        sendgrid_key = e.get("RGNR8_SENDGRID_API_KEY")
+        if database_url and not sendgrid_key:
+            warnings.append(
+                "no RGNR8_SENDGRID_API_KEY — invitation, verify and password-reset "
+                "email is not delivered; invite links must be copied by hand"
+            )
+        elif sendgrid_key and not public_base_url:
+            warnings.append(
+                "RGNR8_SENDGRID_API_KEY is set but RGNR8_PUBLIC_BASE_URL is not — "
+                "account email stays off rather than sending unusable links"
+            )
+
         qbo_id = e.get("RGNR8_QBO_CLIENT_ID")
         qbo_secret = e.get("RGNR8_QBO_CLIENT_SECRET")
         secret_key = e.get("RGNR8_SECRET_KEY")
@@ -182,6 +228,7 @@ class Settings:
             sendgrid_api_key=e.get("RGNR8_SENDGRID_API_KEY"),
             fcm_api_key=e.get("RGNR8_FCM_API_KEY"),
             delivery_from=e.get("RGNR8_DELIVERY_FROM", "briefings@rgnr8.app"),
+            public_base_url=public_base_url,
             plaid_client_id=e.get("RGNR8_PLAID_CLIENT_ID"),
             plaid_secret=e.get("RGNR8_PLAID_SECRET"),
             gusto_api_key=e.get("RGNR8_GUSTO_API_KEY"),
@@ -213,6 +260,8 @@ class Settings:
             "ledger_token": has(self.ledger_token),
             "secret_key": has(self.secret_key),
             "sendgrid": has(self.sendgrid_api_key),
+            "public_base_url": self.public_base_url or "unset",
+            "account_mail": "on" if self.account_mail_enabled else "off",
             "fcm": has(self.fcm_api_key),
             "plaid": has(self.plaid_client_id and self.plaid_secret),
             "gusto": has(self.gusto_api_key),

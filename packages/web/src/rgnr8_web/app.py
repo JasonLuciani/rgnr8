@@ -190,6 +190,8 @@ from .shell import (
     render_audit_log,
     render_legal_html,
     render_login_html,
+    render_password_forgot_html,
+    render_password_reset_html,
     render_signup_html,
     render_shell,
     render_users_admin,
@@ -525,7 +527,13 @@ class WebApp:
         webhook_outbox: "WebhookOutbox | None" = None,
         ask_llm: "LLMProvider | None" = None,
         secure_cookies: bool = True,
+        public_base_url: str | None = None,
     ) -> None:
+        # Where this deployment is reachable, for links that leave the page —
+        # today, the invitation links an owner copies off the team page. A
+        # relative one is useless the moment it's pasted into an email or Slack.
+        # Configured, never taken from a request Host header the caller controls.
+        self._public_base_url = (public_base_url or "").rstrip("/")
         # Outbound webhooks: a per-tenant endpoint store and a durable outbox. When
         # absent, the integrations surface reports "not configured" rather than 404.
         self._webhooks = webhooks
@@ -999,10 +1007,26 @@ class WebApp:
             return self._signup_post(req)
         if route == "/verify" and req.method == "POST":
             return self._verify_post(req)
+        # The landing pages for emailed links. Without these the tokens the
+        # emailer sends are unusable in a browser — a mail client can only issue
+        # a GET, and both of these routes were POST-only.
+        if route == "/verify" and req.method == "GET":
+            return self._verify_get(req)
         if route == "/password/reset-request" and req.method == "POST":
             return self._password_reset_request_post(req)
+        # The browser entry point to the same thing. `/password/reset-request` is
+        # the JSON API; this is the screen the login page links to.
+        if route == "/password/forgot" and req.method == "GET":
+            if self._auth_service is None:
+                return _redirect("/login")
+            return _html(200, render_password_forgot_html(sent=req.query.get("sent") == "1"))
+        if route == "/password/forgot" and req.method == "POST":
+            self._password_reset_request_post(req)
+            return _redirect("/password/forgot?sent=1")
         if route == "/password/reset" and req.method == "POST":
             return self._password_reset_post(req)
+        if route == "/password/reset" and req.method == "GET":
+            return self._password_reset_get(req)
         if route == "/logout":
             return _redirect("/login", (("Set-Cookie", "rgnr8_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"),))
 
@@ -4686,6 +4710,10 @@ class WebApp:
             sso=self._sso_mode(),
             credentials=self._auth_service is not None,
             signup_open=self._auth_service is not None and self._signup_is_open(),
+            # Only offer "forgot password" when a reset can actually be delivered.
+            # Without an emailer the token comes back in an API response nobody
+            # sees, so the link would promise mail that never arrives.
+            reset_open=self._auth_service is not None and self._emailer is not None,
             error=error, notice=notice,
         ))
 
@@ -4824,6 +4852,33 @@ class WebApp:
             return _json(400, {"error": "invalid or expired verification token"})
         return _json(200, {"verified": True})
 
+    def _verify_get(self, req: Request) -> Response:
+        """Where the emailed 'confirm your email' link lands.
+
+        A GET that changes state, knowingly: a mail client can only issue a GET,
+        and the worst a link-prefetcher can do here is reach the state the user
+        was going to reach anyway. Always ends on the sign-in page — a consumed
+        or expired token is not worth a dead end, and saying which it was would
+        tell an unauthenticated caller whether the token was ever real."""
+        if self._auth_service is None:
+            return _redirect("/login")
+        if self._auth_service.verify_email(req.query.get("token", "")):
+            return self._login_page(200, notice="Email confirmed — sign in.")
+        return self._login_page(
+            400, error="That confirmation link is no longer valid. Sign in to request a new one.")
+
+    def _password_reset_get(self, req: Request) -> Response:
+        """Where the emailed reset link lands: the set-a-new-password form.
+
+        Purely a read — the token is only spent by the POST, so a link-prefetcher
+        or a mistaken refresh can't burn someone's one reset."""
+        if self._auth_service is None:
+            return _redirect("/login")
+        token = req.query.get("token", "")
+        if not token:
+            return self._login_page(400, error="That reset link is missing its token.")
+        return _html(200, render_password_reset_html(token=token))
+
     def _password_reset_request_post(self, req: Request) -> Response:
         """Request a password-reset token. Always answers 202 so it can't be used to
         probe which emails are registered; a token is minted only if the email is
@@ -4849,8 +4904,18 @@ class WebApp:
         data = self._form_or_json(req.body)
         token = str(data.get("token", ""))
         new_password = str(data.get("password", "") or data.get("new_password", ""))
+        browser = not self._wants_json(req)
         if not self._auth_service.reset_password(token, new_password):
+            if browser:
+                # Keep them on the form with the token intact — a rejected password
+                # doesn't spend the token, so re-typing should just work.
+                return _html(400, render_password_reset_html(
+                    token=token,
+                    error="That link has expired, or the password is too short "
+                          "(8 characters minimum)."))
             return _json(400, {"error": "invalid or expired token, or password too weak"})
+        if browser:
+            return self._login_page(200, notice="Password updated — sign in.")
         return _json(200, {"reset": True})
 
     def _resolve_login_tenant(self, email: str, requested: object) -> str | None:
@@ -4903,7 +4968,8 @@ class WebApp:
         if self._invitations is not None:
             pending = [(i.email, i.role.value, i.token)
                        for i in self._invitations.pending_for(t.tenant_id)]
-        body = render_users_admin(t.tenant_id, members, pending=pending)
+        body = render_users_admin(t.tenant_id, members, pending=pending,
+                                  origin=self._public_base_url)
         return _html(200, render_shell(tenant=t.tenant_id, display_name=t.name, role=role,
                                        permissions=perms, active="team", body_html=body, subject=subject))
 

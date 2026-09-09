@@ -389,6 +389,91 @@ def test_reset_with_expired_token_fails() -> None:
     assert _post(app, "/password/reset", {"token": reset_token, "password": "brand-new-pass"}).status == 400
 
 
+# --- where emailed links land ------------------------------------------------
+# A mail client can only issue a GET. Both of these routes were POST-only, so
+# every link the emailer sends would have 404'd on arrival.
+
+
+def _get(app: WebApp, path: str) -> Any:
+    return app.handle(Request("GET", path))
+
+
+def test_emailed_verify_link_confirms_the_address() -> None:
+    app = _make_app({"t": NOW})
+    _signup(app, "ada@acme.com", "hunter2222", role=Role.OWNER)
+    token = _mailed(app, "verify_email")
+    # blocked before clicking
+    assert _post(app, "/login", {"email": "ada@acme.com", "password": "hunter2222"}).status == 401
+    landed = _get(app, f"/verify?token={token}")
+    assert landed.status == 200 and "Email confirmed" in landed.body
+    assert _post(app, "/login", {"email": "ada@acme.com", "password": "hunter2222"}).status == 302
+
+
+def test_a_spent_verify_link_lands_somewhere_useful() -> None:
+    app = _make_app({"t": NOW})
+    _signup_verified(app, "ada@acme.com", "hunter2222", role=Role.OWNER)
+    again = _get(app, f"/verify?token={_mailed(app, 'verify_email')}")
+    assert again.status == 400
+    assert "no longer valid" in again.body
+    assert "current-password" in again.body          # the real sign-in form, not a dead end
+    assert "Sign in as (demo)" not in again.body
+
+
+def test_emailed_reset_link_renders_a_form_without_spending_the_token() -> None:
+    app = _make_app({"t": NOW})
+    _signup_verified(app, "ada@acme.com", "hunter2222", role=Role.OWNER)
+    _post(app, "/password/reset-request", {"email": "ada@acme.com"})
+    token = _mailed(app, "password_reset")
+
+    page = _get(app, f"/password/reset?token={token}")
+    assert page.status == 200
+    assert f'value="{token}"' in page.body            # carried in a hidden field
+    assert "new-password" in page.body
+    # a link-prefetcher visiting twice must not burn the one reset
+    assert _get(app, f"/password/reset?token={token}").status == 200
+
+    done = app.handle(Request("POST", "/password/reset", {},
+                              f"token={token}&password=brand-new-pass"))
+    assert done.status == 200 and "Password updated" in done.body
+    assert _post(app, "/login", {"email": "ada@acme.com", "password": "brand-new-pass"}).status == 302
+
+
+def test_a_rejected_new_password_keeps_the_form_and_the_token() -> None:
+    app = _make_app({"t": NOW})
+    _signup_verified(app, "ada@acme.com", "hunter2222", role=Role.OWNER)
+    _post(app, "/password/reset-request", {"email": "ada@acme.com"})
+    token = _mailed(app, "password_reset")
+    weak = app.handle(Request("POST", "/password/reset", {}, f"token={token}&password=short"))
+    assert weak.status == 400 and f'value="{token}"' in weak.body
+    # the token survived a rejected attempt, so retrying just works
+    ok = app.handle(Request("POST", "/password/reset", {},
+                            f"token={token}&password=long-enough-now"))
+    assert ok.status == 200
+
+
+def test_forgot_password_page_says_the_same_thing_either_way() -> None:
+    # The endpoint behind it already answers 202 for unknown addresses; the page
+    # must not undo that by confirming which accounts exist.
+    app = _make_app({"t": NOW})
+    _signup_verified(app, "ada@acme.com", "hunter2222", role=Role.OWNER)
+    assert _get(app, "/password/forgot").status == 200
+
+    known = app.handle(Request("POST", "/password/forgot", {}, "email=ada@acme.com"))
+    ghost = app.handle(Request("POST", "/password/forgot", {}, "email=ghost@acme.com"))
+    assert known.status == 302 and ghost.status == 302
+    assert known.headers.get("Location") == ghost.headers.get("Location")
+    assert _get(app, "/password/forgot?sent=1").body == _get(app, "/password/forgot?sent=1").body
+    # ...but only the real one actually got mail
+    assert [to for (to, p, _t) in app._outbox if p == "password_reset"] == ["ada@acme.com"]
+
+
+def test_forgot_link_is_offered_only_when_mail_can_be_delivered() -> None:
+    app = _make_app({"t": NOW})                       # emailer wired
+    assert "/password/forgot" in _get(app, "/login").body
+    app._emailer = None                               # beta posture: no outbound mail
+    assert "/password/forgot" not in _get(app, "/login").body
+
+
 # --- audit -------------------------------------------------------------------
 
 
