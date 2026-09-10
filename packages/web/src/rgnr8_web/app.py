@@ -4963,7 +4963,8 @@ class WebApp:
             status=b.status.value, headline=b.headline, latest_period=self._latest_period(tenant),
         )
         return _html(200, render_shell(tenant=tenant, display_name=t.name, role=role,
-                                       permissions=perms, active="home", body_html=body, subject=subject))
+                                       permissions=perms, active="home", body_html=body, subject=subject,
+                                       available=self._nav_available()))
 
     def _team_page(self, subject: str, t: _Tenant) -> Response:
         perms, role = self._perms_role(subject, t.tenant_id)
@@ -4977,7 +4978,8 @@ class WebApp:
         body = render_users_admin(t.tenant_id, members, pending=pending,
                                   origin=self._public_base_url)
         return _html(200, render_shell(tenant=t.tenant_id, display_name=t.name, role=role,
-                                       permissions=perms, active="team", body_html=body, subject=subject))
+                                       permissions=perms, active="team", body_html=body, subject=subject,
+                                       available=self._nav_available()))
 
     def _settings_page(
         self, subject: str, t: _Tenant, query: "dict[str, str]",
@@ -5005,7 +5007,7 @@ class WebApp:
                 )
         return _html(200, render_shell(tenant=t.tenant_id, display_name=t.name, role=role,
                                        permissions=perms, active="settings", body_html=body,
-                                       subject=subject))
+                                       subject=subject, available=self._nav_available()))
 
     def _settings_save(self, subject: str, t: _Tenant, body: str) -> Response:
         back = f"/t/{t.tenant_id}/settings"
@@ -5362,7 +5364,8 @@ class WebApp:
             can_categorize=can_cat, suggestions=suggestions,
         )
         return _html(200, render_shell(tenant=t.tenant_id, display_name=t.name, role=role,
-                                       permissions=perms, active="transactions", body_html=body, subject=subject))
+                                       permissions=perms, active="transactions", body_html=body, subject=subject,
+                                       available=self._nav_available()))
 
     def _categorize(self, t: _Tenant, body: str) -> Response:
         """Categorize a line, or accept a for-review line into the books. Body:
@@ -5389,10 +5392,38 @@ class WebApp:
         return _json(404, {"error": f"unknown transaction {txn_id}"})
 
     # --- in-shell owner screens (cash / briefing / close / packages) --------
+    def _nav_available(self) -> frozenset[str]:
+        """Which nav capabilities this deployment has actually wired.
+
+        The audit's "experience fragmentation" finding is partly a navigation
+        problem and partly this: a flat list of twenty-five links, most of them
+        leading to a screen that can only say "not configured". Permissions can't
+        fix that — a controller really does hold MANAGE_CLOSE — so the sidebar
+        asks here instead, and a module that cannot work stops advertising itself.
+
+        Deliberately about *wiring*, not emptiness. A ledger with no invoices yet
+        still shows Invoices, because that screen can teach you how to make one;
+        a deployment with no ledger service at all cannot."""
+        caps = set()
+        if self._ledger is not None:
+            caps.add("ledger")
+        if self._qbo is not None:
+            caps.add("qbo")
+        if self._packages is not None:
+            caps.add("packages")
+        if self._ask_svc is not None:
+            caps.add("ask")
+        if self._webhooks is not None:
+            caps.add("webhooks")
+        if self._audit is not None:
+            caps.add("audit")
+        return frozenset(caps)
+
     def _shell(self, subject: str, t: _Tenant, active: str, body: str) -> Response:
         perms, role = self._perms_role(subject, t.tenant_id)
         return _html(200, render_shell(tenant=t.tenant_id, display_name=t.name, role=role,
-                                       permissions=perms, active=active, body_html=body, subject=subject))
+                                       permissions=perms, active=active, body_html=body,
+                                       subject=subject, available=self._nav_available()))
 
     def _cash_page(self, subject: str, t: _Tenant) -> Response:
         forecast = self._forecast(t)
@@ -6285,7 +6316,7 @@ class WebApp:
             )
         return _html(200, render_shell(tenant=t.tenant_id, display_name=t.name, role=role,
                                        permissions=perms, active="integrations", body_html=body,
-                                       subject=subject))
+                                       subject=subject, available=self._nav_available()))
 
     def _integration_add(self, subject: str, t: _Tenant, body: str) -> Response:
         back = f"/t/{t.tenant_id}/integrations"
@@ -6369,7 +6400,8 @@ class WebApp:
                             key=lambda e: e.seq, reverse=True)
             body = render_audit_log(t.tenant_id, events, configured=True)
         return _html(200, render_shell(tenant=t.tenant_id, display_name=t.name, role=role,
-                                       permissions=perms, active="audit", body_html=body, subject=subject))
+                                       permissions=perms, active="audit", body_html=body, subject=subject,
+                                       available=self._nav_available()))
 
     def _package_html(self, t: _Tenant, period: str) -> Response:
         if self._packages is None:
