@@ -14,6 +14,7 @@ from __future__ import annotations
 from .csp import script_open
 
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from html import escape
 
@@ -23,6 +24,84 @@ from .audit import AuditEvent
 from .rbac import Membership, Permission, Role, User
 from .scope import PROVISIONAL_NOTE, is_provisional
 
+
+@dataclass(frozen=True, slots=True)
+class NavItem:
+    """One destination in the sidebar.
+
+    `needs` names a *capability* the deployment must actually have wired for this
+    screen to be worth showing — "ledger", "qbo", "packages", "ask", "webhooks",
+    "audit". Empty means it always works. This is distinct from `permission`,
+    which is about the person: a controller genuinely holds MANAGE_CLOSE even on
+    a deployment with no ledger service; the screen is still a dead end, and the
+    audit's complaint was that we linked to it anyway."""
+
+    suffix: str
+    label: str
+    permission: Permission
+    needs: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class NavGroup:
+    label: str
+    items: tuple[NavItem, ...]
+
+
+# The information architecture: seven groups, named for what the owner is trying
+# to do rather than for the subsystem behind them. Twenty-five equally-weighted
+# links in one row told a business owner nothing about where to start; this is
+# the audit's "experience fragmentation" finding.
+_NAV_GROUPS: tuple[NavGroup, ...] = (
+    NavGroup("Today", (
+        NavItem("", "Cash", Permission.VIEW_CASH),
+        NavItem("ask", "Ask", Permission.ASK_CFO, needs="ask"),
+        NavItem("briefing", "Briefing", Permission.VIEW_BRIEFING),
+    )),
+    NavGroup("Customers", (
+        NavItem("estimates", "Estimates", Permission.VIEW_TRANSACTIONS, needs="ledger"),
+        NavItem("pipeline", "Pipeline", Permission.VIEW_TRANSACTIONS, needs="ledger"),
+        NavItem("invoices", "Invoices", Permission.VIEW_TRANSACTIONS, needs="ledger"),
+        NavItem("receivables", "Receivables", Permission.VIEW_CASH),
+    )),
+    NavGroup("Projects", (
+        NavItem("jobs", "Jobs", Permission.VIEW_TRANSACTIONS, needs="ledger"),
+    )),
+    NavGroup("Vendors", (
+        NavItem("bills", "Bills", Permission.VIEW_TRANSACTIONS, needs="ledger"),
+        NavItem("capture", "Capture", Permission.POST_JOURNAL, needs="ledger"),
+        NavItem("payroll", "Payroll", Permission.VIEW_TRANSACTIONS, needs="ledger"),
+        NavItem("debt", "Debt", Permission.VIEW_TRANSACTIONS, needs="ledger"),
+    )),
+    NavGroup("Books", (
+        NavItem("transactions", "Transactions", Permission.VIEW_TRANSACTIONS),
+        NavItem("books", "Books", Permission.VIEW_TRANSACTIONS, needs="ledger"),
+        NavItem("assets", "Assets", Permission.VIEW_TRANSACTIONS, needs="ledger"),
+        NavItem("close", "Close", Permission.MANAGE_CLOSE),
+        NavItem("packages", "Package", Permission.VIEW_PACKAGE, needs="packages"),
+    )),
+    NavGroup("Plan", (
+        NavItem("scenarios", "Scenarios", Permission.VIEW_CASH),
+        NavItem("reports", "Reports", Permission.VIEW_CASH),
+        NavItem("health", "Health", Permission.VIEW_CASH),
+    )),
+    NavGroup("Admin", (
+        NavItem("connect", "Connect", Permission.MANAGE_CONNECTORS, needs="qbo"),
+        NavItem("team", "Team", Permission.MANAGE_USERS),
+        NavItem("settings", "Settings", Permission.MANAGE_SETTINGS, needs="ledger"),
+        NavItem("integrations", "Integrations", Permission.MANAGE_INTEGRATIONS, needs="webhooks"),
+        NavItem("audit", "Audit", Permission.MANAGE_USERS, needs="audit"),
+    )),
+)
+
+# Every capability key any nav item can ask for. `render_shell` validates against
+# this so a typo in `needs` fails a test rather than silently hiding a screen.
+NAV_CAPABILITIES: frozenset[str] = frozenset(
+    item.needs for g in _NAV_GROUPS for item in g.items if item.needs
+)
+
+# The flat view, kept because the ordering is still the canonical list of
+# surfaces (used by the provisional-scope audit and its tests).
 # nav item → (path suffix, label, permission required)
 _NAV: list[tuple[str, str, Permission]] = [
     ("", "Cash", Permission.VIEW_CASH),
@@ -55,9 +134,40 @@ _NAV: list[tuple[str, str, Permission]] = [
 _SHELL_CSS = f"""<style>
 {RG_TOKENS_CSS}
 {RG_BASE_CSS}
-  .rg-nav{{display:flex;gap:2px;flex-wrap:wrap}}
-  .rg-nav a{{color:#CBD8CC;text-decoration:none;padding:8px 12px;border-radius:8px;font-size:13px;font-weight:600;letter-spacing:.02em}}
-  .rg-nav a.active,.rg-nav a:hover{{background:rgba(255,255,255,.10);color:#fff}}
+  /* --- app frame: top bar + grouped sidebar ---------------------------- */
+  .rg-layout{{display:grid;grid-template-columns:200px minmax(0,1fr);
+    max-width:1280px;margin:0 auto;align-items:start}}
+  .rg-navwrap{{border-right:1px solid var(--rg-line);min-height:calc(100vh - 56px);
+    position:sticky;top:0;padding:18px 10px 40px}}
+  /* The disclosure is a phone affordance only: on a wider screen the sidebar is
+     always open, so the summary is simply not displayed. `open` is hardcoded in
+     the markup, which keeps every link reachable even where CSS never loads. */
+  .rg-navwrap>summary{{display:none}}
+  .rg-nav{{display:block}}
+  .rg-navgroup{{margin-bottom:16px}}
+  .rg-navgroup h2{{font-size:10px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;
+    color:var(--rg-muted);margin:0 0 4px;padding:0 10px}}
+  .rg-nav a{{display:block;color:var(--rg-ink-2,#3a4440);text-decoration:none;
+    padding:7px 10px;border-radius:8px;font-size:13.5px;font-weight:600;line-height:1.3}}
+  .rg-nav a:hover{{background:rgba(18,58,44,.06)}}
+  .rg-nav a.active{{background:rgba(18,58,44,.09);color:var(--rg-forest)}}
+  .rg-nav a:focus-visible{{outline:2px solid var(--rg-sage);outline-offset:1px}}
+  .rg-biz{{color:#CBD8CC;font-size:13px;font-weight:600;margin-left:14px;flex:1;min-width:0;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+  @media (max-width:860px){{
+    .rg-layout{{display:block}}
+    .rg-navwrap{{min-height:0;position:static;border-right:0;
+      border-bottom:1px solid var(--rg-line);padding:8px 14px}}
+    .rg-navwrap>summary{{display:block;cursor:pointer;font-size:13px;font-weight:700;
+      color:var(--rg-forest);padding:6px 2px;list-style:none}}
+    .rg-navwrap>summary::before{{content:"\\2630";margin-right:8px}}
+    .rg-navwrap>summary::-webkit-details-marker{{display:none}}
+    .rg-navwrap[open]>summary::before{{content:"\\2715"}}
+    .rg-nav{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+      gap:4px 14px;padding:8px 0 4px}}
+    .rg-navgroup{{margin-bottom:8px}}
+    .rg-biz{{display:none}}
+  }}
   .rg-beta{{color:var(--rg-watch,#e0a600);margin-left:3px;font-size:14px;line-height:0;vertical-align:middle}}
   .rg-who{{display:flex;align-items:center;gap:10px;color:#DDE6DD;font-size:13px}}
   .rg-rolechip{{background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.16);border-radius:999px;
@@ -446,22 +556,49 @@ def render_choose_html(*, businesses: "Iterable[tuple[str, str]]", staff: bool,
 
 
 def _nav_html(
-    tenant: str, permissions: frozenset[Permission], active: str, *, hide_provisional: bool = False,
+    tenant: str, permissions: frozenset[Permission], active: str, *,
+    hide_provisional: bool = False, available: "frozenset[str] | None" = None,
 ) -> str:
-    links = []
-    for suffix, label, perm in _NAV:
-        if perm not in permissions:
-            continue
-        provisional = is_provisional(suffix)
-        if provisional and hide_provisional:
-            continue
-        href = f"/t/{escape(tenant)}" + (f"/{suffix}" if suffix else "")
-        cls = "active" if active == (suffix or "cash") else ""
-        # A small dot marks a provisional item so the nav shows, at a glance,
-        # which surfaces are production and which are not.
-        mark = '<span class="rg-beta" title="Provisional — not production-grade">•</span>' if provisional else ""
-        links.append(f'<a class="{cls}" href="{href}">{escape(label)}{mark}</a>')
-    return '<nav class="rg-nav">' + "".join(links) + "</nav>"
+    """The grouped sidebar. Renders only what this caller may see AND what this
+    deployment can actually serve.
+
+    `available` is the set of wired capabilities (see `NavItem.needs`). None means
+    "don't gate on configuration" — the back-compatible default, and the right
+    one for a caller that hasn't taught itself which services exist yet.
+
+    Wrapped in a `<details>` so that on a phone the whole thing collapses to one
+    "Menu" disclosure: native, keyboard-operable, and no script — this app ships
+    zero external assets and its own tests enforce that, which rules out both a
+    popover polyfill and a JS drawer library."""
+    groups_html = []
+    for group in _NAV_GROUPS:
+        links = []
+        for item in group.items:
+            if item.permission not in permissions:
+                continue
+            if item.needs and available is not None and item.needs not in available:
+                continue
+            provisional = is_provisional(item.suffix)
+            if provisional and hide_provisional:
+                continue
+            href = f"/t/{escape(tenant)}" + (f"/{item.suffix}" if item.suffix else "")
+            cls = "active" if active == (item.suffix or "cash") else ""
+            # A small dot marks a provisional item so the nav shows, at a glance,
+            # which surfaces are production and which are not.
+            mark = ('<span class="rg-beta" title="Provisional — not production-grade">•</span>'
+                    if provisional else "")
+            aria = ' aria-current="page"' if cls else ""
+            links.append(f'<a class="{cls}" href="{href}"{aria}>{escape(item.label)}{mark}</a>')
+        # A group with nothing in it is not rendered at all. An empty heading is
+        # the same broken promise as a link to an unconfigured screen.
+        if links:
+            groups_html.append(
+                f'<div class="rg-navgroup"><h2>{escape(group.label)}</h2>' + "".join(links) + "</div>"
+            )
+    return (
+        '<details class="rg-navwrap" open><summary aria-label="Menu">Menu</summary>'
+        '<nav class="rg-nav" aria-label="Sections">' + "".join(groups_html) + "</nav></details>"
+    )
 
 
 def _provisional_banner() -> str:
@@ -484,8 +621,14 @@ def render_shell(
     body_html: str,
     subject: str = "",
     hide_provisional: bool = False,
+    available: "frozenset[str] | None" = None,
 ) -> str:
-    """Wrap a screen body in the role-aware app shell (top bar + nav + identity).
+    """Wrap a screen body in the role-aware app shell (top bar + grouped sidebar).
+
+    The nav is grouped by what the owner is trying to do and gated twice: by the
+    caller's permissions, and — when `available` is given — by the capabilities
+    this deployment has actually wired, so an unconfigured module stops
+    advertising itself. See `NavItem`.
 
     Provisional (non-v1) surfaces are badged in the nav and their body is topped
     with a provisional disclosure, so an owner never mistakes an immature screen
@@ -494,10 +637,10 @@ def render_shell(
     role_label = role.value.capitalize() if role is not None else "—"
     bar = (
         '<header class="rg-bar">'
-        '<span class="rg-lockup">'
+        f'<a class="rg-lockup" href="/t/{escape(tenant)}">'
         f"{mark_svg(20, IVORY)}"
-        '<span class="rg-wordmark" style="font-size:16px">RGNR<span class="rg-8">8</span></span></span>'
-        f"{_nav_html(tenant, permissions, active, hide_provisional=hide_provisional)}"
+        '<span class="rg-wordmark" style="font-size:16px">RGNR<span class="rg-8">8</span></span></a>'
+        f'<span class="rg-biz">{escape(display_name)}</span>'
         '<span class="rg-who">'
         f'<span>{escape(subject or display_name)}</span>'
         f'<span class="rg-rolechip">{escape(role_label)}</span>'
@@ -507,7 +650,13 @@ def render_shell(
     # The Cash home is active == "cash"; the nav suffix for it is "".
     active_suffix = "" if active == "cash" else active
     body = (_provisional_banner() + body_html) if is_provisional(active_suffix) else body_html
-    return _doc(f"RGNR8 — {display_name}", bar + f'<div class="shell">{body}</div>')
+    nav = _nav_html(tenant, permissions, active,
+                    hide_provisional=hide_provisional, available=available)
+    layout = (
+        f'<div class="rg-layout">{nav}'
+        f'<main class="shell">{body}</main></div>'
+    )
+    return _doc(f"RGNR8 — {display_name}", bar + layout)
 
 
 def render_app_home(
