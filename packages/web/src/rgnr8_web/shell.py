@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from html import escape
 
+from rgnr8_briefing.today import CHART_CSS
 from rgnr8_forecast.brand import IVORY, RG_BASE_CSS, RG_TOKENS_CSS, mark_svg
 
 from .assets import font_face_css
@@ -203,6 +204,13 @@ _SHELL_CSS = f"""<style>
   .cash-state{{text-align:right;max-width:36ch}}
   .cash-state .line{{margin-top:8px;color:var(--rg-ink-2);font-size:14px}}
   @media(max-width:560px){{.cash-state{{text-align:left}}}}
+  /* The 13-week cash chart is borrowed from the briefing package; it brings its
+     own rules with it now. Without them every element fell back to SVG's
+     default fill:black, and the chart rendered as a solid black rectangle. */
+{CHART_CSS}
+  /* `.grid` means "a field grid" to this app and "a chart gridline" inside an
+     SVG. Scoped here so a gridline never picks up display:grid. */
+  svg .grid,svg .axis{{display:inline}}
   .rg-prov-legend{{margin:8px 0}}
   .rg-prov-legend>summary{{cursor:pointer;font:600 12px/1.4 var(--rg-sans);color:var(--rg-muted)}}
   .rg-prov-legend .row-item{{display:flex;gap:8px;align-items:baseline;margin:2px 0}}

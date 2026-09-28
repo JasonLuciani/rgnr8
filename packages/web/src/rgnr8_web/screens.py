@@ -29,6 +29,9 @@ from rgnr8_forecast import ForecastResult, Money
 from rgnr8_forecast.brand import format_money as _money  # the one shared money formatter
 from rgnr8_reports import ReportSpec
 
+from .attention import Item as AttentionItem
+from .components import Action, empty_state, metric, page_header, queue, status_chip
+
 _STATUS = {
     "STABLE": ("Stable", "var(--rg-pos)"),
     "WATCH": ("Watch", "var(--rg-watch)"),
@@ -74,9 +77,52 @@ def _cash_empty_state(display_name: str) -> str:
     </div>"""
 
 
-def render_cash_body(forecast: ForecastResult, display_name: str) -> str:
-    """The owner's cash outlook, drawn inside the shell: status hero, KPI tiles,
-    the 13-week chart, and the cash drivers. Same numbers as the deep-link page."""
+def render_attention_queue(items: "Sequence[AttentionItem]") -> str:
+    """The "what needs me today" queue, or an honest all-clear.
+
+    `attention.gather` only returns an empty tuple when every source was
+    actually checked and every one was clear — an unwired source raises an item
+    of its own — so an empty list here really can be rendered as good news.
+    """
+    if not items:
+        return (
+            '<div class="card">'
+            + empty_state(
+                "Nothing needs you right now",
+                how="Every source reported in clear: the outlook holds above your "
+                    "floor, the bank feed is reviewed, and nothing is overdue.",
+            )
+            + "</div>"
+        )
+    rows = [
+        (i.headline, i.detail, (Action(i.action, href=i.href, kind="ghost"),))
+        for i in items
+    ]
+    lead = items[0]
+    tone = {"trust": "watch", "money": "risk", "work": "neutral"}.get(lead.kind, "neutral")
+    return (
+        '<div class="card"><div class="page-head"><div class="t">'
+        f"<h2>What needs you</h2></div>"
+        f'<div class="acts">{status_chip(tone, label=f"{len(items)} open")}</div></div>'
+        + queue(rows)
+        + "</div>"
+    )
+
+
+def render_cash_body(
+    forecast: ForecastResult,
+    display_name: str,
+    *,
+    attention: "Sequence[AttentionItem] | None" = None,
+) -> str:
+    """The owner's cash outlook, drawn inside the shell: status hero, the queue
+    of what needs them, KPI tiles, the 13-week chart, and the cash drivers.
+    Same numbers as the deep-link page.
+
+    `attention=None` means the caller did not compute a queue, so none is drawn
+    — distinct from an empty sequence, which is a checked all-clear and *does*
+    draw the good-news panel.
+    """
     if _forecast_is_empty(forecast):
         return _cash_empty_state(display_name)
     b = build_briefing(forecast)
@@ -100,19 +146,25 @@ def render_cash_body(forecast: ForecastResult, display_name: str) -> str:
                         f'<div class="track"><div class="fill" style="width:{pct}%"></div></div>'
                         f'<div class="s">{d.share_bps/100:.0f}% of outflows</div></div>')
         drivers = f'<h2>What\'s using your cash</h2><div class="card">{drivers}</div>'
+    # The old standalone "Do this — …" banner is gone: with a queue on the page
+    # it was a second, competing instruction, and the two could disagree. The
+    # briefing's primary action is now folded into the queue by
+    # `attention.gather`, which knows whether a floor breach should carry it.
+    # It is only drawn here when no queue was computed at all.
     action = ""
-    if b.primary_action:
+    if attention is None and b.primary_action:
         action = (f'<div class="banner warn" style="background:var(--rg-ivory);color:var(--rg-ink);'
                   f'border-color:var(--rg-line)"><strong>Do this — </strong>{escape(b.primary_action)}</div>')
+    needs = "" if attention is None else render_attention_queue(attention)
     _ = _chart_points  # (chart script omitted in-shell; SVG is static here)
-    return f"""<h1>Cash outlook</h1>
-    <p class="sub">{escape(display_name)} · as of {escape(p.as_of.isoformat())} · {escape(b.period_label)}</p>
-    <div class="card"><div class="row" style="justify-content:space-between;align-items:flex-start">
-      <div><div class="tile" style="border:none;padding:0"><div class="k">Cash today</div>
-        <div class="v" style="font-size:40px">{escape(_money(p.opening_available))}</div></div></div>
-      <div style="text-align:right;max-width:38ch">{_status_pill(b.status.value)}
-        <div style="margin-top:8px;color:var(--rg-ink-2);font-size:14px">{escape(b.headline)}</div></div>
+    return f"""{page_header("Cash outlook",
+        sub=f"{display_name} · as of {p.as_of.isoformat()} · {b.period_label}")}
+    <div class="card"><div class="cash-hero">
+      <div>{metric("Cash today", _money(p.opening_available), hero=True)}</div>
+      <div class="cash-state">{status_chip(b.status.value)}
+        <div class="line">{escape(b.headline)}</div></div>
     </div>{action}</div>
+    {needs}
     <div class="tiles">{tile_html}</div>
     <h2>Next 13 weeks — projected cash</h2>
     <div class="card">{_cash_chart(forecast)}</div>

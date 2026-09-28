@@ -33,6 +33,34 @@ _ICON = {
     "alert": '<path d="M10 3l8 14H2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M10 8v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="10" cy="15" r="1.1" fill="currentColor"/>',
 }
 
+# The chart's own styles, exported so that ANY page embedding `_cash_chart` can
+# include them.
+#
+# This exists because it didn't. `_cash_chart` was imported into the web shell
+# (rgnr8_web/screens.py) while these rules stayed behind in this module's
+# private <style> block, so in the app every element fell back to SVG's default
+# of `fill:black; stroke:none`: the below-floor band painted a solid black
+# rectangle over the whole plot and the cash line, being filled rather than
+# stroked, vanished into it. The 13-week outlook — the centrepiece of the
+# product's main screen — had been rendering as a black box.
+#
+# Written against the shared `--rg-*` tokens with literal fallbacks, so the
+# same string is correct in the app (tokens present), on this standalone page,
+# and in any future surface that borrows the chart. `--status` keeps its
+# meaning on this page and falls back to the risk token elsewhere: a band
+# marking money below the floor should read as risk, not as whatever the
+# overall status happens to be.
+CHART_CSS = """
+  svg .grid{stroke:var(--rg-line,#E2DFD3);stroke-width:1;fill:none}
+  svg .axis{stroke:var(--rg-line,#C7C3B4);stroke-width:1;fill:none}
+  svg .floor{stroke:var(--rg-muted,#616D66);stroke-width:1.5;stroke-dasharray:5 4;fill:none}
+  svg .series{fill:none;stroke:var(--rg-sage,#5E7F63);stroke-width:2;
+    stroke-linejoin:round;stroke-linecap:round}
+  svg .danger{fill:var(--status,var(--rg-risk,#B4443C));opacity:.07;stroke:none}
+  svg .dot{fill:var(--rg-risk,#B4443C);stroke:none}
+  svg text{fill:var(--rg-muted,#616D66);font-size:11px;stroke:none}
+"""
+
 
 def _kpi(m: Money) -> str:
     """A KPI money value, colored with the risk token when negative (a floor
@@ -161,11 +189,7 @@ def _page(
   .chart-wrap {{ position:relative; }}
   .tt {{ position:absolute; pointer-events:none; background:var(--ink); color:var(--surface); font-size:12px;
     padding:5px 8px; border-radius:6px; transform:translate(-50%,-130%); white-space:nowrap; opacity:0; transition:opacity .08s; }}
-  svg .grid {{ stroke:var(--grid); stroke-width:1; }} svg .axis {{ stroke:var(--axis); stroke-width:1; }}
-  svg .floor {{ stroke:var(--muted); stroke-width:1.5; stroke-dasharray:5 4; }}
-  svg .series {{ fill:none; stroke:var(--series); stroke-width:2; stroke-linejoin:round; stroke-linecap:round; }}
-  svg .danger {{ fill:var(--status); opacity:.07; }}
-  svg text {{ fill:var(--muted); font-size:11px; }}
+{CHART_CSS}
   @media(max-width:640px){{ .tiles{{grid-template-columns:repeat(2,1fr);}} }}
 </style></head>
 <body>
