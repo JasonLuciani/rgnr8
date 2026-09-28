@@ -85,7 +85,7 @@ def _table(tenant: str, rows: list[Mapping[str, object]]) -> str:
             "<tr>"
             f'<td><a href="/t/{_esc(tenant)}/work-orders/{_esc(w.get("id"))}">'
             f'{_esc(w.get("title"))}</a>'
-            f'<br><span class="muted" style="font-size:12px">{_esc(w.get("job_id"))}'
+            f'<br><span class="muted small" >{_esc(w.get("job_id"))}'
             f'{" · " + _esc(w.get("assignee")) if w.get("assignee") else ""}</span></td>'
             f'<td class="muted">{_esc(w.get("scheduled_date"))}</td>'
             f'<td class="muted">{_esc(_STATUS.get(str(w.get("status")), w.get("status")))}</td>'
@@ -118,8 +118,8 @@ def _new_form(
         f'<label>Job<select name="job_id" required>{job_options}</select></label>'
         '<label>When<input name="scheduled_date" placeholder="YYYY-MM-DD"></label>'
         f'<label>Who<select name="assignee_id">{staff_options}</select></label>'
-        '<label style="grid-column:1/-1">Notes<input name="description"></label>'
-        '<div style="grid-column:1/-1"><button type="submit">Schedule it</button></div>'
+        '<label class="wide">Notes<input name="description"></label>'
+        '<div class="wide"><button type="submit">Schedule it</button></div>'
         "</form>"
     )
     return _card("Schedule work", body)
@@ -185,7 +185,7 @@ def render_work_order(
     )
     body = subtitle + table + _quantity_note(entries) + figures
     out = head + _card(str(order.get("title")), body, (
-        f'<a class="rg-btn" href="/t/{_esc(tenant)}/jobs/{_esc(order.get("job_id"))}">'
+        f'<a class="btn ghost" href="/t/{_esc(tenant)}/jobs/{_esc(order.get("job_id"))}">'
         "Back to the job</a>"
     ))
     if can_edit and str(order.get("status")) != "CANCELLED":
@@ -224,8 +224,8 @@ def _entry_form(
         '<label>Billable<select name="billable">'
         '<option value="1">yes</option><option value="">no — our mistake</option>'
         "</select></label>"
-        '<label style="grid-column:1/-1">What was done<input name="description"></label>'
-        '<div style="grid-column:1/-1"><button type="submit">Book it</button></div>'
+        '<label class="wide">What was done<input name="description"></label>'
+        '<div class="wide"><button type="submit">Book it</button></div>'
         "</form>"
         '<p class="muted" style="margin-top:8px">Hours do not book a second wage. Payroll '
         "already did that; this moves the cost out of an undifferentiated payroll line and "
@@ -246,7 +246,7 @@ def _complete_form(tenant: str, order: Mapping[str, object]) -> str:
         f'<form method="post" action="/t/{_esc(tenant)}/work-orders/'
         f'{_esc(order.get("id"))}/complete" class="grid">'
         '<label>Finished on<input name="date" placeholder="YYYY-MM-DD" required></label>'
-        '<div style="grid-column:1/-1"><button type="submit">Mark it complete</button></div>'
+        '<div class="wide"><button type="submit">Mark it complete</button></div>'
         "</form>"
     ))
 

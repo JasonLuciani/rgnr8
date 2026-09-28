@@ -92,7 +92,7 @@ def _match_form(tenant: str, item: Mapping[str, object]) -> str:
     return (
         f'<form method="post" action="/t/{_esc(tenant)}/inbox/{_esc(item.get("id"))}/match" '
         'style="display:flex;gap:6px;align-items:center;margin:6px 0 0;flex-wrap:wrap">'
-        f'<span class="muted" style="font-size:12px">or settle</span>'
+        f'<span class="muted small" >or settle</span>'
         f'<select name="match">{"".join(options)}</select>'
         '<button class="btn" style="padding:4px 12px;margin:0" type="submit">Match</button>'
         "</form>" + "".join(hints)
@@ -111,7 +111,7 @@ def _row(tenant: str, item: Mapping[str, object], accounts: Mapping[str, object]
     desc = _esc(item.get("description")) or '<span class="muted">—</span>'
     party = str(item.get("counterparty") or "")
     if party:
-        desc += f'<br><span class="muted" style="font-size:12px">{_esc(party)}</span>'
+        desc += f'<br><span class="muted small" >{_esc(party)}</span>'
 
     if not can_post:
         action = _esc(sug.get("account_name") or "") or '<span class="muted">—</span>'
@@ -123,7 +123,7 @@ def _row(tenant: str, item: Mapping[str, object], accounts: Mapping[str, object]
 
     why = (
         f'<div style="margin-top:4px">{_confidence_chip(float(sug.get("confidence") or 0), str(sug.get("source") or ""))}'
-        f' <span class="muted" style="font-size:12px">{_esc(sug.get("reason"))}</span></div>'
+        f' <span class="muted small" >{_esc(sug.get("reason"))}</span></div>'
     )
     from .dimension_screens import dimension_selects
 
@@ -165,7 +165,7 @@ def render_inbox(
     items = [i for i in _seq(view.get("items")) if isinstance(i, Mapping)]
     rows = "".join(_row(tenant, i, accounts, can_post, dimensions) for i in items)
     empty = (
-        '<tr><td colspan="5" class="muted" style="text-align:center;padding:24px">'
+        '<tr><td colspan="5" class="empty">'
         "Nothing waiting — every bank line has been dealt with.</td></tr>"
     )
     table = (
@@ -254,7 +254,7 @@ def render_actioned(tenant: str, status: str, view: Mapping[str, object],
             f"<td>{attachment_link(tenant, 'feed', str(i.get('id')))}{undo}</td></tr>"
         )
     empty = (
-        '<tr><td colspan="6" class="muted" style="text-align:center;padding:24px">'
+        '<tr><td colspan="6" class="empty">'
         "Nothing here yet.</td></tr>"
     )
     table = (
@@ -302,7 +302,7 @@ def render_rules(
             '<span style="color:var(--rg-watch,#b8860b);font-weight:700;font-size:12px">'
             "posts automatically</span>"
             if r.get("auto_post")
-            else '<span class="muted" style="font-size:12px">suggests only</span>'
+            else '<span class="muted small" >suggests only</span>'
         )
         remove = ""
         if can_post:
@@ -317,7 +317,7 @@ def render_rules(
             f"<td>{_esc(r.get('account_code'))}</td><td>{auto}</td><td>{remove}</td></tr>"
         )
     empty = (
-        '<tr><td colspan="5" class="muted" style="text-align:center;padding:24px">'
+        '<tr><td colspan="5" class="empty">'
         "No rules yet. Add one below and the feed starts pre-filling itself.</td></tr>"
     )
     table = (

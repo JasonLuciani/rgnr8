@@ -75,7 +75,7 @@ def render_sales_orders(
                 "<tr>"
                 f'<td><a href="/t/{_esc(tenant)}/sales-orders/{_esc(o.get("id"))}">'
                 f'{_esc(o.get("id"))}</a>'
-                f'<br><span class="muted" style="font-size:12px">{_esc(o.get("customer_id"))}'
+                f'<br><span class="muted small" >{_esc(o.get("customer_id"))}'
                 f'{" · " + _esc(o.get("job_id")) if o.get("job_id") else ""}</span></td>'
                 f'<td class="muted">{_esc(str(o.get("status")).lower())}</td>'
                 f'<td class="muted">{_esc(o.get("requested_date"))}</td>'
@@ -184,7 +184,7 @@ def render_sales_order(
             '<label>Invoice number<input name="id" required></label>'
             '<label>Date<input name="date" placeholder="YYYY-MM-DD" required></label>'
             f"{rows}"
-            '<div style="grid-column:1/-1"><button type="submit">Raise the invoice</button>'
+            '<div class="wide"><button type="submit">Raise the invoice</button>'
             '<span class="muted" style="margin-left:8px">Leave a quantity blank to bill all '
             "of what is left on that line.</span></div></form>"
         ))
@@ -230,7 +230,7 @@ def render_purchase_orders(
                 "<tr>"
                 f'<td><a href="/t/{_esc(tenant)}/purchase-orders/{_esc(o.get("id"))}">'
                 f'{_esc(o.get("id"))}</a>'
-                f'<br><span class="muted" style="font-size:12px">{_esc(o.get("vendor_id"))}'
+                f'<br><span class="muted small" >{_esc(o.get("vendor_id"))}'
                 f'{" · " + _esc(o.get("job_id")) if o.get("job_id") else ""}</span></td>'
                 f'<td class="muted">{_esc(str(o.get("status")).lower())}</td>'
                 f'<td class="muted">{_esc(o.get("expected_date"))}</td>'
@@ -389,7 +389,7 @@ def _receive_form(
         '<option value="">no — wait for the invoice</option>'
         '<option value="1">yes — accrue it against the job</option></select></label>'
         f"{rows}"
-        '<div style="grid-column:1/-1"><button type="submit">Record the delivery</button>'
+        '<div class="wide"><button type="submit">Record the delivery</button>'
         '<span class="muted" style="margin-left:8px">Accruing puts the cost on the job the '
         "day it turns up. Without it a job looks cheap until the invoice arrives, then loses "
         "money in one afternoon.</span></div></form>"
@@ -415,7 +415,7 @@ def _match_form(
         '<label>Different price<select name="accept_variance">'
         '<option value="">refuse it</option>'
         '<option value="1">accept the variance</option></select></label>'
-        '<div style="grid-column:1/-1"><button type="submit">Match and enter the bill</button>'
+        '<div class="wide"><button type="submit">Match and enter the bill</button>'
         '<span class="muted" style="margin-left:8px">Only what has arrived can be billed. A '
         "price that differs from the order is refused unless you accept it on purpose — that "
         "is the point of the order.</span></div></form>"

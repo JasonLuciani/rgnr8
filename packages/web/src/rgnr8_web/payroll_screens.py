@@ -85,14 +85,14 @@ def render_payroll_home(
             )
         rows.append(
             f"<tr><td><strong>{run_id}</strong><br>"
-            f'<span class="muted" style="font-size:12px">{_esc(r.get("memo"))}</span></td>'
+            f'<span class="muted small" >{_esc(r.get("memo"))}</span></td>'
             f"<td>{_esc(r.get('date'))}</td>"
             f"{_num(t.get('gross_minor'))}{_num(t.get('net_minor'))}"
             f"{_num(t.get('liability_minor'))}{_num(t.get('total_cost_minor'))}"
             f"<td>{_status_chip(r.get('status'))}</td><td>{actions}</td></tr>"
         )
     empty = (
-        '<tr><td colspan="8" class="muted" style="text-align:center;padding:24px">'
+        '<tr><td colspan="8" class="empty">'
         "No payroll runs yet.</td></tr>"
     )
     table = (

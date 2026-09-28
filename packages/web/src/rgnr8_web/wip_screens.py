@@ -55,7 +55,7 @@ def render_wip(
     for r in rows:
         cells += (
             f"<tr><td>{_esc(r.get('name'))}"
-            f'<br><span class="muted" style="font-size:12px">'
+            f'<br><span class="muted small" >'
             f'{_esc(str(r.get("cost_method")).lower().replace("_", " "))}</span></td>'
             f"{_num(r.get('contract_minor'))}"
             f"{_num(r.get('estimated_cost_minor'))}"
@@ -102,7 +102,7 @@ def render_wip(
             '<label>Losses<select name="include_loss_provision">'
             '<option value="">report them only</option>'
             '<option value="1">post the full provision</option></select></label>'
-            '<div style="grid-column:1/-1"><button type="submit">Make the books agree</button>'
+            '<div class="wide"><button type="submit">Make the books agree</button>'
             '<span class="muted" style="margin-left:8px">The entry is the difference to the '
             "correct balance, never a fresh accrual, so running it twice changes nothing.</span>"
             "</div></form>"

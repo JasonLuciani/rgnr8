@@ -74,7 +74,7 @@ def _due_card(tenant: str, items: list[Mapping[str, object]], as_of: str,
     rows = "".join(
         f"<tr><td class='muted'>{_esc(d.get('date'))}</td>"
         f"<td>{_esc(d.get('name'))}<br>"
-        f'<span class="muted" style="font-size:12px">{_esc(d.get("memo"))}</span></td>'
+        f'<span class="muted small" >{_esc(d.get("memo"))}</span></td>'
         f"{_num(d.get('amount_minor'))}</tr>"
         for d in items
     )
@@ -109,7 +109,7 @@ def _templates_card(
             if isinstance(l, Mapping) and l.get("side") == "DEBIT"
         )
         state = (
-            '<span class="muted" style="font-size:12px">paused</span>'
+            '<span class="muted small" >paused</span>'
             if not t.get("active")
             else '<span style="color:var(--rg-sage);font-weight:700;font-size:12px">on</span>'
         )
@@ -124,12 +124,12 @@ def _templates_card(
         last = t.get("last_posted") or "never"
         rows.append(
             f"<tr><td><strong>{_esc(t.get('name'))}</strong><br>"
-            f'<span class="muted" style="font-size:12px">{_schedule_words(t)}</span></td>'
+            f'<span class="muted small" >{_schedule_words(t)}</span></td>'
             f"{_num(str(total))}"
             f"<td class='muted'>{_esc(last)}</td><td>{state}</td><td>{remove}</td></tr>"
         )
     empty = (
-        '<tr><td colspan="5" class="muted" style="text-align:center;padding:24px">'
+        '<tr><td colspan="5" class="empty">'
         "Nothing memorized yet.</td></tr>"
     )
     table = (

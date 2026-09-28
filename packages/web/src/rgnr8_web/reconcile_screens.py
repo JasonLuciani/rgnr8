@@ -45,7 +45,7 @@ def render_pick_account(tenant: str, accounts: Mapping[str, object]) -> str:
             "Reconcile</a></td></tr>"
         )
     empty = (
-        '<tr><td colspan="3" class="muted" style="text-align:center;padding:24px">'
+        '<tr><td colspan="3" class="empty">'
         "No bank or credit-card accounts in the chart yet.</td></tr>"
     )
     table = (
@@ -149,7 +149,7 @@ def render_import_result(
             rows.append(
                 f"<tr><td class='muted'>{_esc(i.get('date'))}</td>"
                 f"<td>{_esc(i.get(label_key)) or '—'}"
-                + (f'<br><span class="muted" style="font-size:12px">'
+                + (f'<br><span class="muted small" >'
                    f'{_esc(i.get(id_key))}</span>' if id_key else "")
                 + f"</td><td class='{cls}'>{money(i.get('amount_minor'))}</td></tr>"
             )
@@ -226,7 +226,7 @@ def render_reconcile(
             "</tr>"
         )
     empty = (
-        '<tr><td colspan="5" class="muted" style="text-align:center;padding:24px">'
+        '<tr><td colspan="5" class="empty">'
         "Nothing has hit this account yet.</td></tr>"
     )
     table = (

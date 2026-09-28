@@ -88,7 +88,7 @@ def _reportable_table(
             f"{_num(r.get('amount_minor'))}</tr>"
         )
     empty = (
-        '<tr><td colspan="3" class="muted" style="text-align:center;padding:24px">'
+        '<tr><td colspan="3" class="empty">'
         "Nobody was paid enough to need a form this year.</td></tr>"
     )
     threshold = money(data.get("threshold_minor"))
@@ -137,7 +137,7 @@ def _missing_card(missing: list[Mapping[str, object]]) -> str:
     rows = "".join(
         f"<tr><td class='muted'>{_esc(m.get('date'))}</td>"
         f"<td>{_esc(m.get('vendor_name'))}<br>"
-        f'<span class="muted" style="font-size:12px">{_esc(m.get("description"))}</span>'
+        f'<span class="muted small" >{_esc(m.get("description"))}</span>'
         f"</td>{_num(m.get('amount_minor'))}</tr>"
         for m in missing
     )

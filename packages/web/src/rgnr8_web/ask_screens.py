@@ -68,11 +68,11 @@ def render_ask(
     )
     form = (
         f'<form method="post" action="{base}" class="grid">'
-        '<label style="grid-column:1/-1">Ask about your money'
+        '<label class="wide">Ask about your money'
         f'<textarea name="q" rows="2" placeholder="{placeholder}">{_esc(question)}</textarea></label>'
-        '<div style="grid-column:1/-1;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+        '<div class="wide" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
         '<button type="submit">Ask</button>'
-        f'<span class="muted" style="font-size:12px">or try:</span>{chips}'
+        f'<span class="muted small" >or try:</span>{chips}'
         f'<span style="flex:1"></span>{clear}</div>'
         "</form>"
     )
@@ -108,12 +108,12 @@ def _render_working_record(tenant: str, answer: AskAnswer) -> str:
             src = fig.sources[0]
             src_html = (
                 f'{_esc(src.label)} '
-                f'<span class="muted" style="font-size:12px">({_esc(src.source_type)})</span>'
+                f'<span class="muted small" >({_esc(src.source_type)})</span>'
             )
             href = _correct_url(tenant, fig.correct_href, fig.correct_kind)
             action = (
-                f'<a href="{href}" style="font-size:12px">Correct this →</a>' if href
-                else '<span class="muted" style="font-size:12px">from a report total</span>'
+                f'<a href="{href}" class="small">Correct this →</a>' if href
+                else '<span class="muted small" >from a report total</span>'
             )
         elif fig.stated:
             src_html = '<span class="muted" style="font-size:13px">as you stated</span>'
@@ -145,10 +145,10 @@ def _render_answer(tenant: str, question: str, answer: AskAnswer) -> str:
     cites = ""
     if answer.citations:
         items = "".join(
-            f'<li>{_esc(c.label)} <span class="muted" style="font-size:12px">({_esc(c.source_type)})</span></li>'
+            f'<li>{_esc(c.label)} <span class="muted small" >({_esc(c.source_type)})</span></li>'
             for c in answer.citations
         )
-        cites = f'<div style="margin-top:10px"><div class="muted" style="font-size:12px">Sources</div><ul>{items}</ul></div>'
+        cites = f'<div style="margin-top:10px"><div class="muted small" >Sources</div><ul>{items}</ul></div>'
 
     record = _render_working_record(tenant, answer)
     work = _render_trace(answer)

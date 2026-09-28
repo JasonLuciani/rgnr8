@@ -73,9 +73,9 @@ def render_settings(
         + _options([("false", "Off — one currency"), ("true", "On — translate group members")],
                    "true" if multi else "false")
         + "</select></label>"
-        + ('<div style="grid-column:1/-1"><button type="submit">Save account options</button></div>'
+        + ('<div class="wide"><button type="submit">Save account options</button></div>'
            if can_manage_settings else
-           '<p class="muted" style="grid-column:1/-1">You can view these, but changing them '
+           '<p class="muted wide">You can view these, but changing them '
            'needs the Manage settings permission.</p>')
         + "</form>"
     )
@@ -90,7 +90,7 @@ def render_settings(
             f'<input name="retention_audit_days" type="number" min="0" value="{_esc(audit_days)}"></label>'
             "<label>Keep soft-deleted rows for (days, 0 = forever)"
             f'<input name="retention_soft_delete_days" type="number" min="0" value="{_esc(soft_days)}"></label>'
-            '<div style="grid-column:1/-1"><button type="submit">Save retention policy</button></div>'
+            '<div class="wide"><button type="submit">Save retention policy</button></div>'
             "</form>"
         )
         sections.append(_card("Data retention", retention_form))
@@ -111,13 +111,13 @@ def render_settings(
             '<p class="muted">Clear the owner-facing data this app holds — the bank '
             "register, close board, decisions and assumption overrides, and cached "
             "forecast. This is irreversible and is logged.</p>"
-            '<p class="muted" style="font-size:12px">This does <strong>not</strong> delete '
+            '<p class="muted small" >This does <strong>not</strong> delete '
             "your ledger (journal entries, vendors and their tax IDs, attachments), "
             "QuickBooks connection, users, API keys, billing, or the audit log — so it "
             "is not a full GDPR/CCPA erasure. Contact support for a complete deletion.</p>"
             f'<form method="post" action="/t/{_esc(tenant)}/erase" '
             'onsubmit="return confirm(\'Clear owner-held data? This cannot be undone.\')">'
-            '<button type="submit" class="danger">Reset owner-held data</button></form>'
+            '<button type="submit" class="btn danger">Reset owner-held data</button></form>'
         )
         sections.append(_card("Reset owner-held data", erase))
 

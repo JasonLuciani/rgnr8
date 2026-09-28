@@ -88,7 +88,7 @@ def _tax_note(d: Mapping[str, object]) -> str:
     ppm = _minor(d.get("tax_rate_ppm")) or 0
     rate = f"{ppm / 10000:.4f}".rstrip("0").rstrip(".")
     return (
-        f'<br><span class="muted" style="font-size:12px">'
+        f'<br><span class="muted small" >'
         f'{money(d.get("net_minor"))} + {money(d.get("tax_minor"))} sales tax'
         f'{f" ({rate}%)" if ppm else ""}</span>'
     )
@@ -184,7 +184,7 @@ def render_documents(
         )
 
     empty = (
-        f'<tr><td colspan="9" class="muted" style="text-align:center;padding:24px">'
+        f'<tr><td colspan="9" class="empty">'
         f"No {title.lower()} yet.</td></tr>"
     )
     table = (
@@ -303,7 +303,7 @@ def render_aging(tenant: str, side: str, data: Mapping[str, object],
         cells = "".join(_num(b) for b in _seq(r.get("buckets_minor")))
         rows.append(f"<tr><td>{_esc(party)}</td>{cells}{_num(r.get('total_minor'))}</tr>")
     empty = (
-        f'<tr><td colspan="{len(labels) + 2}" class="muted" style="text-align:center;padding:24px">'
+        f'<tr><td colspan="{len(labels) + 2}" class="empty">'
         f"Nothing outstanding.</td></tr>"
     )
     totals = "".join(_num(t) for t in _seq(data.get("column_totals_minor")))

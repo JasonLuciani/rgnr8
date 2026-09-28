@@ -82,14 +82,14 @@ def render_attachments(
         rows.append(
             f"<tr><td><a href=\"/t/{_esc(tenant)}/files/{att_id}/download\">"
             f"{_esc(a.get('filename'))}</a><br>"
-            f'<span class="muted" style="font-size:12px">{_esc(a.get("note"))}</span></td>'
+            f'<span class="muted small" >{_esc(a.get("note"))}</span></td>'
             f"<td class='muted'>{_esc(a.get('content_type'))}</td>"
             f"<td class='muted'>{_esc(_size(a.get('bytes')))}</td>"
             f"<td class='muted'>{_esc(str(a.get('uploaded_at'))[:10])}</td>"
             f"<td>{remove}</td></tr>"
         )
     empty = (
-        '<tr><td colspan="5" class="muted" style="text-align:center;padding:24px">'
+        '<tr><td colspan="5" class="empty">'
         "Nothing attached yet.</td></tr>"
     )
     table = (

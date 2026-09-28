@@ -92,7 +92,7 @@ def render_debt(
         badge = ' <span class="pill warn">maturing</span>' if maturity else ""
         rows.append(
             f'<tr><td><a href="/t/{_esc(tenant)}/debt/{lid}">{_esc(ln.get("lender"))}</a>'
-            f'<div class="muted" style="font-size:12px">{_esc(ln.get("kind"))}</div></td>'
+            f'<div class="muted small" >{_esc(ln.get("kind"))}</div></td>'
             f'<td class="num">{money(ln.get("current_principal_minor"))}</td>'
             f'<td class="num">{_pct_from_micro(ln.get("annual_rate_micro"))}</td>'
             f'<td>{due}{badge}</td>'
@@ -101,7 +101,7 @@ def render_debt(
             f'<td class="num">{money(ln.get("interest_paid_ytd_minor"))}</td></tr>'
         )
     table = (
-        '<table class="tbl"><thead><tr><th>Lender</th><th class="num">Balance</th>'
+        '<table><thead><tr><th>Lender</th><th class="num">Balance</th>'
         '<th class="num">Rate</th><th>Next payment</th><th class="num">Amount</th>'
         '<th>Payoff</th><th class="num">Interest YTD</th></tr></thead><tbody>'
         + ("".join(rows) or '<tr><td colspan="7" class="muted">No loans yet.</td></tr>')
@@ -143,7 +143,7 @@ def _add_loan_form(tenant: str) -> str:
         f'<label>Frequency<select name="frequency">{_options(_FREQS)}</select></label>'
         '<label>Deposit proceeds to (account code)<input name="proceeds_to_code" placeholder="1000"></label>'
         '<label>Min DSCR covenant (e.g. 1.25, optional)<input name="min_dscr" placeholder=""></label>'
-        '<div style="grid-column:1/-1"><button type="submit">Add loan</button></div>'
+        '<div class="wide"><button type="submit">Add loan</button></div>'
         "</form>"
     )
 
@@ -159,7 +159,7 @@ def _payment_form(tenant: str, loans: list[object]) -> str:
         '<label>Date<input name="date" type="date" required></label>'
         '<label>Payment amount ($)<input name="amount" type="text" placeholder="860.66" required></label>'
         '<label>Pay from (account code)<input name="paid_from_code" placeholder="1000"></label>'
-        '<div style="grid-column:1/-1"><button type="submit">Record payment</button></div>'
+        '<div class="wide"><button type="submit">Record payment</button></div>'
         "</form>"
     )
 
@@ -195,7 +195,7 @@ def render_loan_detail(
             f'<td class="num">{money(r.get("balance_minor"))}</td></tr>'
         )
     schedule_tbl = (
-        '<table class="tbl"><thead><tr><th>#</th><th>Due</th><th class="num">Payment</th>'
+        '<table><thead><tr><th>#</th><th>Due</th><th class="num">Payment</th>'
         '<th class="num">Principal</th><th class="num">Interest</th><th class="num">Balance</th>'
         "</tr></thead><tbody>"
         + ("".join(srows) or '<tr><td colspan="6" class="muted">No schedule (revolving line).</td></tr>')
@@ -212,7 +212,7 @@ def render_loan_detail(
             f'<td class="num">{money(p.get("interestMinor") or p.get("interest_minor"))}</td></tr>'
         )
     payments_tbl = (
-        '<table class="tbl"><thead><tr><th>Date</th><th>Type</th>'
+        '<table><thead><tr><th>Date</th><th>Type</th>'
         '<th class="num">Principal</th><th class="num">Interest</th></tr></thead><tbody>'
         + ("".join(prows) or '<tr><td colspan="4" class="muted">No payments yet.</td></tr>')
         + "</tbody></table>"
@@ -229,7 +229,7 @@ def render_loan_detail(
     payoff_form = (
         f'<form method="get" action="/t/{_esc(tenant)}/debt/{lid}" class="grid">'
         '<label>Extra per payment ($)<input name="extra" type="text" placeholder="200.00"></label>'
-        '<div style="grid-column:1/-1"><button type="submit">Show me the plan</button></div>'
+        '<div class="wide"><button type="submit">Show me the plan</button></div>'
         "</form>"
     )
 

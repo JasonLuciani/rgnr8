@@ -17,10 +17,21 @@ Status stays muted and earthy to fit the timeless palette (never color alone —
 always paired with an icon/label): positive ``#3E7C5A``, watch ``#B7791F``, risk
 ``#B4443C``.
 
-Type: geometric sans for the wordmark + UI (wide-tracked uppercase, à la the
-"RGNR8 · VENTURES" lockup); an elegant serif for editorial page titles, echoing
-the guide's headline voice. Self-contained — system fonts only, no external
-assets or URLs (owner pages are audited for zero external calls).
+Type: one geometric sans, everywhere — Inter, wide-tracked uppercase for the
+"RGNR8 · VENTURES" lockup and plain for everything else. Headings are separated
+from body text by weight and tracking, not by family; there is deliberately no
+serif any more, because headings set in Georgia over a system-ui UI made one
+product look like two. Still self-contained: the web app *self-hosts* the font
+from its own origin (``rgnr8_web/assets.py``) rather than linking a CDN, so
+owner pages continue to make zero external calls, and any surface not served by
+that app falls back to the system stack behind ``--rg-sans``.
+
+Components: ``RG_BASE_CSS`` below is the only place card, table, button,
+banner, tile, chip, empty-state, queue, form, allocation and timeline styles are
+defined. A renderer that hand-writes one of these inline is a bug — that is how
+the same table ended up padded ``10px 13px`` on one screen and ``11px 13px`` on
+another. ``rgnr8_web.components`` wraps them as functions so call sites name the
+component instead of describing it.
 """
 
 from __future__ import annotations
@@ -153,6 +164,17 @@ p,li{font-variant-numeric:normal}
 .card{background:var(--rg-paper);border:1px solid var(--rg-line);border-radius:var(--rg-radius);
   box-shadow:var(--rg-shadow);padding:20px 22px;margin-bottom:16px}
 .muted{color:var(--rg-muted)}
+/* Links. Nothing styled a plain <a> at all, so every link in the body of the
+   app — "View 2026-08 package", every figure that drills into its detail —
+   rendered in the browser's default blue, and purple once visited, on an ivory
+   page in a forest-and-sage palette. The underline stays: it is the affordance
+   that does not depend on colour. */
+a{color:var(--rg-accent-deep)}
+a:hover{color:var(--rg-forest)}
+a:visited{color:var(--rg-accent-deep)}
+/* Meta text — a timestamp under a figure, a hint under a field, a count in a
+   caption. Fifty call sites set this size inline before the class existed. */
+.small{font-size:12px}
 .num{text-align:right;font-variant-numeric:tabular-nums}
 .neg{color:var(--rg-risk)}
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:middle}
@@ -162,10 +184,35 @@ table{border-collapse:separate;border-spacing:0;width:100%;background:var(--rg-p
 th,td{text-align:left;padding:11px 13px;border-bottom:1px solid var(--rg-line);font-size:13.5px}
 thead th{background:var(--rg-ivory);font-weight:700;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--rg-muted)}
 tbody tr:last-child td{border-bottom:none}
-.btn{background:var(--rg-forest);color:var(--rg-ivory);border:none;border-radius:10px;
-  padding:10px 15px;font-weight:700;cursor:pointer;font:inherit}
-.btn.sage{background:var(--rg-accent-deep)}
+/* `.btn` is worn by both <button> and <a>. Making it inline-flex and killing
+   the underline here is what stops every call site from repeating
+   style="text-decoration:none" — the same defect that made the wordmark render
+   underlined in #0000EE when it became a link.
+
+   The bare `button` in this selector is not tidiness. Fifty-one submit
+   controls across fifteen renderers — "Add asset", "Preview split", "Scan
+   receipt" — carried no class at all and rendered as the operating system's
+   grey default, sitting next to RGNR8's own buttons on the same form. Styling
+   the element as well as the class fixes all of them, and the next one that
+   forgets. Anything with its own look (`.chip`) still wins on specificity. */
+.btn,button{background:var(--rg-forest);color:var(--rg-ivory);border:none;border-radius:10px;
+  padding:10px 15px;font-weight:700;cursor:pointer;font:inherit;
+  display:inline-flex;align-items:center;gap:8px;text-decoration:none;
+  line-height:1.2;white-space:nowrap}
+.btn.sage{background:var(--rg-accent-deep);color:var(--rg-ivory)}
 .btn.ghost{background:transparent;color:var(--rg-forest);border:1px solid var(--rg-line)}
+/* Destructive. `class="danger"` was already on "Dispose" and "Reset
+   owner-held data" and NOTHING DEFINED IT, so the two most irreversible
+   buttons in the product rendered identically to "Save". */
+.btn.danger{background:transparent;color:var(--rg-risk);
+  border:1px solid color-mix(in srgb, var(--rg-risk) 42%, transparent)}
+.btn.danger:hover{background:color-mix(in srgb, var(--rg-risk) 10%, var(--rg-paper))}
+/* A link that acts like a button without looking like one: the sub-navigation
+   across Books, the "Back to review" links, the inline jumps in a table cell.
+   Thirty-five call sites named `.btn-link` and no rule existed either, so all
+   of them fell back to the browser's default blue underline. */
+.btn-link{color:var(--rg-accent-deep);text-decoration:none;font-weight:600;font-size:13px}
+.btn-link:hover{text-decoration:underline}
 .banner{padding:12px 16px;border-radius:var(--rg-radius);margin-bottom:16px;font-weight:700;font-size:13px;border:1px solid transparent}
 .banner.good{background:color-mix(in srgb, var(--rg-pos) 14%, var(--rg-paper));
   color:color-mix(in srgb, var(--rg-pos) 78%, black);border-color:color-mix(in srgb, var(--rg-pos) 32%, transparent)}
@@ -176,7 +223,129 @@ tbody tr:last-child td{border-bottom:none}
 .tile .k{color:var(--rg-muted);font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
 .tile .v{font-size:23px;font-weight:800;margin-top:6px;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
 .pill{display:inline-flex;align-items:center;gap:7px;border-radius:var(--rg-pill);padding:4px 12px;
-  font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.04em}"""
+  font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+
+/* --- the named components ---------------------------------------------
+   Everything below exists because a renderer was hand-writing it inline, and
+   two renderers hand-writing the same thing is how `10px 13px` and
+   `11px 13px` ended up being the same table. A component earns a name here
+   the moment a second surface needs it; nothing is invented speculatively.  */
+
+/* Page header: title, one line of context, and the actions that belong to the
+   page as a whole. The actions sit on the same row on a wide screen and wrap
+   beneath the title on a phone. */
+.page-head{display:flex;align-items:flex-start;justify-content:space-between;
+  gap:16px;flex-wrap:wrap;margin:0 0 18px}
+.page-head>.t{min-width:min(100%,32ch);flex:1}
+.page-head h1{margin:0 0 4px}
+.page-head .sub{margin:0;color:var(--rg-muted);font-size:13px}
+.page-head .acts{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
+
+/* Metric. `.tile` is the small grid version; `.metric.hero` is the one figure
+   a screen is actually about (cash today), which has to read across a room. */
+.metric .k{color:var(--rg-muted);font-size:11px;font-weight:700;
+  letter-spacing:.11em;text-transform:uppercase}
+.metric .v{font-size:23px;font-weight:800;margin-top:6px;letter-spacing:-.01em;
+  font-variant-numeric:tabular-nums}
+.metric.hero .v{font-size:40px;line-height:1.05;margin-top:4px}
+.metric .note{color:var(--rg-muted);font-size:12px;margin-top:4px}
+
+/* Status chip. Status never rides on color alone — every chip carries a glyph
+   and a word, and the modifier sets both the text and the border so the shape
+   survives a monochrome print or a color-blind reader. */
+.chip-status{display:inline-flex;align-items:center;gap:7px;border-radius:var(--rg-pill);
+  padding:4px 12px;font-weight:700;font-size:12px;text-transform:uppercase;
+  letter-spacing:.04em;color:var(--rg-muted);
+  border:1px solid color-mix(in srgb, currentColor 22%, transparent);
+  background:color-mix(in srgb, currentColor 7%, var(--rg-paper))}
+.chip-status.pos{color:var(--rg-pos)}
+.chip-status.watch{color:var(--rg-watch)}
+.chip-status.risk{color:var(--rg-risk)}
+.chip-status.neutral{color:var(--rg-muted)}
+
+/* Empty state. Two shapes, one voice: `.empty` for a panel, and the same rule
+   applied to a full-width table cell so an empty table doesn't collapse into a
+   one-line sliver. Both say what is missing and what to do about it. */
+.empty{text-align:center;padding:28px 24px;color:var(--rg-muted)}
+.empty .what{font-weight:700;color:var(--rg-ink-2);font-size:14px}
+.empty .how{font-size:13px;margin-top:5px}
+/* `:not(.btn)` because the first version of this rule painted the link colour
+   over the "Connect a bank" button — sage text on a sage button, an invisible
+   label on the one control the screen exists to offer. */
+.empty .how a:not(.btn){color:var(--rg-accent-deep)}
+.empty .acts{display:flex;justify-content:center;gap:9px;flex-wrap:wrap;margin-top:12px}
+td.empty{border-bottom:none}
+
+/* Action queue: a list of things asking for a decision. Each row is a single
+   click target with the ask on the left and the action on the right. */
+.queue{list-style:none;margin:0;padding:0}
+.queue>li{display:flex;align-items:center;justify-content:space-between;gap:14px;
+  flex-wrap:wrap;padding:13px 0;border-bottom:1px solid var(--rg-line)}
+.queue>li:last-child{border-bottom:none}
+.queue .ask{min-width:min(100%,28ch);flex:1}
+.queue .ask .h{font-weight:700;font-size:14px}
+.queue .ask .m{color:var(--rg-muted);font-size:12.5px;margin-top:2px}
+.queue .acts{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+
+/* Form section, and the field grids it sits on.
+
+   `.grid`, `.grid2`, `.grid3` and `.grid4` were used by roughly eighty call
+   sites in the web renderers and DEFINED BY NOTHING that those pages load —
+   the only `.grid` rules in the repo belonged to the operator console and the
+   prototype brandsheet, which are separate documents. So every "grid" form in
+   the product was rendering as a plain block: the eleven-field Add asset form
+   was eleven full-width rows stacked half a screen tall, and the fifty-one
+   span-the-row attributes on their submit buttons resolved to a value with no
+   grid to apply it to (those are `.wide` now). Defining these here is the fix,
+   and it is why they belong in the shared layer, not in one app's stylesheet.
+
+   Column counts are capped, not fixed: a three-column grid becomes one column
+   on a phone, because an owner approving a bill on a phone should not be
+   scrolling sideways. */
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+  gap:4px 16px;align-items:end}
+.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 16px;align-items:end}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px 16px;align-items:end}
+.grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px 16px;align-items:end}
+/* A cell that takes the whole row: the submit button, a full-width textarea,
+   a note that explains the fields above it. */
+.wide{grid-column:1/-1}
+@media(max-width:820px){
+  .grid3,.grid4{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:560px){
+  .grid,.grid2,.grid3,.grid4{grid-template-columns:minmax(0,1fr)}
+}
+.form-sec{margin-bottom:18px}
+.form-sec>h3{font-size:12px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--rg-muted);margin:0 0 2px}
+.form-sec>.why{color:var(--rg-muted);font-size:12.5px;margin:0 0 6px}
+
+/* Allocation editor: rows of share-of-the-whole, each with its own bar, plus a
+   total that turns to risk when the shares don't add up. Splitting money is
+   the one place a wrong sum must be impossible to miss. */
+.alloc{display:grid;gap:9px}
+.alloc-row{display:grid;grid-template-columns:minmax(0,1fr) 92px;gap:10px;align-items:center}
+.alloc-row .track{grid-column:1/-1;height:6px;background:var(--rg-ivory);
+  border-radius:4px;overflow:hidden}
+.alloc-row .track>span{display:block;height:100%;background:var(--rg-sage)}
+.alloc-total{display:flex;justify-content:space-between;font-weight:700;font-size:13px;
+  padding-top:8px;border-top:1px solid var(--rg-line)}
+.alloc-total.over{color:var(--rg-risk)}
+
+/* Audit timeline: what happened, in order, most recent first. The rail is a
+   border on the list so it can never drift out of alignment with the dots. */
+.timeline{list-style:none;margin:0;padding:0 0 0 20px;
+  border-left:2px solid var(--rg-line)}
+.timeline>li{position:relative;padding:0 0 16px 4px}
+.timeline>li:last-child{padding-bottom:0}
+.timeline>li::before{content:"";position:absolute;left:-27px;top:5px;width:9px;height:9px;
+  border-radius:50%;background:var(--rg-sage);
+  box-shadow:0 0 0 3px var(--rg-surface)}
+.timeline .when{color:var(--rg-muted);font-size:11px;font-weight:700;
+  letter-spacing:.07em;text-transform:uppercase}
+.timeline .what{font-size:14px;margin-top:2px}
+.timeline .who{color:var(--rg-muted);font-size:12.5px;margin-top:1px}"""
 
 # Full stylesheet block (tokens + base) for pages that want the lot in one shot.
 THEME_CSS = RG_TOKENS_CSS + "\n" + RG_BASE_CSS
@@ -201,7 +370,9 @@ def wordmark_svg(height: int = 22, on_dark: bool = False) -> str:
     return (
         f'<span style="display:inline-flex;align-items:center;gap:9px;vertical-align:middle">'
         f"{mark_svg(height, SAGE)}"
-        f'<span style="font:600 {height}px/1 {escape("system-ui,-apple-system,Segoe UI,Roboto,sans-serif")};'
+        # var(--rg-sans), not a hand-copied stack: this wordmark sits next to
+        # the shell's own and the two must not resolve to different families.
+        f'<span style="font:600 {height}px/1 var(--rg-sans);'
         f'letter-spacing:.2em;text-transform:uppercase;color:{fg}">RGNR8</span>'
         "</span>"
     )

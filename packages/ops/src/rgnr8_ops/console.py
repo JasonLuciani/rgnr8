@@ -117,7 +117,7 @@ def render_operator_console(
         banner = f"{report.books_not_current} of {report.total} client(s) have books behind"
     else:
         banner = f"All {report.total} client(s) steady"
-    empty = '<tr><td colspan="10" class="muted" style="text-align:center;padding:26px">No clients onboarded yet — add the first one above.</td></tr>'
+    empty = '<tr><td colspan="10" class="empty">No clients onboarded yet — add the first one above.</td></tr>'
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -273,7 +273,7 @@ def render_client_detail(
         f'<td>{_esc(m.get("role") or "")}</td></tr>' for m in members
     ) or '<tr><td colspan="2" class="muted">No members yet.</td></tr>'
     team_card = (
-        '<div class="card" style="grid-column:1/-1"><h2>Team</h2>'
+        '<div class="card wide"><h2>Team</h2>'
         f'<table><thead><tr><th>Member</th><th>Role</th></tr></thead><tbody>{member_rows}</tbody></table>'
         f'<form method="post" action="/operator/tenant/{_esc(tenant_id)}/users" style="margin-top:12px">'
         '<div class="grid">'

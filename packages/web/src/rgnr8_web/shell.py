@@ -22,6 +22,7 @@ from rgnr8_forecast.brand import IVORY, RG_BASE_CSS, RG_TOKENS_CSS, mark_svg
 
 from .assets import font_face_css
 from .audit import AuditEvent
+from .components import Action, metric, page_header, status_chip
 from .rbac import Membership, Permission, Role, User
 from .scope import PROVISIONAL_NOTE, is_provisional
 
@@ -189,7 +190,22 @@ _SHELL_CSS = f"""<style>
   .drv .fill{{height:100%;background:var(--rg-sage);border-radius:5px}} .drv .s{{color:var(--rg-muted);font-size:12px}}
   .chip{{font:inherit;font-size:13px;color:var(--rg-ink);background:var(--rg-ivory);border:1px solid var(--rg-line);border-radius:999px;padding:7px 13px;cursor:pointer}}
   .chip:hover{{border-color:var(--rg-sage);color:var(--rg-forest)}}
-  .empty{{text-align:center;padding:32px 24px}}
+  /* `.empty` used to be redeclared here at 32px 24px while sixteen renderers
+     hand-wrote 24px inline and the operator console used 26px. It lives in
+     RG_BASE_CSS now, once, for every surface. */
+  /* Labels are grid cells in every field grid, so their vertical rhythm comes
+     from the grid's row gap rather than from a margin that compounds with it. */
+  .grid>label,.grid2>label,.grid3>label,.grid4>label{{margin:10px 0 6px}}
+  /* The cash hero: the figure on the left, the state and its one-line reading
+     on the right, stacking on a phone rather than squeezing to four columns. */
+  .cash-hero{{display:flex;align-items:flex-end;justify-content:space-between;
+    gap:16px;flex-wrap:wrap}}
+  .cash-state{{text-align:right;max-width:36ch}}
+  .cash-state .line{{margin-top:8px;color:var(--rg-ink-2);font-size:14px}}
+  @media(max-width:560px){{.cash-state{{text-align:left}}}}
+  .rg-prov-legend{{margin:8px 0}}
+  .rg-prov-legend>summary{{cursor:pointer;font:600 12px/1.4 var(--rg-sans);color:var(--rg-muted)}}
+  .rg-prov-legend .row-item{{display:flex;gap:8px;align-items:baseline;margin:2px 0}}
   @media(max-width:640px){{
     .rg-nav{{display:none}}
     table{{font-size:12.5px}}
@@ -675,33 +691,31 @@ def render_app_home(
     """The role-aware landing body. Owner (and everyone) leads with cash; the
     primary call-to-action shifts by role — owner/controller → review the
     outlook, bookkeeper/accountant → go to the close."""
-    color = {"STABLE": "var(--rg-pos)", "WATCH": "var(--rg-watch)", "AT_RISK": "var(--rg-risk)"}.get(status, "var(--rg-muted)")
-    # Distinct glyph per state so status never rides on color alone.
-    glyph = {"STABLE": "✓", "WATCH": "◆", "AT_RISK": "▲"}.get(status, "●")
-    status_label = status.replace("_", " ")
     # Owner/controller lead with the cash outlook; the accountant/bookkeeper live
     # in the bank feed, so their primary action goes straight to transactions.
     if role in (Role.BOOKKEEPER, Role.ACCOUNTANT) and Permission.VIEW_TRANSACTIONS in permissions:
-        cta = f'<a class="btn sage" style="text-decoration:none" href="/t/{escape(tenant)}/transactions">Review bank transactions</a>'
+        cta = Action("Review bank transactions", href=f"/t/{tenant}/transactions", kind="sage")
     else:
-        cta = f'<a class="btn sage" style="text-decoration:none" href="/t/{escape(tenant)}">Open the cash outlook</a>'
+        cta = Action("Open the cash outlook", href=f"/t/{tenant}", kind="sage")
     pkg_link = (
         f'<a href="/t/{escape(tenant)}/packages/{escape(latest_period)}">View {escape(latest_period)} package</a>'
         if latest_period
         else '<span class="muted">No published package yet</span>'
     )
     hello = "Welcome back" if role != Role.ACCOUNTANT else "Welcome"
-    return f"""<h1>{escape(hello)}</h1>
-    <p class="sub">{escape(display_name)} · you're signed in as <strong>{role.value.capitalize() if role else '—'}</strong></p>
-    <div class="card"><div style="display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap">
-      <div><div style="font-size:11px;font-weight:700;letter-spacing:.11em;text-transform:uppercase;color:var(--rg-muted)">Cash today</div>
-        <div style="font-size:40px;font-weight:800;letter-spacing:-.01em;font-variant-numeric:tabular-nums">{escape(cash_today)}</div></div>
-      <div style="text-align:right;max-width:36ch">
-        <span role="status" aria-label="Status: {escape(status_label)}" style="display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:4px 12px;font-weight:700;font-size:12px;text-transform:uppercase;color:{color};border:1px solid color-mix(in srgb, {color} 20%, transparent)"><span aria-hidden="true">{glyph}</span> {escape(status_label)}</span>
-        <div style="margin-top:8px;color:var(--rg-ink-2);font-size:14px">{escape(headline)}</div></div>
+    who = role.value.capitalize() if role else "—"
+    # The hero metric, the chip and the buttons all come from the component
+    # layer now. They used to be twelve inline declarations here — including a
+    # status pill that reimplemented the one on the cash screen, which is how
+    # the two ended up with different borders.
+    briefing = Action("This week's briefing", href=f"/t/{tenant}/briefing", kind="ghost")
+    return f"""{page_header(hello, sub=f"{display_name} · you're signed in as {who}")}
+    <div class="card"><div class="cash-hero">
+      <div>{metric("Cash today", cash_today, hero=True)}</div>
+      <div class="cash-state">{status_chip(status)}
+        <div class="line">{escape(headline)}</div></div>
     </div>
-    <div class="row" style="margin-top:18px">{cta}
-      <a class="btn ghost" style="text-decoration:none" href="/t/{escape(tenant)}/briefing">This week's briefing</a></div></div>
+    <div class="row" style="margin-top:18px">{cta.html()}{briefing.html()}</div></div>
     <div class="card"><h2 style="margin-top:0;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--rg-muted)">Records</h2>
       <div class="row"><div class="grow">Latest sealed financial package</div>{pkg_link}</div></div>"""
 
@@ -821,7 +835,7 @@ def render_audit_log(tenant: str, events: Sequence[AuditEvent], *, configured: b
                      f'<td>{escape(e.actor or "—")}</td>'
                      f'<td><strong>{escape(e.action)}</strong></td>'
                      f'<td class="muted">{escape(e.target or "—")}</td>'
-                     f'<td class="muted" style="font-size:12px">{escape(e.detail or "")}</td></tr>')
+                     f'<td class="muted small" >{escape(e.detail or "")}</td></tr>')
         rows_html = (
             '<div class="table-scroll"><table><thead><tr><th>When</th><th>Who</th>'
             '<th>Action</th><th>Target</th><th>Detail</th></tr></thead>'
