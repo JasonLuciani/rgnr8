@@ -11,12 +11,20 @@ was never asked to mean anything.
 from __future__ import annotations
 
 import re
+from datetime import date
 from types import SimpleNamespace
 
 import pytest
 from factory import app_with_two_tenants
 
-from rgnr8_web import Request
+from rgnr8_forecast import (
+    CashPosition,
+    ForecastConfig,
+    ForecastInputs,
+    Invoice,
+    Money,
+)
+from rgnr8_web import Request, WebApp
 from rgnr8_web.shell import _SHELL_CSS
 
 
@@ -71,6 +79,34 @@ def test_a_feed_that_cannot_answer_counts_as_unknown_not_zero(client) -> None:
     app._ledger = client  # type: ignore[attr-defined]
     tenant = app._tenants["acme"]  # type: ignore[attr-defined]
     assert app._review_count(tenant) is None  # type: ignore[attr-defined]
+
+
+def test_an_overdue_invoice_reaches_the_queue_through_the_real_adapter() -> None:
+    """Exercises `AppServer._attention`, not just the policy.
+
+    Every other test here runs against a tenant with nothing overdue, and
+    `test_attention.py` hands `Signals` its fields directly — so the adapter
+    that reads them off a real `ChaseItem` had no coverage at all, and shipped
+    reading `invoice.customer_name`, which does not exist. mypy caught it; a
+    test should have.
+    """
+    app = WebApp()
+    app.add_tenant(
+        "late", "Late Co",
+        ForecastInputs(
+            opening=CashPosition(as_of=date(2026, 8, 3), available=Money.from_decimal("50000.00")),
+            invoices=(
+                Invoice("INV-9", "riverside-llc", date(2026, 5, 1), date(2026, 6, 1),
+                        Money.from_decimal("18000.00")),
+            ),
+        ),
+        ForecastConfig(minimum_cash=Money.from_decimal("1000.00")),
+        token="tok-late",
+    )
+    body = _get(app, "/t/late", token="tok-late").body
+    assert "1 invoice overdue" in body
+    assert "riverside-llc is 63 days late" in body
+    assert "$18,000.00 overdue" in body
 
 
 def test_the_queue_never_raises_out_of_the_page() -> None:

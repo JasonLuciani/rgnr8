@@ -5489,7 +5489,10 @@ class WebApp:
             review_count=self._review_count(t),
             overdue_count=len(overdue),
             overdue_total=report.overdue_total if report is not None else None,
-            worst_customer=(worst.invoice.customer_name or "") if worst is not None else "",
+            # `Invoice` carries a customer *id*, not a name — names live in the
+            # ledger's parties, which this page does not read. The id is what
+            # an owner recognises in their own books, so it is what we show.
+            worst_customer=(worst.invoice.customer_id or "") if worst is not None else "",
             worst_days=worst.days_overdue if worst is not None else 0,
             close_period=board.period,
             close_overdue=board.overdue,
