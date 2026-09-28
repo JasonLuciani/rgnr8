@@ -45,9 +45,9 @@ def render_capture(
         '<p class="muted">Paste the text of a receipt or invoice. We\'ll pull out the '
         "vendor, date and total and draft a bill for you to review.</p>"
         f'<form method="post" action="/t/{_esc(tenant)}/capture" class="grid">'
-        f'<label style="grid-column:1/-1">Receipt text'
+        f'<label class="wide">Receipt text'
         f'<textarea name="text" rows="8" placeholder="{_esc(_SAMPLE)}">{_esc(raw_text)}</textarea></label>'
-        '<div style="grid-column:1/-1"><button type="submit">Scan receipt</button></div>'
+        '<div class="wide"><button type="submit">Scan receipt</button></div>'
         "</form>"
     )
     sections = [banner, prov_legend(_CAPTURE_PROV), _card("Capture a receipt", scan_form)]
@@ -97,8 +97,8 @@ def _render_draft(tenant: str, draft: Mapping[str, object], vendors: list[object
         f'<label>Amount ($)<input name="amount" value="{_esc(amount_dollars)}" required></label>'
         f'<label>Expense account code<input name="expense_account_code" '
         f'value="{_esc(draft.get("expense_account_code") or "6400")}"></label>'
-        '<label style="grid-column:1/-1">Memo<input name="memo" placeholder="From captured receipt"></label>'
-        '<div style="grid-column:1/-1"><button type="submit">Create bill</button></div>'
+        '<label class="wide">Memo<input name="memo" placeholder="From captured receipt"></label>'
+        '<div class="wide"><button type="submit">Create bill</button></div>'
         "</form>"
     )
     return _card("Drafted bill", form)

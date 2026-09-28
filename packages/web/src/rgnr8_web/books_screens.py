@@ -91,7 +91,7 @@ def render_chart_of_accounts(tenant: str, data: Mapping[str, object]) -> str:
             f'<td class="muted">{_esc(sub)}</td></tr>'
         )
     empty = (
-        '<tr><td colspan="4" class="muted" style="text-align:center;padding:24px">'
+        '<tr><td colspan="4" class="empty">'
         "No accounts yet — this business's chart hasn't been set up.</td></tr>"
     )
     table = (
@@ -127,7 +127,7 @@ def render_books_home(
             f"{_num(r.get('debit_minor'), ccy)}{_num(r.get('credit_minor'), ccy)}</tr>"
         )
     empty = (
-        '<tr><td colspan="4" class="muted" style="text-align:center;padding:24px">'
+        '<tr><td colspan="4" class="empty">'
         "Nothing posted yet. Record the first transaction below.</td></tr>"
     )
     in_balance = bool(tb.get("in_balance", True))
@@ -231,7 +231,7 @@ def render_register(tenant: str, reg: Mapping[str, object]) -> str:
             f"{_num(r.get('debit_minor'))}{_num(r.get('credit_minor'))}{_num(r.get('balance_minor'))}</tr>"
         )
     empty = (
-        '<tr><td colspan="5" class="muted" style="text-align:center;padding:24px">'
+        '<tr><td colspan="5" class="empty">'
         "No activity in this account.</td></tr>"
     )
     table = (

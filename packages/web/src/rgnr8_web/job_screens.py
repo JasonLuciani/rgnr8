@@ -103,7 +103,7 @@ def render_jobs(
         cells = "".join(
             "<tr>"
             f'<td><a href="/t/{_esc(tenant)}/jobs/{_esc(j.get("id"))}">{_esc(j.get("name"))}</a>'
-            f'<br><span class="muted" style="font-size:12px">'
+            f'<br><span class="muted small" >'
             f'{_esc(j.get("customer_id"))} · {_esc(_METHOD_LABEL.get(str(j.get("billing_method")), ""))}'
             "</span></td>"
             f'<td class="muted">{_esc(_STATUS_LABEL.get(str(j.get("status")), j.get("status")))}</td>'
@@ -160,8 +160,8 @@ def _new_job_form(
         f'<label>Revenue account<select name="revenue_account_code">{revenue_options}</select></label>'
         '<label>Starts<input name="start_date" placeholder="YYYY-MM-DD"></label>'
         '<label>Ends<input name="end_date" placeholder="YYYY-MM-DD"></label>'
-        '<label style="grid-column:1/-1">Notes<input name="memo"></label>'
-        '<div style="grid-column:1/-1"><button type="submit">Open the job</button></div>'
+        '<label class="wide">Notes<input name="memo"></label>'
+        '<div class="wide"><button type="submit">Open the job</button></div>'
         "</form>"
         '<p class="muted" style="margin-top:8px">A time-and-materials job can start with '
         "no contract value; a progress-billed or fixed-price one cannot, because there "
@@ -223,7 +223,7 @@ def _headline(
         figures.append(("Billed", money(wip_row.get("billed_minor"))))
 
     tiles = "".join(
-        f'<div style="min-width:130px"><div class="muted" style="font-size:12px">{_esc(label)}</div>'
+        f'<div style="min-width:130px"><div class="muted small" >{_esc(label)}</div>'
         f'<div style="font:600 18px/1.2 var(--rg-sans)">{_esc(value)}</div></div>'
         for label, value in figures
     )
@@ -261,9 +261,9 @@ def _headline(
         f'{_pct(totals.get("percent_spent_ppm"))}.</p>'
     )
     actions = (
-        f'<a class="rg-btn" href="/t/{_esc(tenant)}/jobs">All jobs</a> '
-        f'<a class="rg-btn" href="/t/{_esc(tenant)}/sales-orders">Orders</a> '
-        f'<a class="rg-btn" href="/t/{_esc(tenant)}/purchase-orders">Purchasing</a>'
+        f'<a class="btn ghost" href="/t/{_esc(tenant)}/jobs">All jobs</a> '
+        f'<a class="btn ghost" href="/t/{_esc(tenant)}/sales-orders">Orders</a> '
+        f'<a class="btn ghost" href="/t/{_esc(tenant)}/purchase-orders">Purchasing</a>'
     )
     return _card(f"{job.get('name')}", body, actions)
 
@@ -281,7 +281,7 @@ def _cost_card(cost: Mapping[str, object]) -> str:
         warn = ' style="color:var(--rg-warn)"' if str(r.get("over_budget")) == "True" else ""
         cells += (
             f"<tr{warn}><td>{_esc(r.get('cost_code'))}"
-            f'<br><span class="muted" style="font-size:12px">{_esc(r.get("name"))}</span></td>'
+            f'<br><span class="muted small" >{_esc(r.get("name"))}</span></td>'
             f"{_num(r.get('budget_cost_minor'))}"
             f"{_num(r.get('revised_cost_minor'))}"
             f"{_num(r.get('actual_cost_minor'))}"
@@ -338,7 +338,7 @@ def _work_order_card(
             "<tr>"
             f'<td><a href="/t/{_esc(tenant)}/work-orders/{_esc(w.get("id"))}">'
             f'{_esc(w.get("title"))}</a>'
-            f'<br><span class="muted" style="font-size:12px">{_esc(w.get("scheduled_date"))}'
+            f'<br><span class="muted small" >{_esc(w.get("scheduled_date"))}'
             f'{" · " + _esc(w.get("assignee")) if w.get("assignee") else ""}</span></td>'
             f'<td class="muted">{_esc(str(w.get("status")).lower().replace("_", " "))}</td>'
             f'<td class="num">{_milli((w.get("totals") or {}).get("hours_milli") if isinstance(w.get("totals"), Mapping) else 0)}</td>'
@@ -356,7 +356,7 @@ def _work_order_card(
             f'cost · {money(totals.get("unbilled_minor"))} billable and not yet invoiced.</p>'
         )
     actions = (
-        f'<a class="rg-btn" href="/t/{_esc(tenant)}/work-orders?job_id='
+        f'<a class="btn ghost" href="/t/{_esc(tenant)}/work-orders?job_id='
         f'{_esc(work_orders.get("job_id"))}">Open work orders</a>' if can_edit else ""
     )
     return _card("Work orders", body, actions)
@@ -466,7 +466,7 @@ def _billing_actions(
             '<label>Invoice number<input name="id" required></label>'
             '<label>Date<input name="date" placeholder="YYYY-MM-DD" required></label>'
             f"{lines}"
-            '<div style="grid-column:1/-1"><button type="submit">Raise the application</button>'
+            '<div class="wide"><button type="submit">Raise the application</button>'
             '<span class="muted" style="margin-left:8px">Percent complete is cumulative — '
             "what has been earned to date, not this period.</span></div></form>"
         )
@@ -480,7 +480,7 @@ def _billing_actions(
             '<label>Invoice number<input name="id" required></label>'
             '<label>Date<input name="date" placeholder="YYYY-MM-DD" required></label>'
             f'<label>Milestone<select name="milestone_id">{options}</select></label>'
-            '<div style="grid-column:1/-1"><button type="submit">Bill it</button></div></form>'
+            '<div class="wide"><button type="submit">Bill it</button></div></form>'
         )
     if _seq(billing.get("unbilled_work")):
         forms += (
@@ -491,7 +491,7 @@ def _billing_actions(
             '<label>One line per<select name="summarize">'
             '<option value="">visit</option><option value="1">work order</option>'
             "</select></label>"
-            '<div style="grid-column:1/-1"><button type="submit">Bill the time</button>'
+            '<div class="wide"><button type="submit">Bill the time</button>'
             '<span class="muted" style="margin-left:8px">A customer querying a T&amp;M '
             "invoice is asking what you did on the 14th.</span></div></form>"
         )
@@ -499,7 +499,7 @@ def _billing_actions(
         f'<form method="post" action="{base}/deposits" class="grid">'
         '<label>Deposit taken<input name="amount" placeholder="20,000.00" required></label>'
         '<label>Date<input name="date" placeholder="YYYY-MM-DD" required></label>'
-        '<div style="grid-column:1/-1"><button type="submit">Record the deposit</button>'
+        '<div class="wide"><button type="submit">Record the deposit</button>'
         '<span class="muted" style="margin-left:8px">Held as a liability until an invoice '
         "draws it down — it is not income yet.</span></div></form>"
     )

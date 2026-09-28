@@ -83,7 +83,7 @@ def render_estimates(
                 f'<td><a href="/t/{_esc(tenant)}/estimates/{_esc(e.get("id"))}">'
                 f'{_esc(e.get("id"))}</a>'
                 + (f' <span class="muted">rev {revision}</span>' if revision > 1 else "")
-                + f'<br><span class="muted" style="font-size:12px">{_esc(e.get("customer_id"))}'
+                + f'<br><span class="muted small" >{_esc(e.get("customer_id"))}'
                 f' · {_esc(e.get("date"))}</span></td>'
                 f'<td class="muted">{_esc(_STATUS_LABEL.get(str(e.get("status")), e.get("status")))}</td>'
                 f"{_num(totals.get('cost_minor'))}"
@@ -272,12 +272,12 @@ def _next_steps(
             "</select></label>"
             '<label>Starts<input name="start_date" placeholder="YYYY-MM-DD"></label>'
             '<label>Retainage %<input name="retainage" placeholder="10"></label>'
-            '<div style="grid-column:1/-1"><button type="submit">They accepted it</button>'
+            '<div class="wide"><button type="submit">They accepted it</button>'
             '<span class="muted" style="margin-left:8px">Accepting seeds the job budget from '
             "the cost lines, so nobody types it twice.</span></div></form>"
             f'<form method="post" action="{base}/status" class="grid">'
             '<input type="hidden" name="status" value="DECLINED">'
-            '<div style="grid-column:1/-1"><button type="submit">They declined</button></div>'
+            '<div class="wide"><button type="submit">They declined</button></div>'
             "</form>"
         )
     if status == "ACCEPTED":
@@ -285,7 +285,7 @@ def _next_steps(
             f'<form method="post" action="{base}/invoice" class="grid">'
             '<label>Invoice number<input name="id" required></label>'
             '<label>Date<input name="date" placeholder="YYYY-MM-DD" required></label>'
-            '<div style="grid-column:1/-1"><button type="submit">Invoice the whole thing</button>'
+            '<div class="wide"><button type="submit">Invoice the whole thing</button>'
             '<span class="muted" style="margin-left:8px">For a job billed in pieces, bill it '
             "from the job instead.</span></div></form>"
         )
@@ -293,7 +293,7 @@ def _next_steps(
         forms += (
             f'<form method="post" action="{base}/revise" class="grid">'
             '<label>Why<input name="memo" placeholder="Upgraded cabinets"></label>'
-            '<div style="grid-column:1/-1"><button type="submit">Start a revision</button>'
+            '<div class="wide"><button type="submit">Start a revision</button>'
             '<span class="muted" style="margin-left:8px">The customer has seen this one. A '
             "revision supersedes it; both stay on the record.</span></div></form>"
         )
@@ -328,10 +328,10 @@ def render_pipeline(
     open_stages = [s for s in stages if str(s.get("stage")) not in ("WON", "LOST")]
 
     tiles = "".join(
-        f'<div style="min-width:120px"><div class="muted" style="font-size:12px">'
+        f'<div style="min-width:120px"><div class="muted small" >'
         f'{_esc(str(s.get("stage")).lower())} ({_esc(s.get("count"))})</div>'
         f'<div style="font:600 16px/1.2 var(--rg-sans)">{money(s.get("value_minor"))}</div>'
-        f'<div class="muted" style="font-size:12px">{money(s.get("weighted_value_minor"))} '
+        f'<div class="muted small" >{money(s.get("weighted_value_minor"))} '
         "weighted</div></div>"
         for s in open_stages
     )
@@ -353,7 +353,7 @@ def render_pipeline(
     if opportunities:
         cells = "".join(
             f"<tr><td>{_esc(o.get('name'))}"
-            f'<br><span class="muted" style="font-size:12px">'
+            f'<br><span class="muted small" >'
             f'{_esc(o.get("customer_id") or o.get("lead_id"))}'
             f'{" · " + _esc(o.get("owner")) if o.get("owner") else ""}</span></td>'
             f'<td class="muted">{_esc(str(o.get("stage")).lower())}</td>'
@@ -389,7 +389,7 @@ def render_pipeline(
     if lead_rows:
         cells = "".join(
             f"<tr><td>{_esc(line.get('name'))}"
-            + (f'<br><span class="muted" style="font-size:12px">{_esc(line.get("company"))}</span>'
+            + (f'<br><span class="muted small" >{_esc(line.get("company"))}</span>'
                if line.get("company") else "")
             + f'</td><td class="muted">{_esc(str(line.get("status")).lower())}</td>'
             f'<td class="muted">{_esc(line.get("source"))}</td>'
@@ -443,7 +443,7 @@ def _pipeline_forms(tenant: str, leads: Mapping[str, object]) -> str:
         '<label>Phone<input name="phone"></label>'
         '<label>Where from<input name="source" placeholder="Referral"></label>'
         '<label>Owner<input name="owner"></label>'
-        '<div style="grid-column:1/-1"><button type="submit">Add the lead</button></div>'
+        '<div class="wide"><button type="submit">Add the lead</button></div>'
         "</form>"
         f'<form method="post" action="/t/{_esc(tenant)}/opportunities" class="grid" '
         'style="margin-top:12px">'
@@ -456,7 +456,7 @@ def _pipeline_forms(tenant: str, leads: Mapping[str, object]) -> str:
         '<option value="PROPOSAL">proposal</option>'
         '<option value="NEGOTIATION">negotiation</option></select></label>'
         '<label>Expected<input name="expected_close_date" placeholder="YYYY-MM-DD"></label>'
-        '<div style="grid-column:1/-1"><button type="submit">Open the opportunity</button>'
+        '<div class="wide"><button type="submit">Open the opportunity</button>'
         '<span class="muted" style="margin-left:8px">Nothing here touches the books. The '
         "money appears when the job is billed.</span></div></form>"
     )

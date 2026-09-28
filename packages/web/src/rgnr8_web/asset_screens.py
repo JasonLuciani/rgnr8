@@ -80,14 +80,14 @@ def render_assets(
         badge = ' <span class="pill">disposed</span>' if disposed else ""
         rows.append(
             f'<tr><td><a href="/t/{_esc(tenant)}/assets/{aid}">{_esc(a.get("name"))}</a>{badge}'
-            f'<div class="muted" style="font-size:12px">{_esc(a.get("category"))}</div></td>'
+            f'<div class="muted small" >{_esc(a.get("category"))}</div></td>'
             f'<td>{_esc(a.get("method"))}</td>'
             f'<td class="num">{money(a.get("cost_minor"))}</td>'
             f'<td class="num">{money(a.get("accumulated_minor"))}</td>'
             f'<td class="num">{money(a.get("book_value_minor"))}</td></tr>'
         )
     table = (
-        '<table class="tbl"><thead><tr><th>Asset</th><th>Method</th><th class="num">Cost</th>'
+        '<table><thead><tr><th>Asset</th><th>Method</th><th class="num">Cost</th>'
         '<th class="num">Accum.</th><th class="num">Book value</th></tr></thead><tbody>'
         + ("".join(rows) or '<tr><td colspan="5" class="muted">No assets yet.</td></tr>')
         + "</tbody></table>"
@@ -116,7 +116,7 @@ def _add_asset_form(tenant: str) -> str:
         '<label>Declining factor (e.g. 2 for double)<input name="declining_factor" placeholder="2"></label>'
         '<label>Total units (units-of-production)<input name="total_units" placeholder=""></label>'
         '<label>Pay from (account code)<input name="paid_from_code" placeholder="1000"></label>'
-        '<div style="grid-column:1/-1"><button type="submit">Add asset</button></div>'
+        '<div class="wide"><button type="submit">Add asset</button></div>'
         "</form>"
     )
 
@@ -151,7 +151,7 @@ def render_asset_detail(
             f'<td class="num">{money(r.get("book_value_minor"))}</td></tr>'
         )
     schedule_tbl = (
-        '<table class="tbl"><thead><tr><th>#</th><th>Through</th><th class="num">Depreciation</th>'
+        '<table><thead><tr><th>#</th><th>Through</th><th class="num">Depreciation</th>'
         '<th class="num">Accumulated</th><th class="num">Book value</th></tr></thead><tbody>'
         + ("".join(srows) or '<tr><td colspan="5" class="muted">Usage-driven — no calendar schedule.</td></tr>')
         + "</tbody></table>"
@@ -164,13 +164,13 @@ def render_asset_detail(
                 f'<form method="post" action="/t/{_esc(tenant)}/assets/{aid}/usage" class="grid">'
                 '<label>Date<input name="date" type="date" required></label>'
                 '<label>Units used<input name="units" type="text" required></label>'
-                '<div style="grid-column:1/-1"><button type="submit">Record usage</button></div></form>'
+                '<div class="wide"><button type="submit">Record usage</button></div></form>'
             )
         else:
             actions += (
                 f'<form method="post" action="/t/{_esc(tenant)}/assets/{aid}/depreciate" class="grid">'
                 '<label>Depreciate through<input name="through_date" type="date" required></label>'
-                '<div style="grid-column:1/-1"><button type="submit">Run depreciation</button></div></form>'
+                '<div class="wide"><button type="submit">Run depreciation</button></div></form>'
             )
         actions += (
             f'<form method="post" action="/t/{_esc(tenant)}/assets/{aid}/dispose" class="grid" '
@@ -178,7 +178,7 @@ def render_asset_detail(
             '<label>Disposal date<input name="date" type="date" required></label>'
             '<label>Proceeds ($)<input name="proceeds" type="text" placeholder="0.00"></label>'
             '<label>Deposit to (account code)<input name="proceeds_to_code" placeholder="1000"></label>'
-            '<div style="grid-column:1/-1"><button type="submit" class="danger">Dispose</button></div></form>'
+            '<div class="wide"><button type="submit" class="btn danger">Dispose</button></div></form>'
         )
 
     sections = [

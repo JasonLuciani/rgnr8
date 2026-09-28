@@ -113,7 +113,7 @@ def render_budget(
         variance = _minor(line.get("variance_minor")) or 0
         favorable = bool(line.get("favorable"))
         if variance == 0:
-            chip = '<span class="muted" style="font-size:12px">on plan</span>'
+            chip = '<span class="muted small" >on plan</span>'
         else:
             colour = "var(--rg-sage)" if favorable else "var(--rg-risk,#b4462f)"
             word = "better than planned" if favorable else "worse than planned"
@@ -127,7 +127,7 @@ def render_budget(
             f"{_num(line.get('variance_minor'))}<td>{chip}</td></tr>"
         )
     empty = (
-        '<tr><td colspan="6" class="muted" style="text-align:center;padding:24px">'
+        '<tr><td colspan="6" class="empty">'
         "Nothing budgeted or posted for this period yet.</td></tr>"
     )
     table = (

@@ -144,7 +144,7 @@ def render_split(
     row_html = "".join(_rule_row(i, (rules[i] if rules and i < len(rules) else None))
                         for i in range(RULE_ROWS))
     rule_table = (
-        '<div style="grid-column:1/-1;overflow-x:auto">'
+        '<div class="wide" style="overflow-x:auto">'
         '<table style="width:100%;border-collapse:collapse;font-size:13px">'
         '<thead><tr class="muted" style="text-align:left">'
         '<th>Book</th><th>Match</th><th>Value</th><th>Direction</th><th>Category</th>'
@@ -154,14 +154,14 @@ def render_split(
     form = (
         f'<form method="post" action="{base}" class="grid">'
         # scope
-        '<div style="grid-column:1/-1">' + intro + scope_controls + '</div>'
-        '<div style="grid-column:1/-1;margin:6px 0">' + preview + '</div>'
+        '<div class="wide">' + intro + scope_controls + '</div>'
+        '<div class="wide" style="margin:6px 0">' + preview + '</div>'
         # rules
-        '<label style="grid-column:1/-1;margin-top:6px">Default book (for anything no rule matches)'
+        '<label class="wide" style="margin-top:6px">Default book (for anything no rule matches)'
         f'<input name="default_book" value="{_esc(default_book)}" placeholder="Personal" '
         'style="max-width:240px"></label>'
         + rule_table +
-        '<div style="grid-column:1/-1"><button type="submit">Preview split</button>'
+        '<div class="wide"><button type="submit">Preview split</button>'
         '<span class="muted" style="font-size:12px;margin-left:10px">'
         'Adjust the scope or rules and preview again — leave a rule row blank to ignore it.</span></div>'
         "</form>"

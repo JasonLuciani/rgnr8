@@ -71,8 +71,8 @@ def render_integrations(
         f'<form method="post" action="/t/{_esc(tenant)}/integrations" class="grid">'
         '<label>Endpoint ID<input name="id" required placeholder="crm-sync"></label>'
         '<label>HTTPS URL<input name="url" required placeholder="https://example.com/hooks/rgnr8"></label>'
-        f'<div style="grid-column:1/-1">Events: {_checkboxes(EVENTS)}</div>'
-        '<div style="grid-column:1/-1"><button type="submit">Add endpoint</button> '
+        f'<div class="wide">Events: {_checkboxes(EVENTS)}</div>'
+        '<div class="wide"><button type="submit">Add endpoint</button> '
         '<span class="muted">A signing secret is generated and shown once.</span></div>'
         "</form>"
     )

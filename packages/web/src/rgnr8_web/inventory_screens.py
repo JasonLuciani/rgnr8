@@ -75,7 +75,7 @@ def render_inventory(
             low = ' style="color:var(--rg-warn)"' if str(i.get("below_reorder_point")) == "True" else ""
             cells += (
                 f"<tr{low}><td>{_esc(i.get('sku'))}"
-                f'<br><span class="muted" style="font-size:12px">{_esc(i.get("name"))}</span></td>'
+                f'<br><span class="muted small" >{_esc(i.get("name"))}</span></td>'
                 f'<td class="num">{_milli(i.get("quantity_milli"))}</td>'
                 f'<td class="muted">{_esc(i.get("unit"))}</td>'
                 f"{_num(i.get('unit_cost_minor'))}"
@@ -145,7 +145,7 @@ def _forms(
         '<label>Reorder at<input name="reorder_point" placeholder="20"></label>'
         f'<label>Stock account<select name="inventory_account_code">{asset_options}</select></label>'
         '<label>Cost account<input name="cost_account_code" placeholder="5100"></label>'
-        '<div style="grid-column:1/-1"><button type="submit">Save the item</button></div>'
+        '<div class="wide"><button type="submit">Save the item</button></div>'
         "</form>"
     )
     out = _card("Add an item", body)
@@ -158,7 +158,7 @@ def _forms(
             '<label>How many<input name="quantity" required placeholder="100"></label>'
             '<label>Cost each<input name="unit_cost" required placeholder="48.00"></label>'
             '<label>Paid from<input name="paid_from_code" placeholder="1000"></label>'
-            '<div style="grid-column:1/-1"><button type="submit">Record it</button>'
+            '<div class="wide"><button type="submit">Record it</button>'
             '<span class="muted" style="margin-left:8px">For stock on a purchase order, '
             "receive it there instead — this is the trip to the supply house.</span>"
             "</div></form>"
@@ -170,7 +170,7 @@ def _forms(
             '<label>How many<input name="quantity" required></label>'
             f'<label>Job<select name="job_id">{job_options}</select></label>'
             f'<label>Cost code<select name="cost_code">{code_options}</select></label>'
-            '<div style="grid-column:1/-1"><button type="submit">Issue it</button>'
+            '<div class="wide"><button type="submit">Issue it</button>'
             '<span class="muted" style="margin-left:8px">Costed at the moving average, so '
             "what the job carries is what the stock actually cost.</span></div></form>"
         ))
@@ -179,7 +179,7 @@ def _forms(
             f'<label>Item<select name="sku" required>{sku_options}</select></label>'
             '<label>Date<input name="date" placeholder="YYYY-MM-DD" required></label>'
             '<label>Actually there<input name="counted" required></label>'
-            '<div style="grid-column:1/-1"><button type="submit">Correct the record</button>'
+            '<div class="wide"><button type="submit">Correct the record</button>'
             '<span class="muted" style="margin-left:8px">The difference posts to shrinkage. '
             "The books follow the shelf, not the other way round.</span></div></form>"
         ))

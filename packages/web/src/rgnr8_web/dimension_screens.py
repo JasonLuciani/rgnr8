@@ -70,7 +70,7 @@ def render_dimensions(
             '<span style="color:var(--rg-watch,#b8860b);font-weight:700;font-size:12px">'
             "required on income and costs</span>"
             if d.get("required")
-            else '<span class="muted" style="font-size:12px">optional</span>'
+            else '<span class="muted small" >optional</span>'
         )
         remove = ""
         if can_post:
@@ -81,7 +81,7 @@ def render_dimensions(
             )
         rows.append(
             f"<tr><td><strong>{_esc(d.get('label'))}</strong><br>"
-            f'<span class="muted" style="font-size:12px">{key}</span></td>'
+            f'<span class="muted small" >{key}</span></td>'
             f"<td>{_esc(', '.join(values)) or _ANY_VALUE}</td>"
             f"<td>{required}</td>"
             f'<td><a class="btn-link" href="/t/{_esc(tenant)}/books/dimensions/{key}">'
@@ -89,7 +89,7 @@ def render_dimensions(
             f"<td>{remove}</td></tr>"
         )
     empty = (
-        '<tr><td colspan="5" class="muted" style="text-align:center;padding:24px">'
+        '<tr><td colspan="5" class="empty">'
         "No classes or locations yet. Most single-line businesses never need one."
         "</td></tr>"
     )

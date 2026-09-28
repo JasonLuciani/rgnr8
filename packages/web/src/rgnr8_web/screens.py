@@ -117,7 +117,7 @@ def render_cash_body(forecast: ForecastResult, display_name: str) -> str:
     <h2>Next 13 weeks — projected cash</h2>
     <div class="card">{_cash_chart(forecast)}</div>
     {drivers}
-    <p class="muted" style="font-size:12px">Confidence {b.overall_confidence}/100 · every figure traces to the forecast · version {escape(b.version_id)}</p>"""
+    <p class="muted small" >Confidence {b.overall_confidence}/100 · every figure traces to the forecast · version {escape(b.version_id)}</p>"""
 
 
 # --- Briefing (in-shell weekly briefing) ------------------------------------
@@ -130,7 +130,7 @@ def render_briefing_body(forecast: ForecastResult, display_name: str) -> str:
     for f in b.facts:
         val = _money(f.amount) if f.amount is not None else (f.text or "")
         facts += (f'<tr><td>{escape(f.label)}</td><td class="num">{escape(val)}</td>'
-                  f'<td class="muted" style="font-size:12px">{escape(f.evidence.note or f.evidence.field or "forecast")}</td></tr>')
+                  f'<td class="muted small" >{escape(f.evidence.note or f.evidence.field or "forecast")}</td></tr>')
     drivers = ""
     if b.drivers:
         top = b.drivers[0].amount.minor_units or 1
@@ -158,7 +158,7 @@ def render_briefing_body(forecast: ForecastResult, display_name: str) -> str:
     <p class="sub">{escape(display_name)} · {escape(b.period_label)} · as of {escape(b.as_of.isoformat())}</p>
     <div class="card"><div class="row" style="justify-content:space-between">
       {_status_pill(b.status.value)}
-      <span class="muted" style="font-size:12px">Confidence {b.overall_confidence}/100</span></div>
+      <span class="muted small" >Confidence {b.overall_confidence}/100</span></div>
       <div style="font:600 21px/1.3 var(--rg-sans);letter-spacing:-.012em;margin:10px 0 4px">{escape(b.headline)}</div>
       <p class="muted" style="margin:0">{escape(b.status_reason)}</p>{action}</div>
     <h2>The numbers</h2>
@@ -170,7 +170,7 @@ def render_briefing_body(forecast: ForecastResult, display_name: str) -> str:
     <h2>Ask your CFO</h2>
     <div class="card"><div class="row">{chips}</div>
       <div id="answer" class="banner" style="display:none;margin-top:14px;background:var(--rg-ivory);color:var(--rg-ink);border-color:var(--rg-line)">
-        <div id="aq" class="muted" style="font-size:12px"></div><div id="at" style="font-weight:400"></div></div></div>
+        <div id="aq" class="muted small" ></div><div id="at" style="font-weight:400"></div></div></div>
     {script_open()}
       const A={answers_json};
       function ans(k){{const a=A[k];const box=document.getElementById('answer');
@@ -253,7 +253,7 @@ def render_close_body(board: CloseBoard, tenant: str, *, can_manage: bool, can_p
             advance = ('<button class="btn ghost" style="padding:5px 10px" '
                        f"onclick=\"reopen(this,'{escape(t.key)}')\">Reopen</button>")
         rows += (f'<tr><td><strong>{escape(t.label)}</strong>'
-                 + (f'<br><span class="muted" style="font-size:12px">{escape(t.note)}</span>' if t.note else "")
+                 + (f'<br><span class="muted small" >{escape(t.note)}</span>' if t.note else "")
                  + f'</td><td class="muted">{escape(t.owner or "—")}</td>'
                  f'<td class="muted">{escape(t.due or "—")}</td>'
                  f'<td><span class="dot" style="background:{color}"></span>{escape(label)}</td>'
@@ -297,12 +297,12 @@ def render_close_body(board: CloseBoard, tenant: str, *, can_manage: bool, can_p
     <p class="sub">{escape(board.period)} · the checklist that has to clear before the books are sealed</p>
     <div class="banner {banner_cls}">{banner}</div>
     {err_block}
-    <div class="card"><div class="row" style="justify-content:space-between"><span class="muted" style="font-size:12px">Progress</span>
-      <span class="muted" style="font-size:12px">{board.done}/{board.total}</span></div>
+    <div class="card"><div class="row" style="justify-content:space-between"><span class="muted small" >Progress</span>
+      <span class="muted small" >{board.done}/{board.total}</span></div>
       <div class="bar" style="margin-top:6px"><span style="width:{pct}%"></span></div></div>
     <table><thead><tr><th>Task</th><th>Owner</th><th>Due</th><th>Status</th><th></th></tr></thead><tbody>{rows}</tbody></table>
     <div class="card" style="margin-top:16px"><div class="row" style="justify-content:space-between">
-      <div><strong>Seal the period</strong><div class="muted" style="font-size:12px">Publishing writes the immutable financial package.</div></div>
+      <div><strong>Seal the period</strong><div class="muted small" >Publishing writes the immutable financial package.</div></div>
       {seal}</div></div>
     {js}"""
 
@@ -359,7 +359,7 @@ def render_reports_list(
         for spec in specs:
             base = f"/api/{escape(tenant)}/reports/{escape(spec.id)}"
             open_href = f"/t/{escape(tenant)}/reports/{escape(spec.id)}"
-            desc = (f'<br><span class="muted" style="font-size:12px">{escape(spec.description)}</span>'
+            desc = (f'<br><span class="muted small" >{escape(spec.description)}</span>'
                     if spec.description else "")
             out += (
                 f'<tr><td><strong>{escape(spec.title)}</strong>{desc}</td>'
@@ -441,7 +441,7 @@ def render_connect_page(
     banner_cls, label = _QBO_STATUS_UI.get(status or "disconnected", ("", "Not connected"))
     banner = f'<div class="banner {banner_cls}">{escape(label)}</div>' if banner_cls else (
         f'<p class="muted">{escape(label)}</p>')
-    realm_line = (f'<p class="muted" style="font-size:12px">Company (realm) '
+    realm_line = (f'<p class="muted small" >Company (realm) '
                   f'{escape(realm_id)}</p>' if realm_id else "")
 
     if is_connected:
@@ -610,7 +610,7 @@ def render_scenario_body(tenant: str, display_name: str) -> str:
             fields += (f'<label>{escape(plabel)}</label>'
                        f'<input data-param="{escape(pkey)}" type="{escape(ptype)}"{ph}>')
         cards += (
-            f'<form class="card scn" data-template="{escape(key)}" onsubmit="return runScenario(this)">'
+            f'<form class="card" data-template="{escape(key)}" onsubmit="return runScenario(this)">'
             f'<div style="font:600 17px/1.3 var(--rg-sans)">{escape(label)}</div>'
             f'<p class="muted" style="margin:2px 0 4px;font-size:13px">{escape(blurb)}</p>'
             f'{fields}'

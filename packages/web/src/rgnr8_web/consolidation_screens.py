@@ -74,7 +74,7 @@ def render_groups(
             'placeholder="parent, sub, other"></label>'
             '<label>Intercompany accounts<input name="intercompany_codes" '
             'placeholder="1900, 2900"></label>'
-            '<div style="grid-column:1/-1"><button type="submit">Create the group</button>'
+            '<div class="wide"><button type="submit">Create the group</button>'
             '<span class="muted" style="margin-left:8px">Entities are the tenant ids of the '
             "other companies. Nothing is consolidated that is not named here.</span>"
             "</div></form>"
@@ -152,7 +152,7 @@ def render_consolidation(
         "the group owed itself.</p>"
     )
     out = head + _card(f"{group.get('name')}", body, (
-        f'<a class="rg-btn" href="/t/{_esc(tenant)}/consolidation">All groups</a>'
+        f'<a class="btn ghost" href="/t/{_esc(tenant)}/consolidation">All groups</a>'
     ))
 
     mismatch = _minor(report.get("mismatch_minor")) or 0
@@ -202,7 +202,7 @@ def _elimination_form(tenant: str, group: Mapping[str, object]) -> str:
         '<label>Debit<input name="debit1" placeholder="0.00"></label>'
         '<label>Account<input name="code2" required placeholder="6600"></label>'
         '<label>Credit<input name="credit2" placeholder="0.00"></label>'
-        '<div style="grid-column:1/-1"><button type="submit">Add it</button>'
+        '<div class="wide"><button type="submit">Add it</button>'
         '<span class="muted" style="margin-left:8px">It has to balance. An elimination that '
         "doesn't moves value into or out of the group, which is not what eliminating "
         "means.</span></div></form>"

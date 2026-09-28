@@ -100,16 +100,15 @@ def legend(levels: "tuple[Provenance, ...]" = tuple(Provenance)) -> str:
     """A legend explaining the provenance ladder, weakest → strongest."""
     ordered = sorted(levels, key=rank)
     rows = "".join(
-        f'<div style="display:flex;gap:8px;align-items:baseline;margin:2px 0">'
+        f'<div class="row-item">'
         f"{badge(lv, title=False)}"
-        f'<span class="muted" style="font-size:12px">{escape(_META[lv].tooltip)}</span>'
+        f'<span class="muted small">{escape(_META[lv].tooltip)}</span>'
         f"</div>"
         for lv in ordered
     )
     return (
-        '<details class="rg-prov-legend" style="margin:8px 0">'
-        '<summary style="cursor:pointer;font:600 12px/1.4 var(--rg-sans);color:var(--rg-muted,#666)">'
-        "What do the labels mean?</summary>"
-        f'<div style="margin:6px 0 0">{rows}</div>'
+        '<details class="rg-prov-legend">'
+        "<summary>What do the labels mean?</summary>"
+        f"<div>{rows}</div>"
         "</details>"
     )
