@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
+from .brand import format_money
 from .dates import Recurrence
 from .enums import Category, Confidence, Direction, InvoiceStatus, Scenario
 from .flow import CashFlow
@@ -246,8 +247,8 @@ def resolve(
             split = ""
             if d_inst.principal_portion and d_inst.interest_portion:
                 split = (
-                    f" (principal {d_inst.principal_portion.to_decimal_string()}, "
-                    f"interest {d_inst.interest_portion.to_decimal_string()})"
+                    f" (principal {format_money(d_inst.principal_portion)}, "
+                    f"interest {format_money(d_inst.interest_portion)})"
                 )
             raw.append(
                 CashFlow(

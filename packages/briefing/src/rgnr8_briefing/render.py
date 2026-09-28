@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from html import escape
 
+from rgnr8_forecast import format_money
 from rgnr8_forecast.brand import POSITIVE, RISK, WATCH
 
 from .models import StatusLevel, WeeklyBriefing
@@ -21,7 +22,12 @@ _HTML_COLOR = {
 
 
 def render_text(b: WeeklyBriefing) -> str:
-    ccy = b.currency
+    # Columns are right-aligned on the formatted string, not built from a
+    # currency code plus a raw decimal. That older shape is why the drivers
+    # table read "USD    112000.00" three lines under a headline saying
+    # "$112,200.00" — and why a sweep for `{ccy} {x.to_decimal_string()}`
+    # missed it: the alignment spec made it a different spelling of the same
+    # mistake. Width 15 fits "-$102,200.00" with room to spare.
     lines: list[str] = []
     lines.append(f"{_BADGE[b.status]}  RGNR8 weekly cash briefing — {b.period_label}")
     lines.append("=" * 72)
@@ -34,7 +40,7 @@ def render_text(b: WeeklyBriefing) -> str:
     lines.append("")
     lines.append("THE NUMBERS")
     for f in b.facts:
-        val = f"{ccy} {f.amount.to_decimal_string()}" if f.amount is not None else (f.text or "")
+        val = f"{format_money(f.amount)}" if f.amount is not None else (f.text or "")
         extra = f"  ({f.text})" if f.amount is not None and f.text else ""
         lines.append(f"  {f.label:<28} {val}{extra}")
     if b.drivers:
@@ -42,14 +48,14 @@ def render_text(b: WeeklyBriefing) -> str:
         lines.append("WHAT'S USING YOUR CASH")
         for d in b.drivers:
             lines.append(
-                f"  {d.label:<24} {ccy} {d.amount.to_decimal_string():>12}  "
+                f"  {d.label:<24} {format_money(d.amount):>15}  "
                 f"({d.share_bps / 100:.0f}% of outflows)"
             )
     lines.append("")
     lines.append("13-WEEK GLANCE (closing balance)")
     for w in b.week_glance:
         mark = {StatusLevel.STABLE: " ", StatusLevel.WATCH: ".", StatusLevel.AT_RISK: "!"}[w.status]
-        lines.append(f"  wk{w.index:<2} {w.start.isoformat()}  {ccy} {w.closing.to_decimal_string():>12}  {mark}")
+        lines.append(f"  wk{w.index:<2} {w.start.isoformat()}  {format_money(w.closing):>15}  {mark}")
     if b.data_quality:
         lines.append("")
         lines.append("HEADS-UP (data quality)")
@@ -61,7 +67,8 @@ def render_text(b: WeeklyBriefing) -> str:
 
 
 def render_html(b: WeeklyBriefing) -> str:
-    ccy = b.currency
+    # No `ccy` here any more: the currency now travels with the amount through
+    # `format_money`, so a renderer can never pair the wrong code with a figure.
     color = _HTML_COLOR[b.status]
 
     def money_rows(items: list[tuple[str, str, str]]) -> str:
@@ -72,17 +79,17 @@ def render_html(b: WeeklyBriefing) -> str:
         )
 
     facts = [
-        (f.label, f"{ccy} {f.amount.to_decimal_string()}" if f.amount is not None else (f.text or ""),
+        (f.label, f"{format_money(f.amount)}" if f.amount is not None else (f.text or ""),
          f.text if (f.amount is not None and f.text) else "")
         for f in b.facts
     ]
     drivers = [
-        (d.label, f"{ccy} {d.amount.to_decimal_string()}", f"{d.share_bps / 100:.0f}% of outflows")
+        (d.label, f"{format_money(d.amount)}", f"{d.share_bps / 100:.0f}% of outflows")
         for d in b.drivers
     ]
     glance = "".join(
         f'<tr><td>wk{w.index}</td><td>{w.start.isoformat()}</td>'
-        f'<td class="val">{ccy} {w.closing.to_decimal_string()}</td>'
+        f'<td class="val">{format_money(w.closing)}</td>'
         f'<td><span class="dot" style="background:{_HTML_COLOR[w.status]}"></span></td></tr>'
         for w in b.week_glance
     )

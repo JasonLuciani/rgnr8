@@ -125,6 +125,10 @@ __all__ = [
     "mark_svg",
     "status_color",
     "STATUS_COLOR",
+    # Exported from the package root, not just `.brand`, because every package
+    # that writes a figure into a sentence needs it and none of them should
+    # have to reach into a module named "brand" to format a number.
+    "format_money",
 ]
 
 from .brand import (  # noqa: E402
@@ -133,6 +137,7 @@ from .brand import (  # noqa: E402
     STATUS_COLOR,
     THEME_CSS,
     brand_bar,
+    format_money,
     mark_svg,
     status_color,
     wordmark_svg,

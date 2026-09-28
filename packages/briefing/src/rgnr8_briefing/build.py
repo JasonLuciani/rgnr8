@@ -7,7 +7,14 @@ simple and tunable — a controller should review the WATCH band before launch.
 
 from __future__ import annotations
 
-from rgnr8_forecast import CashFlow, Category, Direction, ForecastResult, Money
+from rgnr8_forecast import (
+    CashFlow,
+    Category,
+    Direction,
+    ForecastResult,
+    Money,
+    format_money,
+)
 
 from .models import (
     Driver,
@@ -42,14 +49,14 @@ def build_briefing(forecast: ForecastResult) -> WeeklyBriefing:
     if p.breach.breached:
         status = StatusLevel.AT_RISK
         reason = (
-            f"Projected to fall below the {ccy} {floor.to_decimal_string()} floor "
+            f"Projected to fall below the {format_money(floor)} floor "
             f"in week {p.breach.weeks_until}."
         )
     elif cushion < watch_band or forecast.overall_confidence < WATCH_CONFIDENCE or forecast.data_quality:
         status = StatusLevel.WATCH
         bits = []
         if cushion < watch_band:
-            bits.append(f"cushion at the low point is only {ccy} {cushion.to_decimal_string()}")
+            bits.append(f"cushion at the low point is only {format_money(cushion)}")
         if forecast.overall_confidence < WATCH_CONFIDENCE:
             bits.append(f"confidence is {forecast.overall_confidence}/100")
         if forecast.data_quality:
@@ -58,7 +65,7 @@ def build_briefing(forecast: ForecastResult) -> WeeklyBriefing:
     else:
         status = StatusLevel.STABLE
         reason = (
-            f"Cash stays comfortably above the {ccy} {floor.to_decimal_string()} floor "
+            f"Cash stays comfortably above the {format_money(floor)} floor "
             f"for all {len(p.weeks)} weeks."
         )
 
@@ -68,7 +75,7 @@ def build_briefing(forecast: ForecastResult) -> WeeklyBriefing:
              amount=p.opening_available),
         Fact("floor", "Your minimum-cash floor", Evidence("field", field="effective_floor"),
              amount=floor,
-             text=(f"includes {ccy} {p.restricted.to_decimal_string()} restricted"
+             text=(f"includes {format_money(p.restricted)} restricted"
                    if p.restricted.is_positive else None)),
         Fact("low_point", "Projected low point", Evidence("field", field="trough_balance"),
              amount=p.trough.balance, text=f"around {p.trough.on_date.isoformat()}",
