@@ -101,17 +101,41 @@ RG_TOKENS_CSS = f""":root{{
   --rg-pos:{POSITIVE}; --rg-watch:{WATCH}; --rg-risk:{RISK};
   --rg-radius:12px; --rg-pill:999px;
   --rg-shadow:0 1px 2px rgba(14,36,30,.07),0 1px 3px rgba(14,36,30,.05);
-  --rg-serif:ui-serif,Georgia,"Times New Roman",serif;
-  --rg-sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  /* One typeface, everywhere. `Inter` is self-hosted by the web app (see
+     rgnr8_web/assets.py); the stack behind it is what renders until the font
+     arrives, and what renders for any surface that isn't served by that app.
+     There is deliberately no serif token any more — headings set in Georgia
+     while the UI sat in system-ui made one product look like two. */
+  --rg-sans:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  /* Money is read in columns, so figures are tabular by default and only opt
+     out in running prose. */
+  --rg-nums:tabular-nums;
+  /* Deprecated alias. Nothing in this repo should set type in a serif any
+     more, but the TypeScript ledger-kernel keeps its own copy of these tokens
+     and the prototype + report renderers still name this one. Pointing it at
+     the sans stack makes those surfaces consistent today without changing
+     them blind; delete it once `ledger-kernel/src/brand.ts` is folded into
+     this single source of truth. */
+  --rg-serif:var(--rg-sans);
 }}"""
 
 RG_BASE_CSS = """*{box-sizing:border-box}
 body{margin:0;background:var(--rg-surface);color:var(--rg-ink);
-  font:400 15px/1.55 var(--rg-sans);-webkit-font-smoothing:antialiased}
-h1{font-family:var(--rg-serif)}
+  font:400 15px/1.55 var(--rg-sans);-webkit-font-smoothing:antialiased;
+  font-variant-numeric:var(--rg-nums)}
+/* Headings used to be Georgia while everything else was system-ui. They are
+   the same family now; what separates them is weight and tracking. */
+h1{font-weight:700;letter-spacing:-.018em}
+/* Prose is the one place proportional figures read better than tabular. */
+p,li{font-variant-numeric:normal}
 .rg-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;
   background:var(--rg-forest);color:var(--rg-ivory);padding:14px 22px}
-.rg-lockup{display:inline-flex;align-items:center;gap:11px}
+/* The lockup is a link to the tenant home in the app shell and a plain span
+   elsewhere, so it has to defuse the browser's default link styling: without
+   this the wordmark renders underlined in #0000EE, which is exactly as bad as
+   it sounds on a dark forest bar. */
+.rg-lockup{display:inline-flex;align-items:center;gap:11px;
+  text-decoration:none;color:inherit}
 .rg-wordmark{font:600 18px/1 var(--rg-sans);
   letter-spacing:.22em;text-transform:uppercase;color:var(--rg-ivory)}
 .rg-wordmark .rg-8{color:var(--rg-sage)}

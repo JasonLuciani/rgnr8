@@ -20,6 +20,7 @@ from html import escape
 
 from rgnr8_forecast.brand import IVORY, RG_BASE_CSS, RG_TOKENS_CSS, mark_svg
 
+from .assets import font_face_css
 from .audit import AuditEvent
 from .rbac import Membership, Permission, Role, User
 from .scope import PROVISIONAL_NOTE, is_provisional
@@ -132,6 +133,7 @@ _NAV: list[tuple[str, str, Permission]] = [
 ]
 
 _SHELL_CSS = f"""<style>
+{font_face_css()}
 {RG_TOKENS_CSS}
 {RG_BASE_CSS}
   /* --- app frame: top bar + grouped sidebar ---------------------------- */

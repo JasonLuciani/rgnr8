@@ -140,6 +140,7 @@ from .inbox_screens import (
     render_inbox,
     render_rules,
 )
+from .assets import ASSET_PREFIX, ASSETS, CACHE_HEADER
 from .integration_screens import render_integrations, render_integrations_unavailable
 from .inventory_screens import render_inventory, render_inventory_unavailable
 from .invitations import InvitationError, InvitationService
@@ -991,6 +992,16 @@ class WebApp:
 
         if route == "/openapi.json":
             return _json(200, build_openapi())
+
+        # --- static assets (no auth: a webfont must load before sign-in) ---
+        # Content-addressed and served from a fixed dict — see `assets.py` for
+        # why this route cannot be walked out of.
+        if route.startswith(ASSET_PREFIX) and req.method == "GET":
+            asset = ASSETS.get(route[len(ASSET_PREFIX):])
+            if asset is None:
+                return _json(404, {"error": "not found"})
+            return Response(200, asset.body, asset.content_type,
+                            (("Cache-Control", CACHE_HEADER),))
 
         # --- UI: login / logout (no auth required) ---
         if route == "/login" and req.method == "GET":

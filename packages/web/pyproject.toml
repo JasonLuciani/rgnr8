@@ -16,6 +16,14 @@ dev = ["pytest>=8", "mypy>=1.8"]
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# The self-hosted typeface. The deployed image imports from source (it copies
+# packages/ wholesale), so this matters only if someone builds a wheel — but a
+# wheel without it would fail at import, not at first request, because
+# rgnr8_web.assets reads the files eagerly. Cheap insurance against a very
+# confusing boot failure.
+[tool.setuptools.package-data]
+rgnr8_web = ["assets/*.woff2", "assets/*.txt"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "../forecast/src", "../briefing/src", "../obs/src", "../scenario/src", "../ar/src", "../categorize/src", "../reports/src", "../recon-monitor/src", "../billing/src", "../qbo/src", "../ocr/src", "../runtime/src", "../copilot/src"]

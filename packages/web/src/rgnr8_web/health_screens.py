@@ -26,7 +26,11 @@ def _metric(label: str, value: object, suffix: str = "") -> str:
 
 
 def _group(title: str, health: object, rows: str) -> str:
-    read = f'<p style="margin:0 0 10px;font:italic 14px/1.4 var(--rg-serif)">{_esc(health)}</p>' if health else ""
+    # Was synthetic italic in a serif. The self-hosted Inter ships upright only,
+    # so the voice change is carried by colour and size rather than a browser's
+    # slanted approximation of a face that doesn't exist.
+    read = (f'<p style="margin:0 0 10px;font:400 13.5px/1.45 var(--rg-sans);'
+            f'color:var(--rg-ink-2)">{_esc(health)}</p>') if health else ""
     return _card(title, read + rows)
 
 
