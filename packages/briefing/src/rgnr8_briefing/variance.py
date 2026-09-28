@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rgnr8_forecast import ForecastResult, Money, PublicationStatus
+from rgnr8_forecast import ForecastResult, Money, PublicationStatus, format_money
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,9 +84,9 @@ def compute_variance(
         narrative = (
             f"Over {len(rows)} elapsed week(s), actuals {direction} the forecast "
             f"(mean error {mean_abs / 100:.1f}%). Largest gap was week {worst.index}: "
-            f"actual {ccy} {worst.actual.to_decimal_string()} vs expected "
-            f"{ccy} {worst.expected.to_decimal_string()} "
-            f"({'+' if worst.delta.minor_units >= 0 else ''}{ccy} {worst.delta.to_decimal_string()})."
+            f"actual {format_money(worst.actual)} vs expected "
+            f"{format_money(worst.expected)} "
+            f"({'+' if worst.delta.minor_units >= 0 else ''}{format_money(worst.delta)})."
         )
         if published.status is not PublicationStatus.PUBLISHED:
             narrative += " (Note: compared against a non-published forecast.)"

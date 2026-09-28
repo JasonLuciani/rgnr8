@@ -39,6 +39,7 @@ from rgnr8_forecast import (
     Invoice,
     Money,
     Provenance,
+    format_money,
 )
 
 from .ledger_client import LedgerClient
@@ -83,7 +84,7 @@ class LedgerFacts:
     def describe(self) -> str:
         return (
             f"{len(self.invoices)} open invoices and {len(self.bills)} open bills "
-            f"from the books, cash {self.cash.to_decimal_string()}"
+            f"from the books, cash {format_money(self.cash)}"
         )
 
 

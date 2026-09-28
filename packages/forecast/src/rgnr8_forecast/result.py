@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass
 
+from .brand import format_money
 from .enums import Category, Direction, PublicationStatus, Scenario
 from .flow import CashFlow
 from .models import (
@@ -151,22 +152,21 @@ def _overall_confidence(flows: list[CashFlow], inputs: ForecastInputs) -> int:
 
 
 def _headline(projection: Projection, scenario: Scenario) -> str:
-    ccy = projection.currency
     trough = projection.trough
     label = {Scenario.BASE: "", Scenario.DOWNSIDE: " (downside)", Scenario.UPSIDE: " (upside)"}[scenario]
     if projection.breach.breached and projection.breach.first_date is not None:
         wk = projection.breach.weeks_until
         short = projection.breach.worst_shortfall
         return (
-            f"Cash is projected to fall below your {ccy} "
-            f"{projection.effective_floor.to_decimal_string()} floor in week {wk} "
+            f"Cash is projected to fall below your "
+            f"{format_money(projection.effective_floor)} floor in week {wk} "
             f"(around {projection.breach.first_date.isoformat()}), short by up to "
-            f"{ccy} {short.to_decimal_string()}{label}."
+            f"{format_money(short)}{label}."
         )
     return (
-        f"Cash stays above your {ccy} {projection.effective_floor.to_decimal_string()} "
-        f"floor for all {len(projection.weeks)} weeks. Low point is {ccy} "
-        f"{trough.balance.to_decimal_string()} around {trough.on_date.isoformat()}{label}."
+        f"Cash stays above your {format_money(projection.effective_floor)} "
+        f"floor for all {len(projection.weeks)} weeks. Low point is "
+        f"{format_money(trough.balance)} around {trough.on_date.isoformat()}{label}."
     )
 
 
@@ -190,13 +190,13 @@ def _recommended_action(
         largest = max(pullable, key=lambda f: (f.amount.minor_units, f.on_date))
         return (
             f"Accelerate collection of {len(pullable)} receipt(s) totaling "
-            f"{projection.currency} {total.to_decimal_string()} that currently land on or after "
+            f"{format_money(total)} that currently land on or after "
             f"{breach_date.isoformat()} — pulling in the largest (invoice "
-            f"{largest.origin_id}, {projection.currency} {largest.amount.to_decimal_string()}) "
+            f"{largest.origin_id}, {format_money(largest.amount)}) "
             f"would most directly protect the floor."
         )
     return (
-        f"Cover the projected shortfall of up to {projection.currency} "
-        f"{projection.breach.worst_shortfall.to_decimal_string()} before {breach_date.isoformat()} "
+        f"Cover the projected shortfall of up to "
+        f"{format_money(projection.breach.worst_shortfall)} before {breach_date.isoformat()} "
         f"— delay non-critical outflows or arrange a short-term draw."
     )

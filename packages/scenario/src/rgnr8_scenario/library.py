@@ -17,6 +17,7 @@ from rgnr8_forecast import (
     Money,
     Recurrence,
     RecurringItem,
+    format_money,
 )
 
 from .adjustments import (
@@ -30,7 +31,7 @@ from .adjustments import (
 def hire_employee(monthly_cost: Money, start: date) -> Scenario:
     """Model a recurring monthly payroll outflow beginning on ``start``."""
     item = RecurringItem(
-        label=f"New hire ({monthly_cost.to_decimal_string()}/mo)",
+        label=f"New hire ({format_money(monthly_cost)}/mo)",
         category=Category.PAYROLL_NET,
         direction=Direction.OUTFLOW,
         amount=monthly_cost,
@@ -55,14 +56,14 @@ def take_loan(
 ) -> Scenario:
     """Model a loan: a lump inflow on ``on`` and monthly repayment outflows."""
     disbursement = OneTimeFlow(
-        label=f"Loan draw ({amount.to_decimal_string()})",
+        label=f"Loan draw ({format_money(amount)})",
         amount=amount,
         on=on,
         inflow=True,
     )
     repayment = AddRecurring(
         RecurringItem(
-            label=f"Loan repayment ({monthly_repayment.to_decimal_string()}/mo)",
+            label=f"Loan repayment ({format_money(monthly_repayment)}/mo)",
             category=Category.DEBT_SERVICE,
             direction=Direction.OUTFLOW,
             amount=monthly_repayment,

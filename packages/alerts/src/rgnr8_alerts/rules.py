@@ -29,7 +29,7 @@ from datetime import date
 from enum import IntEnum
 from typing import Protocol, runtime_checkable
 
-from rgnr8_forecast import ForecastResult, Money
+from rgnr8_forecast import ForecastResult, Money, format_money
 
 from .alert import Alert
 
@@ -69,10 +69,10 @@ class FloorBreachWithinWeeks:
         ccy = proj.currency
         where = f" (around {breach.first_date.isoformat()})" if breach.first_date else ""
         message = (
-            f"Cash is projected to fall below your {ccy} "
-            f"{proj.effective_floor.to_decimal_string()} floor in week "
-            f"{breach.weeks_until}{where}, short by up to {ccy} "
-            f"{breach.worst_shortfall.to_decimal_string()}."
+            f"Cash is projected to fall below your "
+            f"{format_money(proj.effective_floor)} floor in week "
+            f"{breach.weeks_until}{where}, short by up to "
+            f"{format_money(breach.worst_shortfall)}."
         )
         return Alert(
             key=f"floor_breach_within_{self.weeks}w",
@@ -106,9 +106,9 @@ class BalanceBelow:
             return None
         ccy = proj.currency
         message = (
-            f"Projected cash reaches a low of {ccy} "
-            f"{trough.balance.to_decimal_string()} around {trough.on_date.isoformat()}, "
-            f"below your {self.amount.currency} {self.amount.to_decimal_string()} threshold."
+            f"Projected cash reaches a low of "
+            f"{format_money(trough.balance)} around {trough.on_date.isoformat()}, "
+            f"below your {format_money(self.amount)} threshold."
         )
         return Alert(
             key=f"balance_below_{self.amount.currency}_{self.amount.minor_units}",
@@ -151,10 +151,10 @@ class LargeOutflow:
         ccy = proj.currency
         drop_money = Money(worst_drop, ccy)
         message = (
-            f"A large net outflow of {ccy} {drop_money.to_decimal_string()} is "
+            f"A large net outflow of {format_money(drop_money)} is "
             f"projected in week {worst_week.index} (starting "
-            f"{worst_week.start.isoformat()}), above your {self.amount.currency} "
-            f"{self.amount.to_decimal_string()} threshold."
+            f"{worst_week.start.isoformat()}), above your "
+            f"{format_money(self.amount)} threshold."
         )
         return Alert(
             key=(
@@ -196,10 +196,10 @@ class TroughWorsened:
         ccy = proj.currency
         worse_by = Money(self.vs_amount.minor_units - trough.balance.minor_units, ccy)
         message = (
-            f"The projected cash trough of {ccy} {trough.balance.to_decimal_string()} "
-            f"(around {trough.on_date.isoformat()}) is {ccy} "
-            f"{worse_by.to_decimal_string()} worse than the prior baseline of "
-            f"{self.vs_amount.currency} {self.vs_amount.to_decimal_string()}."
+            f"The projected cash trough of {format_money(trough.balance)} "
+            f"(around {trough.on_date.isoformat()}) is "
+            f"{format_money(worse_by)} worse than the prior baseline of "
+            f"{format_money(self.vs_amount)}."
         )
         return Alert(
             key=f"trough_worsened_vs_{self.vs_amount.currency}_{self.vs_amount.minor_units}",
