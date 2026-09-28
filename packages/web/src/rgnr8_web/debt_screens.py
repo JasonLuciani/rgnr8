@@ -125,7 +125,8 @@ def _tile(label: str, value: str) -> str:
     return (
         '<div class="card" style="margin:0;padding:14px">'
         f'<div class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.04em">{_esc(label)}</div>'
-        f'<div style="font:600 22px/1.2 var(--rg-serif);margin-top:4px">{_esc(value)}</div></div>'
+        f'<div style="font:700 22px/1.2 var(--rg-sans);letter-spacing:-.015em;'
+        f'margin-top:4px">{_esc(value)}</div></div>'
     )
 
 

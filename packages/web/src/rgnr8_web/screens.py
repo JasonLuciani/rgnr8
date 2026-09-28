@@ -67,7 +67,7 @@ def _cash_empty_state(display_name: str) -> str:
     return f"""<h1>Cash outlook</h1>
     <p class="sub">{escape(display_name)}</p>
     <div class="card empty">
-      <div style="font-family:var(--rg-serif);font-size:22px;margin-bottom:8px">Connect your bank to see your cash</div>
+      <div style="font:600 21px/1.3 var(--rg-sans);letter-spacing:-.012em;margin-bottom:8px">Connect your bank to see your cash</div>
       <p class="muted" style="max-width:48ch;margin:0 auto 18px">RGNR8 builds your 13-week cash outlook the moment your first bank feed lands.
       Connect an account and your minimum-cash floor, projected low point, and cushion appear right here.</p>
       <a class="btn sage" style="text-decoration:none" href="#connect">Connect your bank</a>
@@ -159,7 +159,7 @@ def render_briefing_body(forecast: ForecastResult, display_name: str) -> str:
     <div class="card"><div class="row" style="justify-content:space-between">
       {_status_pill(b.status.value)}
       <span class="muted" style="font-size:12px">Confidence {b.overall_confidence}/100</span></div>
-      <div style="font-family:var(--rg-serif);font-size:22px;margin:10px 0 4px">{escape(b.headline)}</div>
+      <div style="font:600 21px/1.3 var(--rg-sans);letter-spacing:-.012em;margin:10px 0 4px">{escape(b.headline)}</div>
       <p class="muted" style="margin:0">{escape(b.status_reason)}</p>{action}</div>
     <h2>The numbers</h2>
     <table><thead><tr><th>Fact</th><th class="num">Amount</th><th>Backed by</th></tr></thead><tbody>{facts}</tbody></table>
@@ -611,7 +611,7 @@ def render_scenario_body(tenant: str, display_name: str) -> str:
                        f'<input data-param="{escape(pkey)}" type="{escape(ptype)}"{ph}>')
         cards += (
             f'<form class="card scn" data-template="{escape(key)}" onsubmit="return runScenario(this)">'
-            f'<div style="font-family:var(--rg-serif);font-size:18px">{escape(label)}</div>'
+            f'<div style="font:600 17px/1.3 var(--rg-sans)">{escape(label)}</div>'
             f'<p class="muted" style="margin:2px 0 4px;font-size:13px">{escape(blurb)}</p>'
             f'{fields}'
             f'<button class="btn sage" style="margin-top:14px" type="submit">Run scenario</button>'
