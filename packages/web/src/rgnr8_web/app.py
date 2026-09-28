@@ -222,6 +222,9 @@ class _NoHttp:
 
     def post_json(self, url: str, body: str, headers: dict[str, str]) -> HttpResponse:
         raise RuntimeError("no HTTP client is wired for this operation")
+from .attention import Item as AttentionItem
+from .attention import Signals as AttentionSignals
+from .attention import gather as attention_gather
 from .screens import (
     CloseBoard,
     default_close_board,
@@ -5436,9 +5439,66 @@ class WebApp:
                                        permissions=perms, active=active, body_html=body,
                                        subject=subject, available=self._nav_available()))
 
+    def _review_count(self, t: _Tenant) -> "int | None":
+        """How many bank lines are waiting, or None when nobody can tell.
+
+        None is the honest answer for a deployment with no ledger wired, and
+        also for a ledger that answered with an error — in both cases the right
+        thing to show an owner is "nothing is being reviewed", not "0 waiting".
+        A failure here must never take the cash page down with it, which is why
+        every path returns rather than raises.
+        """
+        if self._ledger is None:
+            return None
+        try:
+            res = self._ledger.feed_inbox(t.tenant_id)
+        except Exception:  # noqa: BLE001 - a feed outage is not a page outage
+            return None
+        if not res.ok:
+            return None
+        pending = res.body.get("pending")
+        return pending if isinstance(pending, int) else None
+
+    def _attention(self, t: _Tenant, forecast: ForecastResult) -> "tuple[AttentionItem, ...]":
+        """Gather every attention signal for this tenant and rank them.
+
+        This is the only place that knows where the signals live; `attention`
+        itself is pure policy over the record this builds. Everything optional
+        is guarded, because the queue is decoration on a page whose real job is
+        the cash figure — it must not be able to break it.
+        """
+        p = forecast.projection
+        b = self._briefing(t)
+        facts = self._ledger_facts.get(t.tenant_id)
+        board = self._close_board(t)
+        try:
+            report, chase, _ = self._ar_data(t)
+        except Exception:  # noqa: BLE001
+            report, chase = None, []
+        overdue = [c for c in chase if c.days_overdue > 0]
+        worst = overdue[0] if overdue else None
+        return attention_gather(AttentionSignals(
+            tenant=t.tenant_id,
+            floor_breached=p.breach.breached,
+            breach_weeks_until=p.breach.weeks_until,
+            breach_shortfall=p.breach.worst_shortfall if p.breach.breached else None,
+            primary_action=b.primary_action or "",
+            ledger_problems=tuple(facts.problems) if facts is not None else (),
+            data_quality=tuple(b.data_quality),
+            books_connected=self._ledger is not None,
+            review_count=self._review_count(t),
+            overdue_count=len(overdue),
+            overdue_total=report.overdue_total if report is not None else None,
+            worst_customer=(worst.invoice.customer_name or "") if worst is not None else "",
+            worst_days=worst.days_overdue if worst is not None else 0,
+            close_period=board.period,
+            close_overdue=board.overdue,
+            close_blocked=board.blocked,
+        ))
+
     def _cash_page(self, subject: str, t: _Tenant) -> Response:
         forecast = self._forecast(t)
-        body = render_cash_body(forecast, t.name)
+        body = render_cash_body(forecast, t.name, attention=self._attention(t, forecast))
         facts = self._ledger_facts.get(t.tenant_id)
         if facts is not None:
             # The cash outlook mixes a FORECAST (weakest) with POSTED book facts;
