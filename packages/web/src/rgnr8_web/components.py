@@ -29,6 +29,9 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from html import escape
 
+from .provenance_labels import Provenance
+from .provenance_labels import badge as prov_badge
+
 __all__ = [
     "Action",
     "TimelineEntry",
@@ -113,20 +116,27 @@ def page_header(
 
 
 def metric(label: str, value: str, *, note: str = "", hero: bool = False,
-           tone: str = "") -> str:
+           tone: str = "", provenance: "Provenance | None" = None) -> str:
     """One figure with its name.
 
     `hero` is the single number a screen is about — cash today — and there
     should be at most one per screen. `tone` ('pos'|'risk'|'watch') colours the
     *value* only: a negative trough has to look different from a healthy one,
     which was a named finding (P1-9), but the label around it must not shout.
+
+    `provenance` puts the trust label on the figure rather than in a banner
+    somewhere above it, and that distinction is the point: the number is what
+    gets screenshotted, pasted into a board pack and read down the phone, while
+    the banner stays behind on the page. It takes the enum rather than rendered
+    markup, so every value this function emits is still escaped here.
     """
     cls = "metric hero" if hero else "metric"
     vcls = f' class="v {escape(tone)}"' if tone else ' class="v"'
     tail = f'<div class="note">{escape(note)}</div>' if note else ""
+    tag = f" {prov_badge(provenance)}" if provenance is not None else ""
     return (
         f'<div class="{cls}">'
-        f'<div class="k">{escape(label)}</div>'
+        f'<div class="k">{escape(label)}{tag}</div>'
         f"<div{vcls}>{escape(value)}</div>"
         f"{tail}</div>"
     )

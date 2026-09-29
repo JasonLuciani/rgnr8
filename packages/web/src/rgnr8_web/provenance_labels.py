@@ -83,6 +83,30 @@ def most_cautious(levels: "list[Provenance] | tuple[Provenance, ...]") -> Proven
     return min(levels, key=rank)
 
 
+def for_cash_figure(*, books_wired: bool, cash_from_books: bool) -> "Provenance | None":
+    """Which rung the owner's cash-today figure stands on.
+
+    This is the one figure in the product that is a *hybrid* — the books' bank
+    balance when they can be read, the owner's own saved opening when they
+    cannot — and until now it was the only headline figure carrying no label at
+    all. Every books screen badges its numbers; the screen that mixes fact and
+    assumption inside a single number did not.
+
+    `POSTED` is the ceiling and not `RECONCILED`: the figure is the trial-balance
+    total of the cash accounts, which says the entries are posted, and says
+    nothing whatever about whether anyone has matched them to a bank statement.
+    Claiming the stronger rung would be exactly the overclaim this ladder exists
+    to prevent.
+
+    `None` — draw nothing — when no ledger is wired at all. On an
+    assumptions-only deployment every figure on every screen is a forecast, so a
+    badge saying so carries no information and is just noise on the page.
+    """
+    if not books_wired:
+        return None
+    return Provenance.POSTED if cash_from_books else Provenance.FORECAST
+
+
 def badge(level: Provenance, *, title: bool = True) -> str:
     """A small inline provenance badge for placing next to a figure."""
     m = _META[level]

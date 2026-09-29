@@ -105,6 +105,19 @@ def _t(signals: Signals, suffix: str) -> str:
     return f"/t/{signals.tenant}/{suffix}".rstrip("/")
 
 
+def _sentence(text: str) -> str:
+    """A fragment written to be read mid-sentence, shown as a sentence.
+
+    Ledger problems and the briefing's data-quality notes are both phrased as
+    clauses — "could not read cash on hand: …", "no receivables provided" —
+    because their other callers embed them in a longer line. Here each one
+    starts a line of its own, and a lower-case opening reads as a string that
+    got away from somebody rather than a sentence anyone wrote. Only the first
+    character is touched: the rest may hold an account code or a proper noun.
+    """
+    return text[:1].upper() + text[1:]
+
+
 def gather(s: Signals) -> tuple[Item, ...]:
     """The ranked queue for this tenant, most urgent first.
 
@@ -119,7 +132,7 @@ def gather(s: Signals) -> tuple[Item, ...]:
     # The books could not be read. Everything downstream is suspect, including
     # the cash figure at the top of this very screen.
     if s.ledger_problems:
-        first = s.ledger_problems[0]
+        first = _sentence(s.ledger_problems[0])
         more = f" (+{len(s.ledger_problems) - 1} more)" if len(s.ledger_problems) > 1 else ""
         items.append(Item(
             key="ledger-problems",
@@ -160,7 +173,7 @@ def gather(s: Signals) -> tuple[Item, ...]:
         items.append(Item(
             key=f"data-quality-{i}",
             headline="Worth a second look at the numbers",
-            detail=note,
+            detail=_sentence(note),
             href=_t(s, "briefing"),
             action="Open the briefing",
             urgency=_TRUST + 10 - i,

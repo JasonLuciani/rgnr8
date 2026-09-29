@@ -110,6 +110,7 @@ from .books_screens import (
 )
 from .books_split_screens import RULE_ROWS, render_split
 from .provenance_labels import Provenance
+from .provenance_labels import for_cash_figure as prov_for_cash
 from .provenance_labels import legend as prov_legend
 from .consolidation_screens import (
     render_consolidation,
@@ -5501,8 +5502,19 @@ class WebApp:
 
     def _cash_page(self, subject: str, t: _Tenant) -> Response:
         forecast = self._forecast(t)
-        body = render_cash_body(forecast, t.name, attention=self._attention(t, forecast))
         facts = self._ledger_facts.get(t.tenant_id)
+        body = render_cash_body(
+            forecast, t.name,
+            attention=self._attention(t, forecast),
+            # The hero is a hybrid figure, so it carries its own label. `facts`
+            # is None when no ledger is wired at all; `cash_accounts` is zero
+            # when the books were read but held nowhere to read cash from,
+            # which is the case that used to print a confident $0.00.
+            cash_provenance=prov_for_cash(
+                books_wired=self._ledger is not None,
+                cash_from_books=facts is not None and facts.cash_accounts > 0,
+            ),
+        )
         if facts is not None:
             # The cash outlook mixes a FORECAST (weakest) with POSTED book facts;
             # the legend gives the owner the key to read which is which.
