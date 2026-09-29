@@ -29,6 +29,7 @@ meant to correct.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import date
 
@@ -42,7 +43,7 @@ from rgnr8_forecast import (
     format_money,
 )
 
-from .ledger_client import LedgerClient
+from .ledger_client import LedgerClient, LedgerResponse
 
 LEDGER = "ledger"
 ASSUMPTION = "assumption"
@@ -88,6 +89,33 @@ class LedgerFacts:
         )
 
 
+def _ask(what: str, call: "Callable[[], LedgerResponse]") -> "tuple[LedgerResponse | None, str]":
+    """One ledger call, with either kind of failure turned into one sentence.
+
+    `LedgerClient._call` is where the never-raises contract is enforced, and it
+    is the fix for the outage that took down every ledger-backed screen. This
+    helper exists for a smaller reason: the four readers below each had their
+    own two-line "was it ok, else describe the error" dance, and the descriptions
+    had already drifted apart. One helper, one phrasing.
+
+    It also still catches, which is not redundant — this module is handed a
+    `LedgerClient` by type hint only, and a test double or a future wrapper is
+    not obliged to honour that contract. A reader of the books should not be the
+    thing that discovers otherwise.
+
+    The message deliberately carries only the exception's type, never its text.
+    A transport error's string can contain the request URL, and that URL carries
+    the derived bearer token.
+    """
+    try:
+        res = call()
+    except Exception as exc:  # noqa: BLE001 — any transport failure, not a class of them
+        return None, f"could not read {what}: the ledger service did not answer ({type(exc).__name__})"
+    if not res.ok:
+        return None, f"could not read {what}: {res.error()}"
+    return res, ""
+
+
 def _bank_cash(ledger: LedgerClient, tenant: str, as_of: date) -> tuple[Money, int, str]:
     """Cash on hand: the trial-balance total of the bank and cash accounts.
 
@@ -95,9 +123,9 @@ def _bank_cash(ledger: LedgerClient, tenant: str, as_of: date) -> tuple[Money, i
     own posted, reconciled books say it holds, not what a bank feed last
     reported.
     """
-    accounts = ledger.accounts(tenant)
-    if not accounts.ok:
-        return Money(0), 0, f"could not read the chart of accounts: {accounts.error()}"
+    accounts, problem = _ask("the chart of accounts", lambda: ledger.accounts(tenant))
+    if accounts is None:
+        return Money(0), 0, problem
     bank_codes = set()
     raw = accounts.body.get("accounts")
     for a in raw if isinstance(raw, (list, tuple)) else []:
@@ -107,9 +135,9 @@ def _bank_cash(ledger: LedgerClient, tenant: str, as_of: date) -> tuple[Money, i
         if subtype in {"BANK", "CASH", "UNDEPOSITED_FUNDS"}:
             bank_codes.add(str(a.get("code")))
 
-    tb = ledger.trial_balance(tenant, to=as_of.isoformat())
-    if not tb.ok:
-        return Money(0), 0, f"could not read the trial balance: {tb.error()}"
+    tb, problem = _ask("the trial balance", lambda: ledger.trial_balance(tenant, to=as_of.isoformat()))
+    if tb is None:
+        return Money(0), 0, problem
     total = 0
     counted = 0
     rows = tb.body.get("rows")
@@ -125,9 +153,9 @@ def _bank_cash(ledger: LedgerClient, tenant: str, as_of: date) -> tuple[Money, i
 def _open_documents(
     ledger: LedgerClient, tenant: str, kind: str, as_of: date
 ) -> tuple[list[dict[str, object]], str]:
-    res = ledger.documents(tenant, kind)
-    if not res.ok:
-        return [], f"could not read {kind}: {res.error()}"
+    res, problem = _ask(kind, lambda: ledger.documents(tenant, kind))
+    if res is None:
+        return [], problem
     docs = res.body.get("documents")
     out = []
     for d in docs if isinstance(docs, (list, tuple)) else []:
@@ -178,11 +206,11 @@ def read_ledger_facts(
     # Payroll liabilities are money already owed on work already done — as much
     # a fact as an unpaid bill, and one businesses routinely forget is coming.
     liability = Money(0)
-    liabilities = ledger.payroll_liabilities(tenant)
-    if liabilities.ok:
-        liability = _money(liabilities.body.get("owed_minor"), currency)
+    liabilities, problem = _ask("payroll liabilities", lambda: ledger.payroll_liabilities(tenant))
+    if liabilities is None:
+        problems.append(problem)
     else:
-        problems.append(f"could not read payroll liabilities: {liabilities.error()}")
+        liability = _money(liabilities.body.get("owed_minor"), currency)
 
     return LedgerFacts(
         cash=cash,

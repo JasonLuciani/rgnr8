@@ -182,8 +182,35 @@ class LedgerClient:
         return h
 
     def _call(self, method: str, path: str, payload: object = None) -> LedgerResponse:
+        """Make one call. **This never raises.**
+
+        That is the client's contract, and it is load-bearing: roughly a hundred
+        and fifty call sites across the app follow `res = self._ledger.x(...)`
+        with `if not res.ok: <render unavailable>`, and every one of them is
+        correct only if a dead service produces a not-ok response rather than an
+        exception.
+
+        `UrllibTransport` already converts `URLError` into a 503, but that is one
+        transport and one exception family: a read timeout, a TLS failure, a
+        connection reset outside `URLError`, or a body that isn't JSON all
+        escaped it — and an escaping exception did not merely 500 a page, it
+        propagated out of `WebApp.handle` and took down every screen that
+        touches the ledger. Catching here, at the one seam they all pass
+        through, is what makes those hundred and fifty `if not res.ok` branches
+        true.
+
+        503 is deliberate: it is what a caller should treat as "try again",
+        distinct from a 4xx the service actually returned. The message carries
+        the exception's type and nothing else — a transport error's text can
+        contain the request URL, and that URL carries the derived bearer token.
+        """
         body = json.dumps(payload) if payload is not None else ""
-        return self._t.request(method, path, body, self._headers(path))
+        try:
+            return self._t.request(method, path, body, self._headers(path))
+        except Exception as exc:  # noqa: BLE001 — a transport can fail any way it likes
+            return LedgerResponse(503, {
+                "error": f"ledger service did not answer ({type(exc).__name__})"
+            })
 
     # --- reads ---------------------------------------------------------------
 
