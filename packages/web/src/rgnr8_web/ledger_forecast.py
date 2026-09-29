@@ -120,8 +120,13 @@ def _bank_cash(ledger: LedgerClient, tenant: str, as_of: date) -> tuple[Money, i
     """Cash on hand: the trial-balance total of the bank and cash accounts.
 
     This is a fact in the strongest sense available — it is what the business's
-    own posted, reconciled books say it holds, not what a bank feed last
-    reported.
+    own posted books say it holds, not what a bank feed last reported.
+
+    The returned count is how many cash accounts the *chart* holds, and it is
+    the caller's signal for whether the question was answerable at all: zero
+    means "there was nowhere to read this from", never "the balance is zero".
+    A chart that holds a bank account with no postings against it genuinely is
+    at zero, and says so with a count of one.
     """
     accounts, problem = _ask("the chart of accounts", lambda: ledger.accounts(tenant))
     if accounts is None:
@@ -135,19 +140,29 @@ def _bank_cash(ledger: LedgerClient, tenant: str, as_of: date) -> tuple[Money, i
         if subtype in {"BANK", "CASH", "UNDEPOSITED_FUNDS"}:
             bank_codes.add(str(a.get("code")))
 
+    if not bank_codes:
+        # The books answered, and the answer was "there is nowhere here to read
+        # cash from" — a chart part-way through its first import, which is the
+        # normal state of a QuickBooks company for the first hour of its life.
+        # Returning Money(0) with no problem recorded made that indistinguishable
+        # from a business that genuinely holds nothing, and the difference was
+        # then printed in the largest type on the product's flagship screen.
+        return Money(0), 0, (
+            "could not read cash on hand: your chart of accounts has no bank or "
+            "cash account yet"
+        )
+
     tb, problem = _ask("the trial balance", lambda: ledger.trial_balance(tenant, to=as_of.isoformat()))
     if tb is None:
         return Money(0), 0, problem
     total = 0
-    counted = 0
     rows = tb.body.get("rows")
     for r in rows if isinstance(rows, (list, tuple)) else []:
         if not isinstance(r, dict) or str(r.get("code")) not in bank_codes:
             continue
         # An asset is debit-positive.
         total += _minor(r.get("debit_minor")) - _minor(r.get("credit_minor"))
-        counted += 1
-    return Money(total), counted, ""
+    return Money(total), len(bank_codes), ""
 
 
 def _open_documents(
@@ -240,11 +255,21 @@ def merge_forecast_inputs(
     if not facts.ok and facts.cash_accounts == 0 and not facts.invoices and not facts.bills:
         return assumptions
 
+    # Cash is taken from the books only when the books held somewhere to read it
+    # from. This is deliberately *not* folded into the whole-record guard above:
+    # that guard needs the read to have failed completely, and a company whose
+    # invoices came through fine while its chart has no bank account yet sails
+    # straight past it. The owner's own figure then has to stand on its own.
+    #
+    # "Could not work it out" and "it is zero" are different sentences, and this
+    # figure is the largest thing on the screen. `verified` follows the same
+    # rule, because a zero nobody checked must not present as a checked zero.
+    cash_known = facts.cash_accounts > 0
     opening = CashPosition(
         as_of=as_of,
-        available=facts.cash,
+        available=facts.cash if cash_known else assumptions.opening.available,
         restricted=assumptions.opening.restricted,
-        verified=facts.ok,
+        verified=facts.ok and cash_known,
     )
 
     # The payroll liability is a dated outflow the books already commit to.

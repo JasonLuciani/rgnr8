@@ -31,6 +31,7 @@ from rgnr8_reports import ReportSpec
 
 from .attention import Item as AttentionItem
 from .components import Action, empty_state, metric, page_header, queue, status_chip
+from .provenance_labels import Provenance
 
 _STATUS = {
     "STABLE": ("Stable", "var(--rg-pos)"),
@@ -114,6 +115,7 @@ def render_cash_body(
     display_name: str,
     *,
     attention: "Sequence[AttentionItem] | None" = None,
+    cash_provenance: "Provenance | None" = None,
 ) -> str:
     """The owner's cash outlook, drawn inside the shell: status hero, the queue
     of what needs them, KPI tiles, the 13-week chart, and the cash drivers.
@@ -122,6 +124,11 @@ def render_cash_body(
     `attention=None` means the caller did not compute a queue, so none is drawn
     — distinct from an empty sequence, which is a checked all-clear and *does*
     draw the good-news panel.
+
+    `cash_provenance` is the trust label for the hero figure, which is a hybrid:
+    the books' bank balance when they can be read, the owner's own saved opening
+    when they cannot. `None` means no books are wired and there is nothing to
+    distinguish, so no badge is drawn.
     """
     if _forecast_is_empty(forecast):
         return _cash_empty_state(display_name)
@@ -160,7 +167,8 @@ def render_cash_body(
     return f"""{page_header("Cash outlook",
         sub=f"{display_name} · as of {p.as_of.isoformat()} · {b.period_label}")}
     <div class="card"><div class="cash-hero">
-      <div>{metric("Cash today", _money(p.opening_available), hero=True)}</div>
+      <div>{metric("Cash today", _money(p.opening_available), hero=True,
+                    provenance=cash_provenance)}</div>
       <div class="cash-state">{status_chip(b.status.value)}
         <div class="line">{escape(b.headline)}</div></div>
     </div>{action}</div>
