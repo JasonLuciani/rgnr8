@@ -462,7 +462,12 @@ def test_forgot_password_page_says_the_same_thing_either_way() -> None:
     ghost = app.handle(Request("POST", "/password/forgot", {}, "email=ghost@acme.com"))
     assert known.status == 302 and ghost.status == 302
     assert known.headers.get("Location") == ghost.headers.get("Location")
-    assert _get(app, "/password/forgot?sent=1").body == _get(app, "/password/forgot?sent=1").body
+    # The pages must be identical apart from the per-request CSP nonce, which
+    # is fresh randomness on every response and says nothing about the account.
+    import re
+    def _same(b: str) -> str:
+        return re.sub(r'nonce="[^"]+"', 'nonce=""', b)
+    assert _same(_get(app, "/password/forgot?sent=1").body) == _same(_get(app, "/password/forgot?sent=1").body)
     # ...but only the real one actually got mail
     assert [to for (to, p, _t) in app._outbox if p == "password_reset"] == ["ada@acme.com"]
 

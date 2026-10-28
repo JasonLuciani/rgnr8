@@ -5525,6 +5525,7 @@ class WebApp:
         facts = self._ledger_facts.get(t.tenant_id)
         body = render_cash_body(
             forecast, t.name,
+            tenant=t.tenant_id,
             attention=self._attention(t, forecast),
             # The hero is a hybrid figure, so it carries its own label. `facts`
             # is None when no ledger is wired at all; `cash_accounts` is zero

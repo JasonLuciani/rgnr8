@@ -521,3 +521,18 @@ def test_schedule_store_roundtrip_sqlite() -> None:
         assert store.get("t1", "exec_board_pack") is None
     finally:
         conn.close()
+
+
+def test_runway_with_nothing_in_the_forecast_says_so(clock: Callable[[], datetime]) -> None:
+    """$0 of cash and $0 of burn used to report "Indefinite - cash-flow positive"
+    and an infinity sign: confident advice made entirely of missing data."""
+    from rgnr8_forecast import CashPosition, ForecastConfig, ForecastInputs, Money, run_forecast
+
+    empty = run_forecast(
+        ForecastInputs(opening=CashPosition(as_of=date(2026, 10, 28), available=Money.zero())),
+        ForecastConfig(minimum_cash=Money.zero()),
+    )
+    html = render_html(render(baseline("runway"), DataContext(forecast=empty), clock=clock))
+    assert "Indefinite" not in html
+    assert "\u221e" not in html
+    assert "nothing to work runway out from" in html

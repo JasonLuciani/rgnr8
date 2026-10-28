@@ -57,7 +57,7 @@ def render_integrations(
             f"<td>{_esc(', '.join(e.events))}</td>"
             f"<td>{'active' if e.active else 'paused'}</td>"
             f'<td><form method="post" action="/t/{_esc(tenant)}/integrations/{_esc(e.id)}/delete" '
-            'onsubmit="return confirm(\'Remove this endpoint?\')" style="display:inline">'
+            'data-confirm="Remove this endpoint? It stops receiving events immediately." style="display:inline">'
             '<button type="submit">Remove</button></form></td>'
             "</tr>"
             for e in endpoints

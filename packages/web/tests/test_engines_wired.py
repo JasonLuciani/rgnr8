@@ -99,7 +99,8 @@ def test_register_suggests_for_recurring_vendor_only() -> None:
     assert r.body.count("Apply suggestion") == 1
     assert "% confident" in r.body
     # the suggestion is Payroll, tied to the new Gusto txn id
-    assert "applySuggestion(this,'new-gusto','Payroll')" in r.body
+    assert ('data-action="applySuggestion" data-self data-arg="new-gusto" '
+            'data-arg2="Payroll"') in r.body
     # the novel line gets no suggestion
     assert "applySuggestion(this,'novel'" not in r.body
     assert "http://" not in r.body and "https://" not in r.body

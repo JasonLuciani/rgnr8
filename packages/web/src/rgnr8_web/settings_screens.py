@@ -116,7 +116,7 @@ def render_settings(
             "QuickBooks connection, users, API keys, billing, or the audit log — so it "
             "is not a full GDPR/CCPA erasure. Contact support for a complete deletion.</p>"
             f'<form method="post" action="/t/{_esc(tenant)}/erase" '
-            'onsubmit="return confirm(\'Clear owner-held data? This cannot be undone.\')">'
+            'data-confirm="Clear owner-held data? This cannot be undone.">'
             '<button type="submit" class="btn danger">Reset owner-held data</button></form>'
         )
         sections.append(_card("Reset owner-held data", erase))

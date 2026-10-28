@@ -54,8 +54,8 @@ __all__ = [
 class Action:
     """A button on a header, a queue row or an empty state.
 
-    ``href`` makes it a link, ``on_click`` makes it a button carrying an inline
-    handler the shell's script already understands. Exactly one is meaningful;
+    ``href`` makes it a link, ``on_click`` makes it a button whose click calls
+    the named page function through the shell's dispatcher (see `csp.py`). Exactly one is meaningful;
     a bare label with neither renders as a plain disabled-looking button, which
     is the honest rendering of "this action exists but isn't wired here".
     """
@@ -74,7 +74,8 @@ class Action:
             # The handler is authored in this repo, never taken from a request —
             # see the call sites. It is still escaped so a quote can't break out
             # of the attribute and change what the button does.
-            return f'<button class="{cls}" onclick="{escape(self.on_click)}">{text}</button>'
+            return (f'<button type="button" class="{cls}" '
+                    f'data-action="{escape(self.on_click)}">{text}</button>')
         return f'<button class="{cls}" type="submit">{text}</button>'
 
 

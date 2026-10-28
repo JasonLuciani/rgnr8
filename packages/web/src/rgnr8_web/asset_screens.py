@@ -174,7 +174,7 @@ def render_asset_detail(
             )
         actions += (
             f'<form method="post" action="/t/{_esc(tenant)}/assets/{aid}/dispose" class="grid" '
-            'onsubmit="return confirm(\'Dispose of this asset?\')" style="margin-top:12px">'
+            'data-confirm="Dispose of this asset? This posts the disposal to your books." style="margin-top:12px">'
             '<label>Disposal date<input name="date" type="date" required></label>'
             '<label>Proceeds ($)<input name="proceeds" type="text" placeholder="0.00"></label>'
             '<label>Deposit to (account code)<input name="proceeds_to_code" placeholder="1000"></label>'

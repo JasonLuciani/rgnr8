@@ -116,7 +116,7 @@ def _page(
         action_html = f'<div class="action"><span class="do">Do this</span>{escape(b.primary_action)}</div>'
 
     chips = "".join(
-        f'<button class="chip" onclick="ans(\'{escape(q.value)}\')">{escape(text)}</button>'
+        f'<button type="button" class="chip" data-q="{escape(q.value)}">{escape(text)}</button>'
         for q, text in SUGGESTED
     )
     answers_json = json.dumps(
@@ -229,6 +229,11 @@ def _page(
   function ans(k){{ const a=ANSWERS[k]; const box=document.getElementById('answer');
     document.getElementById('aq').textContent=a.q; document.getElementById('at').textContent=a.text;
     box.classList.add('show'); }}
+  // Wired here rather than with onclick="…": a page served under a nonce-only
+  // CSP runs no inline attribute handlers at all.
+  document.addEventListener('click', function(ev){{
+    const b = ev.target.closest && ev.target.closest('button[data-q]');
+    if (b) ans(b.dataset.q); }});
   (function(){{
     const pts = {json.dumps(_chart_points(forecast))};
     const svg=document.getElementById('cashsvg'); const tt=document.getElementById('tt');
