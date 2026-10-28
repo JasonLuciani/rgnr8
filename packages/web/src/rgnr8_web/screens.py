@@ -65,16 +65,25 @@ def _forecast_is_empty(forecast: ForecastResult) -> bool:
     return not p.weeks or (p.opening_available.minor_units == 0 and not forecast.flows)
 
 
-def _cash_empty_state(display_name: str) -> str:
-    """The designed first-run / degraded state: nothing to chart yet, so invite
-    the owner to connect a bank rather than show empty tiles and a flat line."""
+def _cash_empty_state(display_name: str, tenant: str = "") -> str:
+    """The designed first-run / degraded state: nothing to chart yet.
+
+    The button used to read "Connect your bank" and point at `#connect`, an
+    anchor that exists on no page — so the one call to action on an empty
+    product scrolled nowhere. It now goes to the page that actually connects
+    the books, and says that is what it does. With no tenant to link to, the
+    button is left off rather than drawn pointing at nothing.
+    """
+    href = f"/t/{escape(tenant)}/connect" if tenant else ""
+    button = (f'<a class="btn sage" style="text-decoration:none" href="{href}">'
+              "Connect your books</a>") if href else ""
     return f"""<h1>Cash outlook</h1>
     <p class="sub">{escape(display_name)}</p>
     <div class="card empty">
-      <div style="font:600 21px/1.3 var(--rg-sans);letter-spacing:-.012em;margin-bottom:8px">Connect your bank to see your cash</div>
-      <p class="muted" style="max-width:48ch;margin:0 auto 18px">RGNR8 builds your 13-week cash outlook the moment your first bank feed lands.
-      Connect an account and your minimum-cash floor, projected low point, and cushion appear right here.</p>
-      <a class="btn sage" style="text-decoration:none" href="#connect">Connect your bank</a>
+      <div style="font:600 21px/1.3 var(--rg-sans);letter-spacing:-.012em;margin-bottom:8px">Nothing to build your outlook from yet</div>
+      <p class="muted" style="max-width:48ch;margin:0 auto 18px">RGNR8 builds your 13-week cash outlook from your books.
+      Connect QuickBooks and bring over your chart of accounts and balances, and your minimum-cash floor, projected low point and cushion appear right here.</p>
+      {button}
     </div>"""
 
 
@@ -116,6 +125,7 @@ def render_cash_body(
     *,
     attention: "Sequence[AttentionItem] | None" = None,
     cash_provenance: "Provenance | None" = None,
+    tenant: str = "",
 ) -> str:
     """The owner's cash outlook, drawn inside the shell: status hero, the queue
     of what needs them, KPI tiles, the 13-week chart, and the cash drivers.
@@ -131,7 +141,7 @@ def render_cash_body(
     distinguish, so no badge is drawn.
     """
     if _forecast_is_empty(forecast):
-        return _cash_empty_state(display_name)
+        return _cash_empty_state(display_name, tenant)
     b = build_briefing(forecast)
     p = forecast.projection
     # "Cash today" leads the hero below, so the tile row leads with floor /
@@ -211,7 +221,7 @@ def render_briefing_body(forecast: ForecastResult, display_name: str) -> str:
         dq = f'<h2>Heads-up</h2><div class="card"><ul style="margin:0;padding-left:18px;color:var(--rg-ink-2)">{items}</ul></div>'
     action = (f'<div class="banner warn" style="background:var(--rg-ivory);color:var(--rg-ink);border-color:var(--rg-line)">'
               f'<strong>Do this — </strong>{escape(b.primary_action)}</div>') if b.primary_action else ""
-    chips = "".join(f'<button class="chip" onclick="ans({q.value!r})">{escape(text)}</button>'
+    chips = "".join(f'<button type="button" class="chip" data-action="ans" data-arg="{escape(q.value)}">{escape(text)}</button>'
                     for q, text in SUGGESTED)
     answers_json = json.dumps({k: {"t": a.answer_text, "q": a.question_text} for k, a in answers.items()})
     return f"""<h1>This week's briefing</h1>
@@ -308,10 +318,10 @@ def render_close_body(board: CloseBoard, tenant: str, *, can_manage: bool, can_p
         advance = ""
         if can_manage and not board.sealed and t.status != "done":
             advance = ('<button class="btn sage" style="padding:5px 10px" '
-                       f"onclick=\"advance(this,'{escape(t.key)}')\">Mark done</button>")
+                       f"type=\"button\" data-action=\"advance\" data-self data-arg=\"{escape(t.key)}\">Mark done</button>")
         elif can_manage and not board.sealed and t.status == "done":
             advance = ('<button class="btn ghost" style="padding:5px 10px" '
-                       f"onclick=\"reopen(this,'{escape(t.key)}')\">Reopen</button>")
+                       f"type=\"button\" data-action=\"reopen\" data-self data-arg=\"{escape(t.key)}\">Reopen</button>")
         rows += (f'<tr><td><strong>{escape(t.label)}</strong>'
                  + (f'<br><span class="muted small" >{escape(t.note)}</span>' if t.note else "")
                  + f'</td><td class="muted">{escape(t.owner or "—")}</td>'
@@ -328,7 +338,7 @@ def render_close_body(board: CloseBoard, tenant: str, *, can_manage: bool, can_p
     seal = ""
     if not board.sealed:
         if board.complete and can_publish:
-            seal = ('<button id="sealBtn" class="btn" onclick="publish(this)">Seal &amp; publish package</button>')
+            seal = ('<button id="sealBtn" type="button" class="btn" data-action="publish">Seal &amp; publish package</button>')
         elif board.complete and not can_publish:
             seal = '<span class="muted">Ready to seal — an owner, controller, or accountant must publish.</span>'
         else:
@@ -670,7 +680,7 @@ def render_scenario_body(tenant: str, display_name: str) -> str:
             fields += (f'<label>{escape(plabel)}</label>'
                        f'<input data-param="{escape(pkey)}" type="{escape(ptype)}"{ph}>')
         cards += (
-            f'<form class="card" data-template="{escape(key)}" onsubmit="return runScenario(this)">'
+            f'<form class="card" data-template="{escape(key)}" data-submit="runScenario">'
             f'<div style="font:600 17px/1.3 var(--rg-sans)">{escape(label)}</div>'
             f'<p class="muted" style="margin:2px 0 4px;font-size:13px">{escape(blurb)}</p>'
             f'{fields}'

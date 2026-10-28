@@ -48,10 +48,10 @@ def test_render_leads_with_review_queue() -> None:
     assert "For review" in html
     assert "SQ *COFFEE SUPPLY" in html and "GUSTO PAYROLL" in html
     assert "13,210.55" in html
-    assert "categorize(this)" in html  # interactive when allowed
+    assert "data-change='categorize'" in html  # interactive when allowed
     # read-only render has no controls
     ro = render_transactions("acme", "Checking", _feed(), can_categorize=False)
-    assert "categorize(this)" not in ro
+    assert "data-change='categorize'" not in ro
     assert "http://" not in html and "https://" not in html  # self-contained
 
 

@@ -11,7 +11,7 @@ owner lands on cash by default.
 
 from __future__ import annotations
 
-from .csp import script_open
+from .csp import dispatcher, script_open
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -228,7 +228,7 @@ def _doc(title: str, body: str) -> str:
     return (
         "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-        f"<title>{escape(title)}</title>{_SHELL_CSS}</head><body>{body}</body></html>"
+        f"<title>{escape(title)}</title>{_SHELL_CSS}</head><body>{body}{dispatcher()}</body></html>"
     )
 
 
@@ -754,11 +754,11 @@ def render_users_admin(
         email = escape(u.email if u is not None else m.user_id)
         name = escape(u.name if (u is not None and u.name) else "—")
         remove = "" if m.role == Role.OWNER else (
-            "<button class='btn ghost' onclick=\"removeMember('" + email + "')\">Remove</button>"
+            "<button type='button' class='btn ghost' data-action='removeMember' data-arg='" + email + "'>Remove</button>"
         )
         rows += (
             "<tr><td><strong>" + name + "</strong></td><td class='muted'>" + email + "</td>"
-            "<td><select data-user='" + email + "'" + disabled + " onchange='setRole(this)'>"
+            "<td><select data-user='" + email + "'" + disabled + " data-change='setRole'>"
             + role_opts(m.role) + "</select></td>"
             "<td style='text-align:right'>" + remove + "</td></tr>"
         )
@@ -773,9 +773,9 @@ def render_users_admin(
             "<tr><td class='muted'>" + escape(p_email) + "</td>"
             "<td>" + escape(p_role.capitalize()) + "</td>"
             "<td><input readonly value='" + escape(link) + "' "
-            "style='width:100%;font-size:12px' onclick='this.select()'></td>"
-            "<td style='text-align:right'><button class='btn ghost' onclick=\"revoke('"
-            + escape(p_token) + "')\">Revoke</button></td></tr>"
+            "style='width:100%;font-size:12px' data-action='selectAll'></td>"
+            "<td style='text-align:right'><button type='button' class='btn ghost' data-action='revoke' data-arg='"
+            + escape(p_token) + "'>Revoke</button></td></tr>"
         )
     pending_html = (
         "<div class='card' style='margin-top:16px'><h2 style='margin-top:0;font-size:12px;"
@@ -793,7 +793,7 @@ def render_users_admin(
     <div class="card" style="margin-top:16px"><h2 style="margin-top:0;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--rg-muted)">Invite a teammate</h2>
       <div class="row"><input id="invEmail" class="grow" placeholder="name@company.com">
       <select id="invRole" style="width:auto">{invite_roles}</select>
-      <button id="invBtn" class="btn" onclick="invite()">Send invite</button></div>
+      <button id="invBtn" type="button" class="btn" data-action="invite">Send invite</button></div>
       <p class="muted" style="font-size:12px;margin-top:10px">Owner &amp; Controller can publish the close · Bookkeeper reconciles but can't seal · Accountant is your external CPA · Viewer is read-only.</p>
     </div>
     {pending_html}

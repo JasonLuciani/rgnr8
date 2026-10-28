@@ -231,8 +231,19 @@ def _b_runway(ctx: DataContext, params: Mapping[str, object]) -> ReportSection:
     monthly_burn = weekly_net.scale_by(30, 7)
     opening = p.opening_available
 
-    if monthly_burn.minor_units <= 0:
-        runway_text = "Indefinite — cash-flow positive over the horizon"
+    if p.total_inflows.minor_units == 0 and p.total_outflows.minor_units == 0:
+        # Nothing coming in and nothing going out is not "cash-flow positive";
+        # it is a forecast with nothing in it. This used to report infinite
+        # runway on $0 of cash with $0 of burn — confident advice built out of
+        # missing data, which is the one thing a finance product must not do.
+        return _not_available(
+            title, "the forecast has no cash coming in or going out yet, so there is "
+                   "nothing to work runway out from")
+    if monthly_burn.minor_units < 0:
+        runway_text = "Indefinite — more cash comes in than goes out over the horizon"
+        months_display = "∞"
+    elif monthly_burn.minor_units == 0:
+        runway_text = "Flat — cash in matches cash out over the horizon"
         months_display = "∞"
     else:
         months = opening.minor_units / monthly_burn.minor_units

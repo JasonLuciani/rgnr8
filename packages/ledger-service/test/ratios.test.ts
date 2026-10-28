@@ -125,3 +125,24 @@ test("no revenue and no liabilities yields nulls, not fake ratios", async () => 
   assert.equal((r["liquidity"] as Row)["current_ratio"], null, "no current liabilities → no ratio");
   assert.equal((r["profitability"] as Row)["net_margin_pct"], null, "no revenue → no margin");
 });
+
+test("negative equity is never graded as conservative leverage", async () => {
+  // The live Health screen told an owner with -$7,695 of equity, $31,131 of
+  // liabilities and $23,436 of assets that leverage was "conservative - more
+  // equity than debt". A negative denominator makes debt-to-equity negative,
+  // and a negative number passes every "< 1x" threshold.
+  const s = await ready();
+  // 50,000 of capital, 100,000 borrowed, 150,000 spent on rent: no assets
+  // left, 100,000 of liabilities, equity of -100,000.
+  await post(s, "2026-01-01", "cap", [["1000", "DEBIT", "50000"], ["3000", "CREDIT", "50000"]]);
+  await post(s, "2026-01-02", "loan", [["1000", "DEBIT", "100000"], ["2700", "CREDIT", "100000"]]);
+  await post(s, "2026-02-01", "rent", [["6300", "DEBIT", "150000"], ["1000", "CREDIT", "150000"]]);
+  const r = obj(await call(s, "GET", "/t/acme/ratios?as_of=2026-12-31"));
+  assert.equal((r["inputs"] as Row)["equity_minor"], "-100000");
+  const lev = r["leverage"] as Row;
+  assert.equal(lev["debt_to_equity"], null, "no ratio to report below zero equity");
+  assert.match(String(lev["health"]), /^negative equity/);
+  assert.doesNotMatch(String(lev["health"]), /conservative/);
+  assert.equal((r["profitability"] as Row)["return_on_equity_pct"], null,
+    "return on negative equity has no ordinary reading either");
+});

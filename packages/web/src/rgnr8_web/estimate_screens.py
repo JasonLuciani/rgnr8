@@ -164,8 +164,34 @@ def _builder(
         '<p class="muted" style="margin-top:8px">Type a markup and the price follows; type '
         "a price and the markup is worked out from it. Quantities take decimals — 2.5 days "
         "is 2.5, and it stays exact.</p>"
+        + _preview_js()
     )
     return _card("Build an estimate", body)
+
+
+# The note under the form promised "type a markup and the price follows", and
+# nothing on the page did it — the price was only ever worked out on the server
+# after saving, so the field sat blank and the promise read as a bug. This shows
+# the implied figure as the *other* field's placeholder: only what the owner
+# typed is submitted, so the server's exact arithmetic stays the single source
+# of truth and a rounded preview can never be saved in place of it.
+def _preview_js() -> str:
+    from .csp import script_open
+    return (
+        script_open()
+        + "(function(){"
+        "function n(v){v=(v||'').replace(/[$,\\s%]/g,'');return v===''||isNaN(+v)?null:+v;}"
+        "function row(el){var m=/^(cost|markup|price)(\\d+)$/.exec(el.name||'');return m&&m[2];}"
+        "document.addEventListener('input',function(ev){var i=row(ev.target);if(!i)return;"
+        "var f=ev.target.form;if(!f)return;"
+        "var c=f.elements['cost'+i],k=f.elements['markup'+i],p=f.elements['price'+i];"
+        "var cost=n(c.value),mk=n(k.value),pr=n(p.value);"
+        "p.placeholder='or price it directly';k.placeholder='20';"
+        "if(cost===null||cost<=0)return;"
+        "if(mk!==null&&pr===null){p.placeholder='= '+(cost*(1+mk/100)).toFixed(2);}"
+        "else if(pr!==null&&mk===null){k.placeholder='= '+((pr/cost-1)*100).toFixed(1)+'%';}"
+        "});})();</script>"
+    )
 
 
 def render_estimate(

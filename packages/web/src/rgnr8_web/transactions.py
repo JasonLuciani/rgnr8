@@ -84,7 +84,7 @@ def _cat_select(t: BankTransaction, can_categorize: bool, categories: Sequence[s
         f'<option value="{escape(c)}"{" selected" if c == t.category else ""}>{escape(c)}</option>'
         for c in categories
     )
-    return f"<select data-txn='{escape(t.id)}' onchange='categorize(this)'>{opts}</select>"
+    return f"<select data-txn='{escape(t.id)}' data-change='categorize'>{opts}</select>"
 
 
 def _suggestion_html(t: BankTransaction, suggestion: "tuple[str, float] | None") -> str:
@@ -101,7 +101,7 @@ def _suggestion_html(t: BankTransaction, suggestion: "tuple[str, float] | None")
         f"<strong style='font-size:13px'>{escape(category)}</strong>"
         f"<span class='chip' style='padding:2px 9px;font-size:11px'>{pct}% confident</span>"
         "<button class='btn sage' style='padding:4px 9px' "
-        f"onclick=\"applySuggestion(this,'{escape(t.id)}','{escape(category)}')\">Apply suggestion</button>"
+        f"type=\"button\" data-action=\"applySuggestion\" data-self data-arg=\"{escape(t.id)}\" data-arg2=\"{escape(category)}\">Apply suggestion</button>"
         "</div>"
     )
 
@@ -121,7 +121,7 @@ def _row(
     action = ""
     if can_categorize and t.needs_review:
         action = ("<button class='btn sage' style='padding:5px 10px' "
-                  f"onclick=\"accept(this,'{escape(t.id)}')\">Accept</button>")
+                  f"type=\"button\" data-action=\"accept\" data-self data-arg=\"{escape(t.id)}\">Accept</button>")
     # Auto-categorize hint only for uncategorized lines the caller can action.
     sugg = _suggestion_html(t, suggestion) if (can_categorize and t.category == "Uncategorized") else ""
     return (

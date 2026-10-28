@@ -163,12 +163,19 @@ export async function financialRatios(
 
   const currentRatio = ratioMicro(b.currentAssets, b.currentLiabilities);
   const quickRatio = ratioMicro(b.currentAssets - b.inventory, b.currentLiabilities);
-  const debtToEquity = ratioMicro(b.totalLiabilities, equityWithIncome);
+  // Debt-to-equity and return-on-equity only mean what everyone reads them to
+  // mean while equity is positive. With equity at or below zero the ratio goes
+  // negative (or undefined), and a negative D/E sails under every "< 1x is
+  // conservative" threshold — this screen told an owner with -$7,695 of equity
+  // that they were "conservative — more equity than debt". Below zero there is
+  // no ratio to report, and the health line says why instead.
+  const equityPositive = equityWithIncome > 0n;
+  const debtToEquity = equityPositive ? ratioMicro(b.totalLiabilities, equityWithIncome) : null;
   const debtToAssets = ratioMicro(b.totalLiabilities, b.totalAssets);
   const grossMargin = ratioMicro(grossProfit, b.revenue);
   const netMargin = ratioMicro(netIncome, b.revenue);
   const roa = ratioMicro(netIncome, b.totalAssets);
-  const roe = ratioMicro(netIncome, equityWithIncome);
+  const roe = equityPositive ? ratioMicro(netIncome, equityWithIncome) : null;
   const interestCoverage = ratioMicro(ebit, b.interest);
   const dscr = ratioMicro(ebitda, annualDebtService);
 
@@ -224,7 +231,7 @@ export async function financialRatios(
       interest_coverage: fmt(interestCoverage),
       dscr_micro: dscr,
       dscr: fmt(dscr),
-      health: healthLeverage(debtToEquity, dscr),
+      health: healthLeverage(debtToEquity, dscr, equityWithIncome, b.totalLiabilities),
     },
     profitability: {
       gross_margin_pct: pct(grossMargin),
@@ -245,9 +252,25 @@ function healthLiquidity(currentRatioMicro: string | null): string {
   return "tight — current liabilities exceed current assets";
 }
 
-function healthLeverage(debtToEquityMicro: string | null, dscrMicro: string | null): string {
+function healthLeverage(
+  debtToEquityMicro: string | null,
+  dscrMicro: string | null,
+  equityMinor: bigint,
+  liabilitiesMinor: bigint,
+): string {
   const dscr = dscrMicro === null ? null : BigInt(dscrMicro);
   if (dscr !== null && dscr < 1_000_000n) return "at risk — earnings do not cover debt service";
+  // Checked before any ratio: below zero equity, debt-to-equity has no ordinary
+  // reading, and "unlevered" (the old answer for zero equity) is simply false
+  // when there are liabilities on the books.
+  if (equityMinor < 0n) {
+    return "negative equity — the business owes more than it owns, so debt-to-equity cannot be read the usual way";
+  }
+  if (equityMinor === 0n) {
+    return liabilitiesMinor > 0n
+      ? "no equity — every asset is funded by liabilities"
+      : "nothing recorded yet";
+  }
   if (debtToEquityMicro === null) return "unlevered";
   const de = BigInt(debtToEquityMicro);
   if (de < 1_000_000n) return "conservative — more equity than debt";

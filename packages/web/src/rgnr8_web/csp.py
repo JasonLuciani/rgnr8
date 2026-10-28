@@ -47,4 +47,60 @@ def csp_value() -> str:
     return f"default-src 'self'; style-src 'self' 'unsafe-inline'; {script_src}"
 
 
-__all__ = ["new_nonce", "current_nonce", "script_open", "csp_value"]
+# Every interactive control in the app names its handler in a data attribute
+# rather than an inline `onclick=`. The CSP above forbids inline *attribute*
+# handlers (the `script-src-attr` directive falls back to `script-src`, which
+# carries only a nonce), so every `onclick=`, `onchange=` and `onsubmit=` in the
+# product was silently dead in a real browser: the ask-your-CFO chips, the
+# scenario runner, seal & publish, the bank feed's categorize dropdown, and
+# every control on the team page including "Send invite". Unit tests could not
+# see it, because nothing in them enforces a CSP.
+#
+#   data-action="fn"   click   -> fn(...args)
+#   data-change="fn"   change  -> fn(...args)
+#   data-submit="fn"   submit  -> fn(...args); native submission prevented,
+#                                 because these forms post by fetch
+#   data-action="selectAll"    -> select the field's text (built in)
+#   data-confirm="…"   submit  -> an ordinary POST form that must ask first.
+#
+# args are data-arg and data-arg2 when present; `data-self` puts the element
+# first; with no arguments at all the handler gets the element. So
+# `advance(this,'k')` becomes data-action="advance" data-self data-arg="k".
+#
+# `data-confirm` matters more than it looks. Three destructive forms — dispose
+# of an asset, clear owner-held data, remove a webhook — guarded themselves with
+# `onsubmit="return confirm(…)"`. The CSP blocked the guard and not the form,
+# so each one submitted immediately, without ever asking.
+#
+# Handlers are looked up on `window`, so they are the page's own top-level
+# functions, defined in its own nonced script. The name is authored in this
+# repo, never taken from a request.
+DISPATCH_JS = (
+    "(function(){"
+    "function call(el,name,ev){"
+    "if(name==='selectAll'){if(el.select)el.select();return;}"
+    "var fn=window[name];if(typeof fn!=='function')return;"
+    "var d=el.dataset,a=[];if('arg' in d)a.push(d.arg);if('arg2' in d)a.push(d.arg2);"
+    "if('self' in d||!a.length)a.unshift(el);"
+    "return fn.apply(null,a);}"
+    "document.addEventListener('click',function(ev){"
+    "var el=ev.target.closest&&ev.target.closest('[data-action]');"
+    "if(el){ev.preventDefault();call(el,el.dataset.action,ev);}});"
+    "document.addEventListener('change',function(ev){"
+    "var el=ev.target.closest&&ev.target.closest('[data-change]');"
+    "if(el)call(el,el.dataset.change,ev);});"
+    "document.addEventListener('submit',function(ev){"
+    "var f=ev.target;"
+    "if(f.dataset&&('confirm' in f.dataset)&&!window.confirm(f.dataset.confirm)){ev.preventDefault();return;}"
+    "var el=f.closest&&f.closest('[data-submit]');"
+    "if(el){ev.preventDefault();call(el,el.dataset.submit,ev);}});"
+    "})();"
+)
+
+
+def dispatcher() -> str:
+    """The delegated event dispatcher, as one nonced script tag."""
+    return f"{script_open()}{DISPATCH_JS}</script>"
+
+
+__all__ = ["new_nonce", "current_nonce", "script_open", "csp_value", "dispatcher", "DISPATCH_JS"]
