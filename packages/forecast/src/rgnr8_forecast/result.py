@@ -93,6 +93,12 @@ def run_forecast(
     )
 
     data_quality = list(resolved.notes)
+    # A forecast with nothing leaving the account is not a forecast of how long
+    # the cash lasts; it is today's balance drawn as a flat line. Said first,
+    # because it is the thing most likely to make every other figure wrong.
+    no_costs = not any(f.direction is Direction.OUTFLOW for f in resolved.flows)
+    if no_costs:
+        data_quality.insert(0, _NO_COSTS)
     if not inputs.opening.verified:
         data_quality.insert(0, "opening cash is not yet verified/reconciled")
     if not inputs.invoices:
@@ -104,7 +110,7 @@ def run_forecast(
         )
 
     overall_conf = _overall_confidence(resolved.flows, inputs)
-    headline = _headline(projection, scenario)
+    headline = _headline(projection, scenario, no_costs=no_costs)
     action = _recommended_action(projection, resolved.flows, inputs)
 
     version = ForecastVersion(
@@ -132,6 +138,15 @@ def run_forecast(
 
 
 # --- helpers -----------------------------------------------------------------
+_NO_COSTS = ("no costs in the outlook — nothing is set to leave the account, so it "
+             "cannot say how long cash lasts; add payroll and recurring costs")
+
+# The most a forecast with no outflows may claim. Not zero — the opening
+# balance can be perfectly well known — but nowhere near the 100/100 it used to
+# award itself, which it got by dividing nothing by nothing and calling the
+# result certainty.
+NO_COSTS_CONFIDENCE_CAP = 20
+
 def _customers_without_history(inputs: ForecastInputs) -> int:
     known = {h.customer_id for h in inputs.customer_histories if h.observations or h.override_days_late is not None}
     customers = {inv.customer_id for inv in inputs.invoices}
@@ -143,17 +158,30 @@ def _overall_confidence(flows: list[CashFlow], inputs: ForecastInputs) -> int:
 
     total = sum(f.amount.minor_units for f in flows)
     if total == 0:
-        base = 100
+        # No flows at all. This used to be 100 — "nothing uncertain, so fully
+        # certain" — and it was printed as "Confidence 100/100" under a flat line
+        # for a business with $168k of costs in its books. An empty forecast is
+        # the least certain kind there is.
+        base = NO_COSTS_CONFIDENCE_CAP
     else:
         base = round(sum(f.amount.minor_units * CONFIDENCE_WEIGHT[f.confidence] for f in flows) / total)
     if not inputs.opening.verified:
         base = min(base, 60)
+    if not any(f.direction is Direction.OUTFLOW for f in flows):
+        base = min(base, NO_COSTS_CONFIDENCE_CAP)
     return base
 
 
-def _headline(projection: Projection, scenario: Scenario) -> str:
+def _headline(projection: Projection, scenario: Scenario, *, no_costs: bool = False) -> str:
     trough = projection.trough
     label = {Scenario.BASE: "", Scenario.DOWNSIDE: " (downside)", Scenario.UPSIDE: " (upside)"}[scenario]
+    if no_costs and not projection.breach.breached:
+        # "Cash stays above your floor for all 13 weeks" is true of a forecast
+        # in which nothing is spent, and says nothing about the business.
+        return (
+            f"You have {format_money(projection.opening_available)} today, but no costs are in "
+            f"the outlook yet, so it can't say how long that lasts{label}."
+        )
     if projection.breach.breached and projection.breach.first_date is not None:
         wk = projection.breach.weeks_until
         short = projection.breach.worst_shortfall
