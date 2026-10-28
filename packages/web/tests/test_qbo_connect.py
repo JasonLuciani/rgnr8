@@ -294,45 +294,27 @@ class RecordingLedgerTransport:
         return LedgerResponse(201, {"ok": True})
 
 
-def test_a_sync_brings_the_books_across_not_just_the_forecast() -> None:
+def test_a_sync_never_reposts_what_quickbooks_already_booked() -> None:
+    """This test used to assert the opposite: that a sync turned QuickBooks' open
+    invoice into an RGNR8 invoice, its bill into a bill, and its purchase into a
+    review-queue line. On top of go-live opening balances that already hold
+    those amounts, that double-counts receivables, payables and cash. A refresh
+    now mirrors QuickBooks' trial balance instead (see test_qbo_mirror.py); with
+    no chart brought over yet it refuses, and in no case does it create
+    documents or feed lines."""
     from rgnr8_web import LedgerClient
     transport = RecordingLedgerTransport()
-    app = _connected_app(
-        ledger=LedgerClient(transport),
-        extra_queries=[
-            # the ledger sync re-reads open items, then asks for bank movements
-            _qr({"Invoice": [
-                {"Id": "9", "DocNumber": "1001", "Balance": 150.00, "TxnDate": "2026-07-01",
-                 "DueDate": "2026-08-01", "CustomerRef": {"name": "Amy"}},
-            ]}),
-            _qr({"Bill": [
-                {"Id": "5", "Balance": 400.00, "TxnDate": "2026-07-10", "DueDate": "2026-08-10",
-                 "VendorRef": {"name": "Norton"}},
-            ]}),
-            _qr({"Purchase": [
-                {"Id": "77", "TotalAmt": 42.50, "TxnDate": "2026-07-14",
-                 "PrivateNote": "OFFICE DEPOT", "EntityRef": {"name": "Office Depot"}},
-            ]}),
-            _qr({"Deposit": []}),
-        ],
-    )
+    app = _connected_app(ledger=LedgerClient(transport))
     r = app.handle(Request("POST", "/t/acme/connect/qbo/sync", _h("owner@acme.com")))
     assert r.status == 302
-    assert dict(r.extra_headers)["Location"] == "/t/acme/connect?sync=ok"
+    assert dict(r.extra_headers)["Location"] == "/t/acme/connect?migrate=error"
 
-    posts = [c for c in transport.calls if c[0] == "POST"]
-    paths = [c[1] for c in posts]
-    assert any(p.endswith("/invoices") for p in paths), "the open invoice became a document"
-    assert any(p.endswith("/bills") for p in paths)
-    assert any("/feed/1000" in p for p in paths), "the purchase went to the review queue"
-    # and NOTHING was posted straight to the general ledger
-    assert not any(p.endswith("/entries") for p in paths)
+    paths = [c[1] for c in transport.calls if c[0] == "POST"]
+    assert not any(p.endswith("/invoices") or p.endswith("/bills") for p in paths)
+    assert not any("/feed/" in p for p in paths)
 
-    # the connect page reports both halves
-    page = app.handle(Request("GET", "/t/acme/connect", _h("owner@acme.com")))
-    assert "Brought into your books" in page.body
-    assert "queued for review rather than posted" in page.body
-    assert "/t/acme/inbox" in page.body
+    page = app.handle(Request("GET", "/t/acme/connect?migrate=error", _h("owner@acme.com")))
+    assert "bring over your chart of accounts and balances first" in page.body
 
 
 def test_without_a_ledger_the_sync_still_feeds_the_forecast_alone() -> None:

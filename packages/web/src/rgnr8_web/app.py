@@ -163,7 +163,7 @@ from .payroll_screens import (
     render_payroll_run,
     render_payroll_unavailable,
 )
-from .qbo_ledger import LedgerSyncSummary, sync_qbo_to_ledger
+from .qbo_ledger import LedgerSyncSummary
 from .qbo_sync import QboSyncSummary, build_inputs_from_qbo
 from .rbac import AccessPolicy, Permission, Role, User, UserDirectory
 from .reconcile_screens import (
@@ -5894,6 +5894,15 @@ class WebApp:
                                tenant_id=t.tenant_id, target=t.tenant_id)
         return _redirect(f"/t/{t.tenant_id}/connect")
 
+    def _qbo_has_ledger(self, t: _Tenant) -> bool:
+        """True when the ledger already holds a chart of accounts for this tenant —
+        read from the ledger itself, so a restart can't forget it."""
+        if self._ledger is None:
+            return False
+        res = self._ledger.accounts(t.tenant_id)
+        raw = res.body.get("accounts") if res.ok else None
+        return isinstance(raw, list) and len(raw) > 0
+
     def _qbo_sync(self, subject: str, t: _Tenant) -> Response:
         """Pull the connected QuickBooks company and rebuild this tenant's forecast
         inputs from it (cash, AR, AP), so the whole app reflects the live books.
@@ -5922,19 +5931,31 @@ class WebApp:
                                target=f"cash={summary.cash.to_decimal_string()} "
                                       f"ar={summary.invoice_count} ap={summary.bill_count}")
 
-        # The forecast is a projection; the ledger is the record. With a ledger
-        # configured, the same sync brings the actual bookkeeping across — open
-        # items as real AR/AP documents, bank movements into the review queue
-        # (never straight into the books, because QuickBooks doesn't know this
-        # chart of accounts).
+        # With a ledger, refreshing means making RGNR8's books an exact mirror of
+        # QuickBooks' trial balance today — one balancing catch-up entry, checked
+        # account by account afterwards. It used to re-post QuickBooks' open
+        # invoices and bills as new RGNR8 documents and queue its bank lines for
+        # categorisation: on top of go-live opening balances that already held
+        # them, that double-counts receivables, payables and cash. See
+        # `qbo_mirror` for why a refresh refuses once RGNR8 has entries of its own.
         if self._ledger is not None:
-            ledger_summary = sync_qbo_to_ledger(client, self._ledger, t.tenant_id)
-            self._qbo_last_ledger_sync[t.tenant_id] = ledger_summary
+            from .qbo_mirror import refresh_mirror
+
+            if not self._qbo_has_ledger(t):
+                self._qbo_migrate_msg[t.tenant_id] = (
+                    "bring over your chart of accounts and balances first — a refresh "
+                    "keeps an existing mirror current, it doesn't create one")
+                return _redirect(f"/t/{t.tenant_id}/connect?migrate=error")
+            mirror = refresh_mirror(client, self._ledger, t.tenant_id, as_of=as_of.isoformat())
+            detail = mirror.describe()
+            if mirror.mismatches:
+                detail += ": " + "; ".join(mirror.mismatches[:3])
+            self._qbo_migrate_msg[t.tenant_id] = detail
             if self._audit is not None:
-                self._audit.record(subject, "qbo.ledger_synced", self._session_clock(),
-                                   tenant_id=t.tenant_id, detail=ledger_summary.describe())
-            if not ledger_summary.ok:
-                return _redirect(f"/t/{t.tenant_id}/connect?sync=partial")
+                self._audit.record(subject, "qbo.mirror_refreshed", self._session_clock(),
+                                   tenant_id=t.tenant_id, detail=detail)
+            return _redirect(
+                f"/t/{t.tenant_id}/connect?migrate={'ok' if mirror.ok else 'error'}")
         return _redirect(f"/t/{t.tenant_id}/connect?sync=ok")
 
     def _qbo_migrate(self, subject: str, t: _Tenant) -> Response:
@@ -5952,12 +5973,27 @@ class WebApp:
         if client is None:
             return _redirect(f"/t/{t.tenant_id}/connect")
         from .qbo_migrate import migrate_qbo_to_ledger
-        cutover = date.fromtimestamp(self._session_clock()).isoformat()
+        from .qbo_mirror import refresh_mirror
+
+        # Opening balances are taken at the last month-end, and the month so far
+        # is brought across straight after as a dated catch-up. Going live *today*
+        # used to lock today's whole month — go-live freezes the cutover month and
+        # everything before it — so nothing could be posted for the rest of it,
+        # including the catch-ups that keep a parallel-run mirror current.
+        today = date.fromtimestamp(self._session_clock())
+        cutover = (today.replace(day=1) - timedelta(days=1)).isoformat()
         result = migrate_qbo_to_ledger(
             client, self._ledger, t.tenant_id,
             cutover_date=cutover, currency=t.config.currency,
         )
-        self._qbo_migrate_msg[t.tenant_id] = result.describe()
+        message = result.describe()
+        if result.ok:
+            mirror = refresh_mirror(client, self._ledger, t.tenant_id, as_of=today.isoformat())
+            message += f" (opening balances as of {cutover}); then {mirror.describe()}"
+            if not mirror.ok:
+                self._qbo_migrate_msg[t.tenant_id] = message
+                return _redirect(f"/t/{t.tenant_id}/connect?migrate=error")
+        self._qbo_migrate_msg[t.tenant_id] = message
         if self._audit is not None:
             self._audit.record(subject, "qbo.migrated", self._session_clock(),
                                tenant_id=t.tenant_id, detail=result.describe())
