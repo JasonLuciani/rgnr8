@@ -421,6 +421,11 @@ function entryJson(e: PostedEntry): Record<string, unknown> {
     status: e.status,
     currency: e.currency.code,
     posted_at: e.postedAt,
+    // Where the entry came from. A QuickBooks mirror may only be refreshed while
+    // every entry in it came from QuickBooks — the moment RGNR8 holds an entry
+    // of its own, rebuilding to match QuickBooks would quietly undo it.
+    source: e.provenance.sourceSystem,
+    idempotency_key: String(e.idempotencyKey),
     lines: e.lines.map((l) => ({
       account_id: l.accountId,
       side: l.side,
