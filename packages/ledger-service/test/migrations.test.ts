@@ -70,9 +70,7 @@ test("a column ALTER ships as a NEW governed migration and applies once", async 
     ...ledgerMigrations({ enforceRls: false }),
     { version: next, name: "account_add_note", sql: "ALTER TABLE account ADD COLUMN note text" },
   ];
-  const report = (await runMigrations(db, withAlter, { appliedAt: APPLIED_AT })) as {
-    applied: { version: number }[];
-  };
+  const report = await runMigrations(db, withAlter, { appliedAt: APPLIED_AT });
   assert.deepEqual(report.applied.map((a) => a.version), [next], "only the new migration runs");
   assert.equal(await currentVersion(db), next);
 

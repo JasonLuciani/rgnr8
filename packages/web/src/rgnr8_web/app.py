@@ -180,6 +180,7 @@ from .reporting_screens import render_budget, render_general_ledger
 from .settings_screens import render_settings, render_settings_unavailable
 from rgnr8_ocr import HeuristicExtractor, to_bill_draft
 from .capture_screens import render_capture
+from .deploy_check import LedgerBuild, ledger_skew
 from .debt_screens import render_debt, render_debt_unavailable, render_loan_detail
 from .asset_screens import render_asset_detail, render_assets, render_assets_unavailable
 from .health_screens import render_health, render_health_unavailable
@@ -534,7 +535,20 @@ class WebApp:
         ask_llm: "LLMProvider | None" = None,
         secure_cookies: bool = True,
         public_base_url: str | None = None,
+        build_version: str | None = None,
+        monotonic: "Callable[[], float] | None" = None,
     ) -> None:
+        # The commit this app was built from, compared with the ledger's on
+        # /ready and in the page banner. Render sets RENDER_GIT_COMMIT on both.
+        self._build_version = (
+            build_version if build_version is not None
+            else os.environ.get("RENDER_GIT_COMMIT", "")
+        ) or "dev"
+        self._monotonic = monotonic if monotonic is not None else time.monotonic
+        # The ledger's last /ready answer and when it was read: every page's skew
+        # banner comes from this, so pages share one probe a minute.
+        self._ledger_build: LedgerBuild | None = None
+        self._ledger_build_at = 0.0
         # Where this deployment is reachable, for links that leave the page —
         # today, the invitation links an owner copies off the team page. A
         # relative one is useless the moment it's pasted into an email or Slack.
@@ -766,6 +780,27 @@ class WebApp:
     def set_ledger(self, client: LedgerClient) -> None:
         """Wire the ledger service so owners can see and post to their books."""
         self._ledger = client
+        self._ledger_build = None
+
+    # How long one /ready answer from the ledger is trusted. A failed deploy
+    # leaves the mismatch in place for hours, so a minute's lag costs nothing.
+    _LEDGER_BUILD_TTL = 60.0
+
+    def _ledger_build_info(self) -> "LedgerBuild | None":
+        """The ledger's build and schema, re-read at most once a minute; None
+        when no ledger is wired."""
+        if self._ledger is None:
+            return None
+        now = self._monotonic()
+        if self._ledger_build is None or now - self._ledger_build_at >= self._LEDGER_BUILD_TTL:
+            res = self._ledger.ready()
+            self._ledger_build = LedgerBuild.from_ready(res.status, res.body)
+            self._ledger_build_at = now
+        return self._ledger_build
+
+    def _ledger_skew(self) -> "str | None":
+        build = self._ledger_build_info()
+        return ledger_skew(self._build_version, build) if build is not None else None
 
     def add_owner_report(self, tenant_id: str, kind: str, data: Mapping[str, object]) -> None:
         """Attach an owner-facing ledger report contract (aging/budget/retained
@@ -1870,6 +1905,12 @@ class WebApp:
             "invitations": self._invitations is not None,
             "account_mail": self._emailer is not None,
             "version": __version__,
+            "build": self._build_version,
+            # Which ledger build is serving, and a sentence when it isn't the one
+            # this app expects. Reported, never a 503: Render gates the web
+            # deploy on this route, and refusing it would also strand the fix.
+            "ledger": build.as_json() if (build := self._ledger_build_info()) else None,
+            "ledger_skew": self._ledger_skew(),
         }
 
     def _require(
@@ -5466,7 +5507,8 @@ class WebApp:
         perms, role = self._perms_role(subject, t.tenant_id)
         return _html(200, render_shell(tenant=t.tenant_id, display_name=t.name, role=role,
                                        permissions=perms, active=active, body_html=body,
-                                       subject=subject, available=self._nav_available()))
+                                       subject=subject, available=self._nav_available(),
+                                       deploy_notice=self._ledger_skew() or ""))
 
     def _review_count(self, t: _Tenant) -> "int | None":
         """How many bank lines are waiting, or None when nobody can tell.

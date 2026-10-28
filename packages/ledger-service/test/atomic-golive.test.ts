@@ -10,7 +10,7 @@ import {
   type Account,
 } from "@rgnr8/ledger-kernel";
 import { runInTransaction, type Pool, type PoolClient } from "@rgnr8/ledger-postgres";
-import { InMemoryBackend, PostgresBackend } from "../src/index.js";
+import { InMemoryBackend, PostgresBackend, type LedgerBackend } from "../src/index.js";
 
 const TENANT = asTenantId("acme");
 
@@ -88,6 +88,7 @@ test("runInTransaction commits on success and rolls back on failure", async () =
 });
 
 test("the in-memory backend has no atomicGoLive (sequential path)", () => {
-  const backend = new InMemoryBackend();
+  // Read through the interface: the class omits the optional member entirely.
+  const backend: LedgerBackend = new InMemoryBackend();
   assert.equal(backend.atomicGoLive, undefined);
 });
