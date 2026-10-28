@@ -41,7 +41,7 @@ import { BILLING_DDL } from "./billing.js";
 import { INVENTORY_DDL } from "./inventory.js";
 import { CRM_DDL } from "./crm.js";
 import { CONSOLIDATION_DDL } from "./consolidation.js";
-import { SETTINGS_DDL } from "./settings.js";
+import { SETTINGS_DDL, SETTINGS_MIRROR_DDL } from "./settings.js";
 import { DEBT_DDL } from "./debt.js";
 import { FIXED_ASSET_DDL } from "./fixedassets.js";
 import { rlsDdl } from "./security.js";
@@ -83,6 +83,7 @@ export function ledgerMigrations(opts: { enforceRls: boolean }): Migration[] {
     // are re-based here into this service's single sequence.
     { version: 23, name: "financial_package", sql: FINANCIAL_PACKAGE_MIGRATIONS[0]!.sql },
     { version: 24, name: "close_state", sql: CLOSE_STATE_MIGRATIONS[0]!.sql },
+    { version: 25, name: "settings_mirror_binding", sql: SETTINGS_MIRROR_DDL },
   ];
   // RLS policies key on every tenant table, so they migrate last.
   if (opts.enforceRls) {

@@ -221,6 +221,16 @@ CREATE TABLE IF NOT EXISTS account_settings (
   retention_audit_days       integer NOT NULL DEFAULT 0,
   retention_soft_delete_days integer NOT NULL DEFAULT 0
 );
+`;
+
+/**
+ * The mirror binding (book of record, pinned QuickBooks company, cutover date).
+ * A migration of its own: migration 20 (SETTINGS_DDL above) is already applied
+ * in production, and editing an applied migration's SQL is refused at boot as
+ * drift — which is exactly what happened when these columns were first added
+ * to SETTINGS_DDL itself. Never edit SETTINGS_DDL; add a migration.
+ */
+export const SETTINGS_MIRROR_DDL = `
 ALTER TABLE account_settings ADD COLUMN IF NOT EXISTS book_of_record  text NOT NULL DEFAULT 'rgnr8';
 ALTER TABLE account_settings ADD COLUMN IF NOT EXISTS mirror_realm_id text NOT NULL DEFAULT '';
 ALTER TABLE account_settings ADD COLUMN IF NOT EXISTS cutover_date    text NOT NULL DEFAULT '';
@@ -231,6 +241,7 @@ export class PgSettingsStore implements SettingsStore {
 
   async migrate(): Promise<void> {
     await this.pool.query(SETTINGS_DDL);
+    await this.pool.query(SETTINGS_MIRROR_DDL);
   }
 
   private async tx<T>(tenant: string, fn: (db: Queryable) => Promise<T>): Promise<T> {
