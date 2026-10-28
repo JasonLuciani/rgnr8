@@ -181,31 +181,6 @@ export async function executeCutover(
   return { entry, record, newlyPosted };
 }
 
-/**
- * A tenant's source-of-truth state. Before cutover, the source system is
- * authoritative and RGNR8 mirrors it; after cutover, RGNR8 is authoritative.
- * A tiny in-memory registry the app can persist.
- */
-export class CutoverRegistry {
-  private readonly records = new Map<string, CutoverRecord>();
-
-  record(rec: CutoverRecord): void {
-    this.records.set(rec.tenantId, rec);
-  }
-
-  /** The cutover record for a tenant, if it has gone live on RGNR8. */
-  get(tenantId: string): CutoverRecord | undefined {
-    return this.records.get(tenantId);
-  }
-
-  /** True once RGNR8 is the system of record for this tenant. */
-  isLive(tenantId: string): boolean {
-    return this.records.has(tenantId);
-  }
-
-  /** RGNR8 is authoritative for a date only on/after the cutover date. */
-  isAuthoritativeOn(tenantId: string, isoDate: string): boolean {
-    const rec = this.records.get(tenantId);
-    return rec !== undefined && isoDate >= rec.cutoverDate;
-  }
-}
+// Which system is a tenant's book of record lives in ONE place: the ledger
+// service's account settings (`book_of_record`). An in-memory CutoverRegistry
+// used to sit here as a second answer; nothing in production read it.

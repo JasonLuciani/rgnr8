@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import {
   AccountType,
   ChartOfAccounts,
-  CutoverRegistry,
   InMemoryLedgerStore,
   Money,
   PeriodClosedError,
@@ -88,10 +87,8 @@ test("executeCutover posts opening balances, locks the period, and records SoR t
   const store = new InMemoryLedgerStore();
   const periods = new PeriodRegistry();
   const engine = new PostingEngine(coa, store, periods);
-  const registry = new CutoverRegistry();
 
   const result = await executeCutover(engine, periods, store, plan(), "2026-08-31T00:00:00Z");
-  registry.record(result.record);
 
   assert.ok(result.newlyPosted);
   assert.equal(result.record.sourceSystem, "quickbooks");
@@ -102,11 +99,6 @@ test("executeCutover posts opening balances, locks the period, and records SoR t
   const tb = await computeTrialBalance(store, tenant, coa, USD);
   assert.ok(tb.inBalance);
   assert.equal(tb.rows.find((r) => r.code === "1000")!.debit.toDecimalString(), "25000.00");
-
-  // RGNR8 is now the system of record from the cutover date forward.
-  assert.ok(registry.isLive(TENANT));
-  assert.ok(registry.isAuthoritativeOn(TENANT, "2026-09-01"));
-  assert.equal(registry.isAuthoritativeOn(TENANT, "2026-08-30"), false);
 
   // The cutover period is locked — you can't post back into the frozen history.
   const backdated: PostCommand = {

@@ -1244,3 +1244,29 @@ def test_the_real_ledger_and_this_app_agree_on_the_schema(ledger_service: str) -
     assert ready["ledger"]["reachable"] is True
     assert ready["ledger"]["schema"] == EXPECTED_LEDGER_SCHEMA
     assert ready["ledger_skew"] is None
+
+
+def test_a_parallel_run_takes_only_the_mirrors_entries(ledger_service: str) -> None:
+    """Pinned to QuickBooks, the real ledger refuses an owner's entry and an
+    invoice, and still takes the mirror's catch-up: one stray posting used to
+    stop every later Refresh."""
+    from types import SimpleNamespace
+
+    _seed(ledger_service, "parco", "PROFESSIONAL_SERVICES")
+    app = _app(ledger_service, ["parco"])
+    assert app._qbo_pin(SimpleNamespace(tenant_id="parco"), "9341453432535209", "2026-09-30") == ""
+    lines: list[dict[str, object]] = [
+        {"code": "1000", "side": "DEBIT", "amount_minor": "5000"},
+        {"code": "4000", "side": "CREDIT", "amount_minor": "5000"},
+    ]
+
+    typed = app._ledger.post_entry("parco", "2026-10-05", lines, source="owner")
+    assert typed.status == 409 and typed.body["code"] == "book_of_record"
+    invoice = _req(app, "parco", "/t/parco/invoices", "POST", "id=INV-1&date=2026-10-05")
+    assert invoice.status == 409 and "Add this in QuickBooks" in invoice.body
+
+    mirror = app._ledger.post_entry("parco", "2026-10-05", lines, source="quickbooks",
+                                    idempotency_key="qbo-mirror:2026-10-05:e2e")
+    assert mirror.status == 201
+    entries = app._ledger.entries("parco").body["entries"]
+    assert [e["source"] for e in entries] == ["quickbooks"]   # what Refresh checks

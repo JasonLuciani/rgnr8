@@ -181,6 +181,14 @@ from .settings_screens import render_settings, render_settings_unavailable
 from rgnr8_ocr import HeuristicExtractor, to_bill_draft
 from .capture_screens import render_capture
 from .deploy_check import LedgerBuild, ledger_skew
+from .parallel_run import (
+    PARALLEL_RUN_MESSAGE,
+    QUICKBOOKS_SOURCE,
+    has_posting_form,
+    is_posting_path,
+    notice_html,
+    posting_forms_to_notice,
+)
 from .debt_screens import render_debt, render_debt_unavailable, render_loan_detail
 from .asset_screens import render_asset_detail, render_assets, render_assets_unavailable
 from .health_screens import render_health, render_health_unavailable
@@ -508,6 +516,12 @@ _VIEW_AS: contextvars.ContextVar[Role | None] = contextvars.ContextVar("rgnr8_vi
 _KEY_SCOPES: contextvars.ContextVar[frozenset[str] | None] = contextvars.ContextVar(
     "rgnr8_key_scopes", default=None)
 
+# Whether this request would post to the ledger (see `parallel_run`): "api" or
+# "page" when it would, "" when not. `handle` sets it per request; `_require`
+# refuses it, after authorization, while the tenant's books are a QuickBooks copy.
+_POSTING_REQUEST: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "rgnr8_posting_request", default="")
+
 
 class WebApp:
     def __init__(
@@ -549,6 +563,8 @@ class WebApp:
         # banner comes from this, so pages share one probe a minute.
         self._ledger_build: LedgerBuild | None = None
         self._ledger_build_at = 0.0
+        # Per tenant: is QuickBooks the book of record, and when that was read.
+        self._book_of_record: dict[str, tuple[bool, float]] = {}
         # Where this deployment is reachable, for links that leave the page —
         # today, the invitation links an owner copies off the team page. A
         # relative one is useless the moment it's pasted into an email or Slack.
@@ -1035,6 +1051,7 @@ class WebApp:
         route = req.route
         _VIEW_AS.set(None)  # reset per request; only a platform token re-sets it
         _KEY_SCOPES.set(None)  # reset per request; only a scoped API key re-sets it
+        _POSTING_REQUEST.set("")  # reset per request; set once the route is known
         _csp_new_nonce()  # fresh CSP script nonce for this request's inline scripts
 
         if route == "/health":
@@ -1127,6 +1144,8 @@ class WebApp:
 
         parts = [p for p in route.split("/") if p]
         P = Permission
+        _POSTING_REQUEST.set(
+            ("api" if parts[0] == "api" else "page") if is_posting_path(parts, req.method) else "")
 
         # /app  -> the role-aware home (owner-first landing)
         if route == "/app" or route == "/":
@@ -1945,7 +1964,10 @@ class WebApp:
         key_scopes = _KEY_SCOPES.get()
         if key_scopes is not None and permission.value not in key_scopes:
             return _json(403, {"error": "api key scope insufficient", "need": permission.value})
-        return fn(self._tenants[wanted])
+        t = self._tenants[wanted]
+        if _POSTING_REQUEST.get() and self._parallel_run(t):
+            return self._parallel_run_refusal(subject, t)
+        return fn(t)
 
     # --- RBAC handlers -------------------------------------------------------
     def _me(self, subject: str, token_tenant: str, tenant: str) -> Response:
@@ -4521,6 +4543,9 @@ class WebApp:
         if not isinstance(data, dict) or not isinstance(data.get("transactions"), list):
             return _json(400, {"error": "a 'transactions' array is required"})
         source = str(data.get("source", "feed")).strip() or "feed"
+        if source.lower() == QUICKBOOKS_SOURCE:
+            # The mirror's own label: Refresh trusts entries carrying it as copies.
+            return _json(400, {"error": 'source "quickbooks" is reserved for the QuickBooks mirror'})
         res = self._ledger.ingest(t.tenant_id, list(data["transactions"]), source=source)
         return _json(res.status, dict(res.body) if res.body else {"ok": res.ok})
 
@@ -5505,6 +5530,10 @@ class WebApp:
 
     def _shell(self, subject: str, t: _Tenant, active: str, body: str) -> Response:
         perms, role = self._perms_role(subject, t.tenant_id)
+        if has_posting_form(body) and self._parallel_run(t):
+            # Every screen, so a form added later is covered without anyone
+            # remembering to: anything that would post becomes the notice.
+            body = posting_forms_to_notice(body, t.tenant_id)
         return _html(200, render_shell(tenant=t.tenant_id, display_name=t.name, role=role,
                                        permissions=perms, active=active, body_html=body,
                                        subject=subject, available=self._nav_available(),
@@ -5949,6 +5978,36 @@ class WebApp:
                                tenant_id=t.tenant_id, target=t.tenant_id)
         return _redirect(f"/t/{t.tenant_id}/connect")
 
+    # How long one read of a tenant's book of record is trusted. Short, because
+    # cutover flips it back to RGNR8 and posting has to open up again soon after.
+    _BOOK_OF_RECORD_TTL = 60.0
+
+    def _parallel_run(self, t: _Tenant) -> bool:
+        """Whether QuickBooks is this tenant's book of record right now.
+
+        Read from the ledger's settings, the one place that state lives, and
+        re-read at most once a minute. An unreadable ledger answers False: it
+        can't take a posting either, and it refuses one itself regardless.
+        """
+        if self._ledger is None or not hasattr(self._ledger, "settings"):
+            return False
+        now = self._monotonic()
+        cached = self._book_of_record.get(t.tenant_id)
+        if cached is not None and now - cached[1] < self._BOOK_OF_RECORD_TTL:
+            return cached[0]
+        res = self._ledger.settings(t.tenant_id)
+        raw = res.body.get("settings") if res.ok else None
+        quickbooks = isinstance(raw, dict) and str(raw.get("book_of_record") or "") == "quickbooks"
+        self._book_of_record[t.tenant_id] = (quickbooks, now)
+        return quickbooks
+
+    def _parallel_run_refusal(self, subject: str, t: _Tenant) -> Response:
+        """409 for a posting during a parallel run: JSON for the API, a page for a form."""
+        if _POSTING_REQUEST.get() == "api":
+            return _json(409, {"error": PARALLEL_RUN_MESSAGE, "code": "book_of_record"})
+        page = self._shell(subject, t, "", notice_html(t.tenant_id))
+        return dataclasses.replace(page, status=409)
+
     def _qbo_binding(self, t: _Tenant) -> "str | None":
         """The QuickBooks company (realm id) these books mirror, pinned in the
         ledger's settings at go-live: "" when nothing is pinned, None when the
@@ -5986,6 +6045,7 @@ class WebApp:
             return "the ledger didn't store it (is the ledger service up to date?)"
         self._qbo_bound[t.tenant_id] = realm
         self._qbo_migrated.add(t.tenant_id)
+        self._book_of_record.pop(t.tenant_id, None)  # now QuickBooks: re-read, don't wait
         return ""
 
     def _qbo_mirror_state(self, t: _Tenant, realm: str) -> "tuple[str, str]":
@@ -6071,6 +6131,17 @@ class WebApp:
         same, why = self._qbo_same_company(client, t)
         if not same:
             return f"{why}. Nothing was changed. Reconnect the company your books came from."
+        # Pinning makes QuickBooks the book of record, which stops all posting
+        # here. Books that have taken their own entries since go-live have moved
+        # on from being a copy; pinning them would lock the owner out of them.
+        from .qbo_mirror import foreign_entries
+        foreign = foreign_entries(self._ledger, t.tenant_id)
+        if isinstance(foreign, str):
+            return f"{foreign}; nothing was changed"
+        if foreign:
+            return (f"these books hold {len(foreign)} entr{'y' if len(foreign) == 1 else 'ies'} "
+                    "made in RGNR8 since they came over, so they are no longer a copy of "
+                    "QuickBooks and can't be refreshed from it. Nothing was changed.")
         problem = self._qbo_pin(t, realm, "")
         return "" if not problem else f"couldn't pin the QuickBooks company ({problem}); nothing was changed"
 

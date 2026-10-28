@@ -461,6 +461,21 @@ def test_books_from_before_pinning_are_pinned_once_the_chart_confirms_the_compan
     assert pins and pins[0]["mirror_realm_id"] == "R42" and pins[0]["book_of_record"] == "quickbooks"
 
 
+def test_books_that_took_their_own_entries_are_never_pinned() -> None:
+    # Pinning makes QuickBooks the book of record and stops all posting. Books
+    # that have moved on from being a copy must not be locked by a Refresh.
+    from rgnr8_web import LedgerClient
+    owner_entry = {"source": "owner", "date": "2026-10-02", "memo": "October rent"}
+    ledger = MirrorLedger(entries=[OPENING, owner_entry], accounts=CHART)
+    names = [a["name"] for a in CHART]
+    app = _connected_app(ledger=LedgerClient(ledger), queries=[_qbo_chart(names)])
+    r = app.handle(Request("POST", "/t/acme/connect/qbo/sync", _h("owner@acme.com")))
+    assert dict(r.extra_headers)["Location"] == "/t/acme/connect?migrate=error"
+    page = app.handle(Request("GET", "/t/acme/connect?migrate=error", _h("owner@acme.com"))).body
+    assert "no longer a copy of QuickBooks" in page
+    assert not ledger.posts("/settings") and not ledger.posts("/entries")
+
+
 def test_books_from_before_pinning_refuse_a_company_whose_chart_is_not_theirs() -> None:
     from rgnr8_web import LedgerClient
     ledger = MirrorLedger(entries=[OPENING], accounts=CHART)

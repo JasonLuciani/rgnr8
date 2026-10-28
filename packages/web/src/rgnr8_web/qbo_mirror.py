@@ -73,7 +73,9 @@ def _ledger_balances(ledger: Any, tenant: str, as_of: str) -> "dict[str, int] | 
     return out
 
 
-def _foreign_entries(ledger: Any, tenant: str) -> "list[str] | str":
+def foreign_entries(ledger: Any, tenant: str) -> "list[str] | str":
+    """Entries in RGNR8's journal that did not come from QuickBooks (or why the
+    journal couldn't be read). Any at all means the books aren't a copy."""
     res = ledger.entries(tenant)
     if not res.ok:
         return f"could not read RGNR8's journal: {res.error()}"
@@ -87,7 +89,7 @@ def _foreign_entries(ledger: Any, tenant: str) -> "list[str] | str":
 
 def refresh_mirror(client: Any, ledger: Any, tenant: str, *, as_of: str) -> MirrorResult:
     """Bring RGNR8's books to QuickBooks' trial balance as of `as_of`, exactly."""
-    foreign = _foreign_entries(ledger, tenant)
+    foreign = foreign_entries(ledger, tenant)
     if isinstance(foreign, str):
         return MirrorResult(False, error=foreign)
     if foreign:
