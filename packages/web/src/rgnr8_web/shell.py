@@ -181,7 +181,8 @@ _SHELL_CSS = f"""<style>
   .rg-beta{{color:var(--rg-watch,#e0a600);margin-left:3px;font-size:14px;line-height:0;vertical-align:middle}}
   .rg-who{{display:flex;align-items:center;gap:10px;color:#DDE6DD;font-size:13px}}
   .rg-rolechip{{background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.16);border-radius:999px;
-    padding:3px 10px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--rg-sage)}}
+    padding:3px 10px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#A9C2AC}}
+  /* (the chip text was brand sage, 2.7:1 on the chip; #A9C2AC is a lighter sage at 6.3:1) */
   .rg-who a{{color:#CBD8CC;text-decoration:none;font-size:12px}}
   .shell{{max-width:1040px;margin:0 auto;padding:24px 20px 60px}}
   h1{{font-size:24px;font-weight:700;letter-spacing:-.01em;margin:0 0 4px}}
