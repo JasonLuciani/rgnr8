@@ -5837,7 +5837,7 @@ class WebApp:
     def _connect_page(self, subject: str, t: _Tenant, sync_flag: str = "",
                       migrate_flag: str = "") -> Response:
         """The connections page: QBO status + a Connect / Reconnect / Disconnect
-        control, a Sync-now action, and the last sync's summary. Shows a "not
+        control, a Refresh-from-QuickBooks action, and the last refresh's summary. Shows a "not
         configured" note when no `QboConnectService` is seated."""
         from .screens import render_connect_page
         configured = self._qbo is not None
@@ -5873,7 +5873,8 @@ class WebApp:
                                                last_sync=last_sync, sync_flag=sync_flag,
                                                migrate_flag=migrate_flag,
                                                migrate_message=self._qbo_migrate_msg.get(t.tenant_id, ""),
-                                               ledger_migrated=t.tenant_id in self._qbo_migrated,
+                                               ledger_migrated=(status == "connected"
+                                                                and self._qbo_went_live(t)),
                                                ledger_sync=ledger_sync))
 
     def _qbo_begin(self, t: _Tenant) -> Response:
@@ -5893,6 +5894,30 @@ class WebApp:
             self._audit.record(subject, "qbo.disconnected", self._session_clock(),
                                tenant_id=t.tenant_id, target=t.tenant_id)
         return _redirect(f"/t/{t.tenant_id}/connect")
+
+    def _qbo_went_live(self, t: _Tenant) -> bool:
+        """True once this tenant's books were brought over from QuickBooks.
+
+        A positive signal, read from the ledger so a restart can't forget it:
+        the go-live opening entry, which the kernel keys `cutover:opening:<date>`
+        and stamps with the source system. "The chart has accounts" is not
+        enough — a tenant that went live from Xero has a chart too, and a
+        go-live that failed halfway can leave a chart with no opening entry;
+        either way the Connections page would claim a mirror that refresh then
+        refuses to keep. A positive answer is remembered, so the page reads
+        the journal at most once per tenant per process."""
+        if t.tenant_id in self._qbo_migrated:
+            return True
+        if self._ledger is None:
+            return False
+        res = self._ledger.entries(t.tenant_id)
+        raw = res.body.get("entries") if res.ok else None
+        for e in raw if isinstance(raw, list) else []:
+            if (isinstance(e, dict) and str(e.get("source") or "") == "quickbooks"
+                    and str(e.get("idempotency_key") or "").startswith("cutover:opening:")):
+                self._qbo_migrated.add(t.tenant_id)
+                return True
+        return False
 
     def _qbo_has_ledger(self, t: _Tenant) -> bool:
         """True when the ledger already holds a chart of accounts for this tenant —
@@ -5961,7 +5986,7 @@ class WebApp:
     def _qbo_migrate(self, subject: str, t: _Tenant) -> Response:
         """Bring QuickBooks' chart of accounts + opening trial balance into the
         ledger (go-live), so the books mirror QuickBooks and every account code
-        resolves. One-time; `Sync now` then keeps open items current. 501 if QBO
+        resolves. One-time; Refresh from QuickBooks then keeps the books in step. 501 if QBO
         isn't configured; a reconnect prompt if the connection lapsed; a soft error
         (with the specific reason) on the connect page if the ledger refuses it."""
         if self._qbo is None:

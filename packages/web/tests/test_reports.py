@@ -97,9 +97,11 @@ def test_reports_index_lists_baseline_titles() -> None:
     for title in ("Cash Flow Outlook", "AR Aging &amp; Collections", "Runway",
                   "Executive Board Pack", "Financial Statements Pack"):
         assert title in r.body
-    # links point at the render + export routes (PDF/Excel/CSV/JSON)
+    # links point at the render + the export routes an owner uses (PDF/Excel/CSV);
+    # JSON stays an API export (test_report_json_export) but isn't offered as a
+    # download on a screen meant for people
     assert 'href="/t/acme/reports/cash_flow_outlook"' in r.body
-    assert 'href="/api/acme/reports/cash_flow_outlook.json"' in r.body
+    assert 'href="/api/acme/reports/cash_flow_outlook.json"' not in r.body
     assert 'href="/api/acme/reports/cash_flow_outlook.csv"' in r.body
     assert 'href="/api/acme/reports/cash_flow_outlook.pdf"' in r.body
     assert 'href="/api/acme/reports/cash_flow_outlook.xlsx"' in r.body

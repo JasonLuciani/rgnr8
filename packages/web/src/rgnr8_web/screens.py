@@ -437,8 +437,7 @@ def render_reports_list(
                 f'<a class="btn ghost" style="text-decoration:none" href="{open_href}">Open</a> '
                 f'<a class="muted" href="{base}.pdf">PDF</a> · '
                 f'<a class="muted" href="{base}.xlsx">Excel</a> · '
-                f'<a class="muted" href="{base}.csv">CSV</a> · '
-                f'<a class="muted" href="{base}.json">JSON</a></td></tr>'
+                f'<a class="muted" href="{base}.csv">CSV</a></td></tr>'
             )
         return out
 
@@ -459,8 +458,8 @@ def render_reports_list(
             'build one from a section list and it appears here.</div>'
         )
     return f"""<h1>Reports</h1>
-    <p class="sub">{escape(tenant)} · ready-made baseline reports and your saved custom reports · open in-app or export to PDF / Excel / CSV / JSON</p>
-    <h2>Baseline reports</h2>
+    <p class="sub">Ready-made reports and the ones you've saved. Open one here, or download it as PDF, Excel or CSV.</p>
+    <h2>Standard reports</h2>
     {baseline_table}
     {saved_block}"""
 
@@ -504,20 +503,20 @@ def render_connect_page(
             'button appears here.</div>'
         )
         return f"""<h1>Connections</h1>
-        <p class="sub">{escape(tenant)} · connect QuickBooks Online to keep the books current</p>
+        <p class="sub">Keep RGNR8 in step with your QuickBooks Online company.</p>
         <div class="card"><h2>QuickBooks Online</h2>{body}</div>"""
 
     is_connected = status == "connected"
     banner_cls, label = _QBO_STATUS_UI.get(status or "disconnected", ("", "Not connected"))
     banner = f'<div class="banner {banner_cls}">{escape(label)}</div>' if banner_cls else (
         f'<p class="muted">{escape(label)}</p>')
-    realm_line = (f'<p class="muted small" >Company (realm) '
+    realm_line = (f'<p class="muted small" >QuickBooks company ID '
                   f'{escape(realm_id)}</p>' if realm_id else "")
 
     if is_connected:
         action = (
             f'<form method="post" action="{sync_href}" style="display:inline">'
-            f'<button class="btn" type="submit">Sync now</button></form> '
+            f'<button class="btn" type="submit">Refresh from QuickBooks</button></form> '
             f'<a class="btn ghost" style="text-decoration:none" href="{connect_href}">Reconnect</a> '
             f'<form method="post" action="{disconnect_href}" style="display:inline">'
             f'<button class="btn ghost" type="submit">Disconnect</button></form>'
@@ -531,21 +530,21 @@ def render_connect_page(
     # sync result banner
     sync_note = ""
     if sync_flag == "ok":
-        sync_note = '<div class="banner good">Synced from QuickBooks.</div>'
+        sync_note = '<div class="banner good">Refreshed from QuickBooks.</div>'
     elif sync_flag == "error":
         sync_note = ('<div class="banner warn">Couldn\'t reach QuickBooks just now — '
-                     'try Sync again in a moment.</div>')
+                     'try Refresh again in a moment.</div>')
     elif sync_flag == "partial":
-        sync_note = ('<div class="banner warn">Synced, but some records couldn\'t be '
-                     'brought into your books — bring the full chart of accounts over below, '
-                     'then sync again.</div>')
+        sync_note = ('<div class="banner warn">Refreshed, but some records couldn\'t be '
+                     'brought into your books. Bring the full chart of accounts over below, '
+                     'then refresh again.</div>')
 
     # migration (go-live) result banner — shows the specific message when present
     migrate_note = ""
     if migrate_flag:
         cls = "good" if migrate_flag == "ok" else "warn"
         default = ("Brought your QuickBooks chart of accounts and opening balances into the books — "
-                   "Sync now to pull open items and bank activity."
+                   "Refresh from QuickBooks whenever you want the latest."
                    if migrate_flag == "ok" else "Couldn't bring the ledger over just now.")
         migrate_note = f'<div class="banner {cls}">{escape(migrate_message or default)}</div>'
 
@@ -556,19 +555,18 @@ def render_connect_page(
     if is_connected and not ledger_migrated:
         migrate_block = (
             '<div class="card"><h2>Bring your full ledger across</h2>'
-            '<p>Sync keeps your cash outlook and open items current. This is the one-time '
-            'step that brings your QuickBooks <strong>chart of accounts and opening balances</strong> '
-            'into RGNR8\'s books, so the ledger, trial balance, and financial statements mirror '
-            'QuickBooks. Do this once, before your first full sync.</p>'
+            '<p>A one-time step: bring your QuickBooks <strong>chart of accounts and balances</strong> '
+            'into RGNR8, so the ledger, trial balance and financial statements match QuickBooks '
+            'to the cent. After that, Refresh keeps them in step.</p>'
             f'<form method="post" action="{migrate_href}" style="margin-top:8px">'
             '<button class="btn" type="submit">Bring over chart of accounts + balances</button></form></div>'
         )
     elif is_connected and ledger_migrated:
         migrate_block = (
-            '<div class="card"><h2>Ledger</h2>'
-            '<p class="muted">Your QuickBooks chart of accounts and opening balances are in your '
-            'books — the ledger mirrors QuickBooks. Use <strong>Sync now</strong> above to keep '
-            'open items and bank activity current.</p></div>'
+            '<div class="card"><h2>Your books mirror QuickBooks</h2>'
+            '<p class="muted">QuickBooks is still your book of record during the parallel run: '
+            'enter invoices, bills and payments there, then use <strong>Refresh from QuickBooks</strong> '
+            'above. RGNR8 brings over the changes and checks every account matches to the cent.</p></div>'
         )
 
     # last-sync summary table
@@ -578,7 +576,7 @@ def render_connect_page(
         rows = (
             ("Cash on hand", last_sync.get("cash", ""), last_sync.get("bank_accounts", "0") + " bank account(s)"),
             ("Open invoices (AR)", last_sync.get("ar_total", ""), last_sync.get("invoice_count", "0") + " invoice(s)"),
-            ("Open bills (AP)", last_sync.get("bill_count", "0") + " bill(s)", last_sync.get("ap_total", "")),
+            ("Open bills (AP)", last_sync.get("ap_total", ""), last_sync.get("bill_count", "0") + " bill(s)"),
         )
         body = "".join(
             f'<tr><td>{escape(label)}</td><td class="num">{escape(a)}</td>'
@@ -586,8 +584,8 @@ def render_connect_page(
             for (label, a, b) in rows
         )
         sync_block = (
-            f'<div class="card"><h2>Last sync — {company}</h2>'
-            '<table><thead><tr><th>Figure</th><th></th><th></th></tr></thead>'
+            f'<div class="card"><h2>Last refresh — {company}</h2>'
+            '<table><thead><tr><th>What</th><th class="num">Amount</th><th>Detail</th></tr></thead>'
             f'<tbody>{body}</tbody></table>'
             '<p class="muted" style="font-size:12px;margin-top:10px">These figures now '
             'drive your cash outlook, briefing, and reports.</p></div>'
@@ -627,7 +625,7 @@ def render_connect_page(
         )
 
     return f"""<h1>Connections</h1>
-    <p class="sub">{escape(tenant)} · connect QuickBooks Online to keep the books current</p>
+    <p class="sub">Keep RGNR8 in step with your QuickBooks Online company.</p>
     {sync_note}
     {migrate_note}
     <div class="card">

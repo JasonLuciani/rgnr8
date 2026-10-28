@@ -120,7 +120,7 @@ def test_hide_provisional_is_a_noop_now_that_everything_is_graduated() -> None:
     hidden = render_shell(tenant="acme", display_name="Acme", role=Role.OWNER,
                           permissions=perms, active="cash", body_html="<p>x</p>",
                           hide_provisional=True)
-    assert ">Jobs" in shown and ">Jobs" in hidden          # now production — stays
+    assert ">Projects" in shown and ">Projects" in hidden          # now production — stays
     assert ">Cash" in shown and ">Cash" in hidden
     assert 'class="rg-beta"' not in shown                  # nothing provisional to badge
 

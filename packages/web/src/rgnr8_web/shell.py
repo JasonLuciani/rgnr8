@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from html import escape
 
 from rgnr8_briefing.today import CHART_CSS
-from rgnr8_forecast.brand import IVORY, RG_BASE_CSS, RG_TOKENS_CSS, mark_svg
+from rgnr8_forecast.brand import RG_BASE_CSS, RG_TOKENS_CSS, finos_logo_html
 
 from .assets import font_face_css
 from .audit import AuditEvent
@@ -51,49 +51,50 @@ class NavGroup:
     items: tuple[NavItem, ...]
 
 
-# The information architecture: seven groups, named for what the owner is trying
-# to do rather than for the subsystem behind them. Twenty-five equally-weighted
-# links in one row told a business owner nothing about where to start; this is
-# the audit's "experience fragmentation" finding.
+# The information architecture: six groups, named for what the owner is trying
+# to do rather than for the subsystem behind them, and ordered the way money
+# moves: what's coming in, what's going out, how it lands in the books, what it
+# means. Labels are plain words a non-accountant would use ("Receipts", not
+# "Capture"; "Loans", not "Debt"), each says what is behind it, and none repeats
+# its group's name ("Books" inside "Books" told nobody anything). Suffixes are
+# unchanged, so every existing link and bookmark still resolves.
 _NAV_GROUPS: tuple[NavGroup, ...] = (
-    NavGroup("Today", (
-        NavItem("", "Cash", Permission.VIEW_CASH),
-        NavItem("ask", "Ask", Permission.ASK_CFO, needs="ask"),
-        NavItem("briefing", "Briefing", Permission.VIEW_BRIEFING),
+    NavGroup("Home", (
+        NavItem("", "Cash outlook", Permission.VIEW_CASH),
+        NavItem("briefing", "Weekly briefing", Permission.VIEW_BRIEFING),
+        NavItem("ask", "Ask RGNR8", Permission.ASK_CFO, needs="ask"),
     )),
-    NavGroup("Customers", (
-        NavItem("estimates", "Estimates", Permission.VIEW_TRANSACTIONS, needs="ledger"),
-        NavItem("pipeline", "Pipeline", Permission.VIEW_TRANSACTIONS, needs="ledger"),
+    NavGroup("Money in", (
         NavItem("invoices", "Invoices", Permission.VIEW_TRANSACTIONS, needs="ledger"),
-        NavItem("receivables", "Receivables", Permission.VIEW_CASH),
+        NavItem("estimates", "Estimates", Permission.VIEW_TRANSACTIONS, needs="ledger"),
+        NavItem("jobs", "Projects", Permission.VIEW_TRANSACTIONS, needs="ledger"),
+        NavItem("pipeline", "Sales pipeline", Permission.VIEW_TRANSACTIONS, needs="ledger"),
+        NavItem("receivables", "Collections", Permission.VIEW_CASH),
     )),
-    NavGroup("Projects", (
-        NavItem("jobs", "Jobs", Permission.VIEW_TRANSACTIONS, needs="ledger"),
-    )),
-    NavGroup("Vendors", (
+    NavGroup("Money out", (
         NavItem("bills", "Bills", Permission.VIEW_TRANSACTIONS, needs="ledger"),
-        NavItem("capture", "Capture", Permission.POST_JOURNAL, needs="ledger"),
+        NavItem("capture", "Receipts", Permission.POST_JOURNAL, needs="ledger"),
         NavItem("payroll", "Payroll", Permission.VIEW_TRANSACTIONS, needs="ledger"),
-        NavItem("debt", "Debt", Permission.VIEW_TRANSACTIONS, needs="ledger"),
+        NavItem("debt", "Loans", Permission.VIEW_TRANSACTIONS, needs="ledger"),
     )),
-    NavGroup("Books", (
-        NavItem("transactions", "Transactions", Permission.VIEW_TRANSACTIONS),
-        NavItem("books", "Books", Permission.VIEW_TRANSACTIONS, needs="ledger"),
-        NavItem("assets", "Assets", Permission.VIEW_TRANSACTIONS, needs="ledger"),
-        NavItem("close", "Close", Permission.MANAGE_CLOSE),
-        NavItem("packages", "Package", Permission.VIEW_PACKAGE, needs="packages"),
+    NavGroup("Accounting", (
+        NavItem("transactions", "Bank transactions", Permission.VIEW_TRANSACTIONS),
+        NavItem("books", "Ledger", Permission.VIEW_TRANSACTIONS, needs="ledger"),
+        NavItem("assets", "Fixed assets", Permission.VIEW_TRANSACTIONS, needs="ledger"),
+        NavItem("close", "Month-end close", Permission.MANAGE_CLOSE),
+        NavItem("packages", "Monthly package", Permission.VIEW_PACKAGE, needs="packages"),
     )),
-    NavGroup("Plan", (
-        NavItem("scenarios", "Scenarios", Permission.VIEW_CASH),
+    NavGroup("Insights", (
         NavItem("reports", "Reports", Permission.VIEW_CASH),
-        NavItem("health", "Health", Permission.VIEW_CASH),
+        NavItem("health", "Business health", Permission.VIEW_CASH),
+        NavItem("scenarios", "Scenarios", Permission.VIEW_CASH),
     )),
     NavGroup("Admin", (
-        NavItem("connect", "Connect", Permission.MANAGE_CONNECTORS, needs="qbo"),
+        NavItem("connect", "Connections", Permission.MANAGE_CONNECTORS, needs="qbo"),
         NavItem("team", "Team", Permission.MANAGE_USERS),
         NavItem("settings", "Settings", Permission.MANAGE_SETTINGS, needs="ledger"),
         NavItem("integrations", "Integrations", Permission.MANAGE_INTEGRATIONS, needs="webhooks"),
-        NavItem("audit", "Audit", Permission.MANAGE_USERS, needs="audit"),
+        NavItem("audit", "Audit log", Permission.MANAGE_USERS, needs="audit"),
     )),
 )
 
@@ -107,31 +108,31 @@ NAV_CAPABILITIES: frozenset[str] = frozenset(
 # surfaces (used by the provisional-scope audit and its tests).
 # nav item → (path suffix, label, permission required)
 _NAV: list[tuple[str, str, Permission]] = [
-    ("", "Cash", Permission.VIEW_CASH),
-    ("ask", "Ask", Permission.ASK_CFO),
-    ("transactions", "Transactions", Permission.VIEW_TRANSACTIONS),
-    ("books", "Books", Permission.VIEW_TRANSACTIONS),
-    ("jobs", "Jobs", Permission.VIEW_TRANSACTIONS),
+    ("", "Cash outlook", Permission.VIEW_CASH),
+    ("ask", "Ask RGNR8", Permission.ASK_CFO),
+    ("transactions", "Bank transactions", Permission.VIEW_TRANSACTIONS),
+    ("books", "Ledger", Permission.VIEW_TRANSACTIONS),
+    ("jobs", "Projects", Permission.VIEW_TRANSACTIONS),
     ("estimates", "Estimates", Permission.VIEW_TRANSACTIONS),
-    ("pipeline", "Pipeline", Permission.VIEW_TRANSACTIONS),
+    ("pipeline", "Sales pipeline", Permission.VIEW_TRANSACTIONS),
     ("invoices", "Invoices", Permission.VIEW_TRANSACTIONS),
     ("bills", "Bills", Permission.VIEW_TRANSACTIONS),
-    ("capture", "Capture", Permission.POST_JOURNAL),
+    ("capture", "Receipts", Permission.POST_JOURNAL),
     ("payroll", "Payroll", Permission.VIEW_TRANSACTIONS),
-    ("debt", "Debt", Permission.VIEW_TRANSACTIONS),
-    ("assets", "Assets", Permission.VIEW_TRANSACTIONS),
+    ("debt", "Loans", Permission.VIEW_TRANSACTIONS),
+    ("assets", "Fixed assets", Permission.VIEW_TRANSACTIONS),
     ("scenarios", "Scenarios", Permission.VIEW_CASH),
-    ("receivables", "Receivables", Permission.VIEW_CASH),
+    ("receivables", "Collections", Permission.VIEW_CASH),
     ("reports", "Reports", Permission.VIEW_CASH),
-    ("health", "Health", Permission.VIEW_CASH),
-    ("briefing", "Briefing", Permission.VIEW_BRIEFING),
-    ("close", "Close", Permission.MANAGE_CLOSE),
-    ("packages", "Package", Permission.VIEW_PACKAGE),
-    ("connect", "Connect", Permission.MANAGE_CONNECTORS),
+    ("health", "Business health", Permission.VIEW_CASH),
+    ("briefing", "Weekly briefing", Permission.VIEW_BRIEFING),
+    ("close", "Month-end close", Permission.MANAGE_CLOSE),
+    ("packages", "Monthly package", Permission.VIEW_PACKAGE),
+    ("connect", "Connections", Permission.MANAGE_CONNECTORS),
     ("team", "Team", Permission.MANAGE_USERS),
     ("settings", "Settings", Permission.MANAGE_SETTINGS),
     ("integrations", "Integrations", Permission.MANAGE_INTEGRATIONS),
-    ("audit", "Audit", Permission.MANAGE_USERS),
+    ("audit", "Audit log", Permission.MANAGE_USERS),
 ]
 
 _SHELL_CSS = f"""<style>
@@ -139,9 +140,13 @@ _SHELL_CSS = f"""<style>
 {RG_TOKENS_CSS}
 {RG_BASE_CSS}
   /* --- app frame: top bar + grouped sidebar ---------------------------- */
+  /* A fixed bar height, so the sidebar below can fill exactly the rest of the
+     window: when the bar's height came from its content it moved with the
+     logo and the font, and short pages scrolled by a few pixels. */
+  .rg-bar{{min-height:60px;padding-top:0;padding-bottom:0}}
   .rg-layout{{display:grid;grid-template-columns:200px minmax(0,1fr);
     max-width:1280px;margin:0 auto;align-items:start}}
-  .rg-navwrap{{border-right:1px solid var(--rg-line);min-height:calc(100vh - 56px);
+  .rg-navwrap{{border-right:1px solid var(--rg-line);min-height:calc(100vh - 60px);
     position:sticky;top:0;padding:18px 10px 40px}}
   /* The disclosure is a phone affordance only: on a wider screen the sidebar is
      always open, so the summary is simply not displayed. `open` is hardcoded in
@@ -156,7 +161,8 @@ _SHELL_CSS = f"""<style>
   .rg-nav a:hover{{background:rgba(18,58,44,.06)}}
   .rg-nav a.active{{background:rgba(18,58,44,.09);color:var(--rg-forest)}}
   .rg-nav a:focus-visible{{outline:2px solid var(--rg-sage);outline-offset:1px}}
-  .rg-biz{{color:#CBD8CC;font-size:13px;font-weight:600;margin-left:14px;flex:1;min-width:0;
+  .rg-biz{{color:#CBD8CC;font-size:13px;font-weight:600;margin-left:6px;padding-left:18px;
+    border-left:1px solid rgba(242,239,230,.18);line-height:30px;flex:1;min-width:0;
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
   @media (max-width:860px){{
     .rg-layout{{display:block}}
@@ -175,7 +181,8 @@ _SHELL_CSS = f"""<style>
   .rg-beta{{color:var(--rg-watch,#e0a600);margin-left:3px;font-size:14px;line-height:0;vertical-align:middle}}
   .rg-who{{display:flex;align-items:center;gap:10px;color:#DDE6DD;font-size:13px}}
   .rg-rolechip{{background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.16);border-radius:999px;
-    padding:3px 10px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--rg-sage)}}
+    padding:3px 10px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#A9C2AC}}
+  /* (the chip text was brand sage, 2.7:1 on the chip; #A9C2AC is a lighter sage at 6.3:1) */
   .rg-who a{{color:#CBD8CC;text-decoration:none;font-size:12px}}
   .shell{{max-width:1040px;margin:0 auto;padding:24px 20px 60px}}
   h1{{font-size:24px;font-weight:700;letter-spacing:-.01em;margin:0 0 4px}}
@@ -236,13 +243,11 @@ def _login_shell(inner: str) -> str:
     body = f"""<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;
       background:radial-gradient(1100px 460px at 50% -10%, #12352b, var(--rg-forest) 60%)">
       <div class="card" style="width:min(420px,92vw);padding:30px">
-        <div style="text-align:center;margin-bottom:6px">
-          <span style="font:800 22px/1 var(--rg-sans);letter-spacing:.18em;text-transform:uppercase;color:var(--rg-forest)">RGNR<span style="color:var(--rg-sage)">8</span></span>
-        </div>
+        <div style="display:flex;justify-content:center;margin:4px 0 10px">{finos_logo_html(44, on_dark=False)}</div>
         <div style="text-align:center;color:var(--rg-muted);font-size:11px;letter-spacing:.16em;text-transform:uppercase;margin-bottom:20px">Bold. Timeless. Endless potential.</div>
         {inner}
       </div></div>"""
-    return _doc("RGNR8 — sign in", body)
+    return _doc("Sign in — RGNR8 Fin OS", body)
 
 
 def render_login_html(*, action: str = "/login", sso: bool = False,
@@ -406,7 +411,7 @@ through Intuit's authorized OAuth flow. You authorize RGNR8 to access the
 QuickBooks data needed to provide the Service — including your chart of accounts,
 account balances, and transactions — solely to mirror your ledger and produce the
 reports and forecasts you request. RGNR8 never receives your Intuit password. You
-may disconnect QuickBooks at any time from the Connect screen, which revokes that
+may disconnect QuickBooks at any time from the Connections screen, which revokes that
 access going forward.</p>
 
 <h2>3. Your Data</h2>
@@ -497,7 +502,7 @@ QuickBooks company. You may request deletion of your account data by contacting 
 subject to any legal retention obligations.</p>
 
 <h2>7. Your Choices</h2>
-<p>You can disconnect QuickBooks from the Connect screen, and you can request
+<p>You can disconnect QuickBooks from the Connections screen, and you can request
 access to or deletion of your data by contacting us.</p>
 
 <h2>8. Changes</h2>
@@ -518,8 +523,7 @@ _LEGAL_CSS = """<style>
   .legal-wrap a{color:var(--rg-forest);font-weight:600}
   .legal-wrap .eff{color:var(--rg-muted);font-size:13px;letter-spacing:.04em;text-transform:uppercase;margin-bottom:22px}
   .legal-wrap .foot{margin-top:34px;padding-top:18px;border-top:1px solid #e3e3e3;font-size:14px}
-  .legal-brand{font:800 20px/1 var(--rg-sans);letter-spacing:.18em;text-transform:uppercase;color:var(--rg-forest);display:block;margin-bottom:34px}
-  .legal-brand span{color:var(--rg-sage)}
+  .legal-brand{display:inline-block;text-decoration:none;margin-bottom:34px}
 </style>"""
 
 
@@ -532,7 +536,8 @@ def render_legal_html(kind: str) -> str:
     inner = body_tpl.format(eff=_LEGAL_EFFECTIVE)
     body = (
         f"{_LEGAL_CSS}<div class=\"legal-wrap\">"
-        "<a class=\"legal-brand\" href=\"/login\">RGNR<span>8</span></a>"
+        "<a class=\"legal-brand\" href=\"/login\" aria-label=\"RGNR8 Fin OS\">"
+        f"{finos_logo_html(36, on_dark=False)}</a>"
         f"{inner}</div>"
     )
     return _doc(title, body)
@@ -555,14 +560,14 @@ def _choose_tile(*, href: str, title: str, subtitle: str, accent: bool) -> str:
 def render_choose_html(*, businesses: "Iterable[tuple[str, str]]", staff: bool,
                        operator_url: str = "/operator",
                        email: "str | None" = None) -> str:
-    """The post-login 'choose your view' screen. Lists the RGNR8 Fin OS (staff
-    console) tile when the user holds a platform role, plus one tile per business
+    """The post-login 'choose your view' screen. Lists the operator console (staff)
+    tile when the user holds a platform role, plus one tile per business
     they belong to. `businesses` is an iterable of (tenant_id, display_name)."""
     tiles = []
     if staff:
         tiles.append(_choose_tile(
-            href=operator_url or "/operator", title="RGNR8 Fin OS",
-            subtitle="Operator console — onboard & manage businesses", accent=True))
+            href=operator_url or "/operator", title="Operator console",
+            subtitle="Onboard and manage businesses", accent=True))
     for tid, name in businesses:
         tiles.append(_choose_tile(
             href=f"/choose/enter?tenant={escape(str(tid))}", title=str(name or tid),
@@ -663,9 +668,8 @@ def render_shell(
     role_label = role.value.capitalize() if role is not None else "—"
     bar = (
         '<header class="rg-bar">'
-        f'<a class="rg-lockup" href="/t/{escape(tenant)}">'
-        f"{mark_svg(20, IVORY)}"
-        '<span class="rg-wordmark" style="font-size:16px">RGNR<span class="rg-8">8</span></span></a>'
+        f'<a class="rg-lockup" href="/t/{escape(tenant)}" aria-label="RGNR8 Fin OS home">'
+        f"{finos_logo_html(30)}</a>"
         f'<span class="rg-biz">{escape(display_name)}</span>'
         '<span class="rg-who">'
         f'<span>{escape(subject or display_name)}</span>'
@@ -682,7 +686,7 @@ def render_shell(
         f'<div class="rg-layout">{nav}'
         f'<main class="shell">{body}</main></div>'
     )
-    return _doc(f"RGNR8 — {display_name}", bar + layout)
+    return _doc(f"{display_name} — RGNR8 Fin OS", bar + layout)
 
 
 def render_app_home(

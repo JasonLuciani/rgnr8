@@ -18,7 +18,7 @@ Usage
     python run_local.py
 
 Then open http://localhost:8000/login, sign in with the owner email it prints,
-and click Connect → QuickBooks Online.
+and open Connections → QuickBooks Online.
 
 No secrets are stored in this file; everything sensitive comes from the
 environment. Tokens live in memory for this run (a restart means reconnect);
@@ -153,7 +153,7 @@ def main() -> None:
         print(f"  Redirect URI:   {REDIRECT_URI}")
         print("                  (register this EXACT string on your Intuit app)")
     print(line)
-    print("  After signing in, open Connect → QuickBooks Online → Connect.")
+    print("  After signing in, open Connections → QuickBooks Online → Connect QuickBooks.")
     print("  Press Ctrl+C to stop.")
     print(line, flush=True)
     try:

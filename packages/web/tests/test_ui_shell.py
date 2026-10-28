@@ -89,7 +89,7 @@ def test_bookkeeper_nav_hides_team_and_lands_on_transactions() -> None:
     assert "/t/acme/team" not in home.body                    # bookkeeper can't manage users
     assert "Review bank transactions" in home.body            # role-specific CTA (their surface)
     assert "/t/acme/transactions" in home.body                # nav + CTA point to the register
-    assert ">Close</a>" in home.body                          # they can still run the close
+    assert ">Month-end close</a>" in home.body                          # they can still run the close
 
 
 def test_team_page_is_gated_and_lists_members() -> None:
