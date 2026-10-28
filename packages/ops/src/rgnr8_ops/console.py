@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from rgnr8_forecast.brand import POSITIVE, RG_BASE_CSS, RG_TOKENS_CSS, RISK, WATCH, mark_svg
+from rgnr8_forecast.brand import POSITIVE, RG_BASE_CSS, RG_TOKENS_CSS, RISK, WATCH, finos_logo_html
 
 from .report import OpsReport, TenantOpsRow
 
@@ -146,7 +146,7 @@ def render_operator_console(
 </style></head>
 <body>
 <header class="rg-bar">
-  <span class="rg-lockup">{mark_svg(22, "#F2EFE6")}<span class="rg-wordmark">RGNR<span class="rg-8">8</span></span></span>
+  <span class="rg-lockup">{finos_logo_html(30)}</span>
   <span class="rg-who"><span>{_esc(operator)}</span><span class="rg-rolechip">Operator</span><a href="/operator/logout" style="color:#DDE6DD;text-decoration:underline;font-size:12px">Sign out</a></span>
 </header>
 <div class="wrap">
@@ -293,7 +293,7 @@ def render_client_detail(
 {_DETAIL_STYLE}</head>
 <body>
 <header class="rg-bar">
-  <span class="rg-lockup">{mark_svg(22, "#F2EFE6")}<span class="rg-wordmark">RGNR<span class="rg-8">8</span></span></span>
+  <span class="rg-lockup">{finos_logo_html(30)}</span>
   <span class="rg-who"><span>{_esc(operator)}</span><span class="rg-rolechip">Operator</span><a href="/operator/logout" style="color:#DDE6DD;text-decoration:underline;font-size:12px">Sign out</a></span>
 </header>
 <div class="wrap">{inner}</div>
@@ -321,7 +321,7 @@ def render_operator_login(*, error: str = "") -> str:
 </style></head>
 <body>
 <header class="rg-bar">
-  <span class="rg-lockup">{mark_svg(22, "#F2EFE6")}<span class="rg-wordmark">RGNR<span class="rg-8">8</span></span></span>
+  <span class="rg-lockup">{finos_logo_html(30)}</span>
 </header>
 <div class="box">
   <div class="card">

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from html import escape
 
 from rgnr8_forecast import ForecastResult, Money, brand_bar
+from rgnr8_forecast.brand import RG_LOGO_CSS
 from rgnr8_forecast.brand import POSITIVE, RISK, WATCH
 from rgnr8_forecast.brand import format_money as _fmt
 
@@ -149,6 +150,7 @@ def _page(
   .rg-wordmark{{font:600 18px/1 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
     letter-spacing:.22em;text-transform:uppercase;color:var(--ivory)}}
   .rg-wordmark .rg-8{{color:var(--series)}}
+{RG_LOGO_CSS}
   .rg-ctx{{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#A9B7AC;font-weight:600}}
   .wrap {{ max-width:900px; margin:0 auto; padding:24px 16px 56px; }}
   .head {{ display:flex; justify-content:space-between; align-items:baseline; margin-bottom:14px; }}

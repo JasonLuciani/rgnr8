@@ -21,7 +21,7 @@ def test_today_reflects_status_and_action() -> None:
     stable = render_today_html(healthy_forecast())
     assert "Stable" in stable
     assert "#3E7C5A" in stable  # RGNR8 brand positive color
-    assert "RGNR<span" in stable  # the brand wordmark is present
+    assert 'class="rg-logo"' in stable  # the brand lockup is present
 
 
 def test_today_chart_has_points_for_all_weeks() -> None:

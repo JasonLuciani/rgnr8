@@ -5873,7 +5873,8 @@ class WebApp:
                                                last_sync=last_sync, sync_flag=sync_flag,
                                                migrate_flag=migrate_flag,
                                                migrate_message=self._qbo_migrate_msg.get(t.tenant_id, ""),
-                                               ledger_migrated=t.tenant_id in self._qbo_migrated,
+                                               ledger_migrated=(t.tenant_id in self._qbo_migrated
+                                                                or self._qbo_has_ledger(t)),
                                                ledger_sync=ledger_sync))
 
     def _qbo_begin(self, t: _Tenant) -> Response:

@@ -100,7 +100,7 @@ def test_connect_page_reports_not_configured_without_service() -> None:
 def test_connect_nav_item_present_for_owner() -> None:
     app, _ = _app()
     r = app.handle(Request("GET", "/t/acme/connect", _h("owner@acme.com")))
-    assert 'href="/t/acme/connect"' in r.body and ">Connect<" in r.body
+    assert 'href="/t/acme/connect"' in r.body and ">Connections<" in r.body
 
 
 # --- authorize redirect ------------------------------------------------------
@@ -250,9 +250,9 @@ def test_sync_pulls_company_into_forecast() -> None:
 
     # the connect page now shows the last-sync summary with the real cash total
     page = app.handle(Request("GET", "/t/acme/connect?sync=ok", _h("owner@acme.com")))
-    assert "Last sync" in page.body and "Sandbox Co" in page.body
+    assert "Last refresh" in page.body and "Sandbox Co" in page.body
     assert "$2,001.50" in page.body      # 1201.00 + 800.50 bank balances
-    assert "Synced from QuickBooks" in page.body
+    assert "Refreshed from QuickBooks" in page.body
 
     # and the dashboard cash-today reflects the synced opening balance
     home = app.handle(Request("GET", "/app", _h("owner@acme.com")))
@@ -322,5 +322,5 @@ def test_without_a_ledger_the_sync_still_feeds_the_forecast_alone() -> None:
     r = app.handle(Request("POST", "/t/acme/connect/qbo/sync", _h("owner@acme.com")))
     assert r.status == 302
     page = app.handle(Request("GET", "/t/acme/connect", _h("owner@acme.com")))
-    assert "Last sync" in page.body
+    assert "Last refresh" in page.body
     assert "Brought into your books" not in page.body

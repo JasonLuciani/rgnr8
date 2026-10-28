@@ -81,15 +81,15 @@ def _fully_wired() -> str:
 
 def test_the_sidebar_is_grouped_not_a_flat_list() -> None:
     assert _group_labels(_fully_wired()) == [
-        "Today", "Customers", "Projects", "Vendors", "Books", "Plan", "Admin"]
+        "Home", "Money in", "Money out", "Accounting", "Insights", "Admin"]
 
 
 def test_groups_collapse_away_when_nothing_in_them_is_available() -> None:
-    # A fresh deployment with no ledger has no Projects or Vendors screens at
+    # A fresh deployment with no ledger has no Money out screens at
     # all, so those headings are gone rather than standing over an empty space.
     labels = _group_labels(_page(_app()))
-    assert "Projects" not in labels and "Vendors" not in labels
-    assert labels == ["Today", "Customers", "Books", "Plan", "Admin"]
+    assert "Money out" not in labels
+    assert labels == ["Home", "Money in", "Accounting", "Insights", "Admin"]
 
 
 def test_every_surface_lives_in_exactly_one_group() -> None:
@@ -127,10 +127,10 @@ def test_an_unconfigured_module_does_not_advertise_itself() -> None:
     # is exactly the shape of a fresh deployment before anything is connected.
     body = _page(_app())
     labels = _nav_labels(body)
-    for dead in ("Invoices", "Bills", "Jobs", "Estimates", "Books", "Connect", "Ask"):
+    for dead in ("Invoices", "Bills", "Projects", "Estimates", "Ledger", "Connections", "Ask RGNR8"):
         assert dead not in labels, f"{dead} was linked with nothing behind it"
     # ...while the screens that work without any of it are still there
-    assert "Cash" in labels and "Transactions" in labels and "Team" in labels
+    assert "Cash outlook" in labels and "Bank transactions" in labels and "Team" in labels
 
 
 def test_wiring_a_capability_brings_its_screens_back() -> None:
@@ -145,9 +145,9 @@ def test_wiring_a_capability_brings_its_screens_back() -> None:
 
     app.set_ledger(_StubLedger())          # type: ignore[arg-type]
     body = _page(app, path="/t/acme/team")
-    assert {"Invoices", "Bills", "Jobs", "Estimates", "Books"} <= set(_nav_labels(body))
+    assert {"Invoices", "Bills", "Projects", "Estimates", "Ledger"} <= set(_nav_labels(body))
     # and the group headings come back with them
-    assert {"Customers", "Vendors", "Projects"} <= set(_group_labels(body))
+    assert {"Money in", "Money out"} <= set(_group_labels(body))
 
 
 def test_permission_and_capability_are_independent_gates() -> None:
@@ -162,7 +162,7 @@ def test_permission_and_capability_are_independent_gates() -> None:
                          permissions=everything, active="cash", body_html="",
                          available=frozenset())
     assert "Invoices" not in _nav_labels(gated)
-    assert "Cash" in _nav_labels(gated)                # ungated items unaffected
+    assert "Cash outlook" in _nav_labels(gated)                # ungated items unaffected
 
 
 # --- the frame ---------------------------------------------------------------
@@ -170,7 +170,7 @@ def test_permission_and_capability_are_independent_gates() -> None:
 
 def test_the_active_item_is_marked_for_assistive_tech() -> None:
     body = _page(_app(), path="/t/acme/receivables")
-    assert 'aria-current="page">Receivables</a>' in body
+    assert 'aria-current="page">Collections</a>' in body
     assert body.count('aria-current="page"') == 1
 
 

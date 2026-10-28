@@ -221,6 +221,6 @@ def test_nav_shows_scenarios_and_receivables_for_view_cash() -> None:
     assert r.status == 200
     assert 'href="/t/acme/scenarios">Scenarios</a>' in r.body
     # The page you're on is the active item, so it also carries aria-current.
-    assert 'href="/t/acme/receivables" aria-current="page">Receivables</a>' in r.body
+    assert 'href="/t/acme/receivables" aria-current="page">Collections</a>' in r.body
     # ...and both sit under their groups rather than in one flat row.
-    assert "<h2>Plan</h2>" in r.body and "<h2>Customers</h2>" in r.body
+    assert "<h2>Insights</h2>" in r.body and "<h2>Money in</h2>" in r.body

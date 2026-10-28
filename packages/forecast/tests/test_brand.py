@@ -24,8 +24,8 @@ def test_status_color_maps_levels() -> None:
 
 def test_brand_bar_renders_wordmark_and_context() -> None:
     bar = brand.brand_bar("Cash outlook")
-    assert 'class="rg-wordmark"' in bar
-    assert 'RGNR<span class="rg-8">8</span>' in bar
+    assert 'class="rg-logo"' in bar and 'class="rg-monogram"' in bar
+    assert ">RGNR8<" in bar and ">Fin OS<" in bar
     assert "Cash outlook" in bar
     assert "&lt;x&gt;" in brand.brand_bar("<x>")  # escapes context
 

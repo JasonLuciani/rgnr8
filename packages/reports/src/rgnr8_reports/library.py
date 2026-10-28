@@ -34,7 +34,7 @@ BASELINE_REPORTS: dict[str, ReportSpec] = {
     "financial_statements": ReportSpec(
         id="financial_statements",
         title="Financial Statements Pack",
-        description="P&L, balance sheet, and cash flow from the financial-statements/1 contract.",
+        description="Profit & loss, balance sheet, and cash flow from your books.",
         sections=(
             SectionSpec("income_statement", "Income Statement"),
             SectionSpec("balance_sheet", "Balance Sheet"),
