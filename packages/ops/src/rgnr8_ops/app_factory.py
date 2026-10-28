@@ -233,6 +233,10 @@ def build_web_app(
         ask_llm=ask_llm,
         secure_cookies=settings.secure_cookies,
         public_base_url=settings.public_base_url,
+        # Books read live are read as of today. UTC, because the container has
+        # no idea where the business is; at worst the date turns over a few
+        # hours early in the evening, never two months late.
+        business_date=lambda: datetime.now(timezone.utc).date(),
     )
 
     # --- ledger (the accounting system of record) ------------------------

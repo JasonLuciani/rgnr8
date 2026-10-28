@@ -73,3 +73,83 @@ def test_trial_balance_joins_the_report_with_the_chart() -> None:
 
 # The go-live converter that consumes these rows is exercised end to end in the
 # web package's test_qbo_migrate.py — the qbo package doesn't depend on it.
+
+
+# --- completeness: nothing may go missing on the way across -----------------
+#
+# The first real go-live dropped thirteen accounts carrying balances - among
+# them $206,556.77 of revenue, $68,000 of salaries and two bank accounts -
+# because the chart of accounts was read with one bare query. QuickBooks
+# answers that with at most 100 rows; the company had more. Trial-balance rows
+# for the other accounts found no match in the join and were skipped as if they
+# were total lines, and the go-live plugged the difference into Opening Balance
+# Equity, so the books still showed "in balance".
+
+import re  # noqa: E402
+
+import pytest  # noqa: E402
+
+from rgnr8_qbo.client import QboApiError  # noqa: E402
+
+
+class _RealisticQbo:
+    """Behaves like QuickBooks where it matters: a query returns at most 100
+    rows unless it pages, and at most 1,000 a page however it is asked."""
+
+    def __init__(self, n_accounts: int) -> None:
+        self.accounts = [
+            {"Id": str(i), "Name": f"Account {i}", "AccountType": "Expense"}
+            for i in range(1, n_accounts)
+        ] + [{"Id": str(n_accounts), "Name": "Equity", "AccountType": "Equity"}]
+        rows = [{"ColData": [{"value": a["Name"], "id": a["Id"]}, {"value": "1.00"}, {"value": ""}]}
+                for a in self.accounts[:-1]]
+        total = f"{n_accounts - 1}.00"
+        rows.append({"ColData": [{"value": "Equity", "id": str(n_accounts)}, {"value": ""},
+                                 {"value": total}]})
+        rows.append({"Summary": {"ColData": [{"value": "TOTAL"}, {"value": total}, {"value": total}]}})
+        self.report = {"Rows": {"Row": rows}}
+
+    def get(self, url: str, headers: Any) -> Any:
+        if "/reports/TrialBalance" in url:
+            body = json.dumps(self.report)
+        else:
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(url).query)["query"][0]
+            m = re.search(r"STARTPOSITION (\d+) MAXRESULTS (\d+)", q)
+            start, size = (int(m.group(1)), min(int(m.group(2)), 1000)) if m else (1, 100)
+            body = json.dumps({"QueryResponse": {"Account": self.accounts[start - 1:start - 1 + size]}})
+
+        class R:
+            status = 200
+        R.body = body  # type: ignore[attr-defined]
+        return R()
+
+
+def _realistic(n: int) -> QboApiClient:
+    return QboApiClient(http=_RealisticQbo(n), api_base="https://q", realm_id="R", access_token="t")
+
+
+def test_a_company_with_more_than_a_hundred_accounts_comes_across_whole() -> None:
+    rows = _realistic(1250).trial_balance(as_of="2026-10-28")
+    assert len(rows) == 1250, "every account with a balance, not the first hundred"
+    assert sum(r["debit_minor"] for r in rows) == sum(r["credit_minor"] for r in rows)
+
+
+def test_the_chart_of_accounts_pages_past_a_thousand() -> None:
+    assert len(_realistic(2500).chart_of_accounts(include_inactive=True)) == 2500
+
+
+def test_a_row_for_an_unknown_account_is_an_error_not_a_skip() -> None:
+    fake = _RealisticQbo(3)
+    fake.accounts = fake.accounts[1:]  # the chart forgets account 1; the report does not
+    client = QboApiClient(http=fake, api_base="https://q", realm_id="R", access_token="t")
+    with pytest.raises(QboApiError, match="did not return"):
+        client.trial_balance(as_of="2026-10-28")
+
+
+def test_rows_that_do_not_add_up_to_the_reports_total_are_refused() -> None:
+    fake = _RealisticQbo(3)
+    fake.report["Rows"]["Row"][-1]["Summary"]["ColData"][1]["value"] = "999.00"
+    client = QboApiClient(http=fake, api_base="https://q", realm_id="R", access_token="t")
+    with pytest.raises(QboApiError, match="some rows did not come across"):
+        client.trial_balance(as_of="2026-10-28")

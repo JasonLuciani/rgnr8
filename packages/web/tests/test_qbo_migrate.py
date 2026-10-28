@@ -64,3 +64,15 @@ def test_migration_surfaces_an_unmappable_account() -> None:
             "debit_minor": 100, "credit_minor": 0}]
     res = migrate_qbo_to_ledger(FakeQbo(bad), FakeLedger(), "acme", cutover_date="2026-08-25")
     assert not res.ok and "unmappable" in res.error
+
+
+def test_an_unbalanced_trial_balance_is_refused_not_plugged() -> None:
+    """QuickBooks' trial balance balances on its own; rows that don't mean some
+    were lost. Go-live used to cover the gap with an Opening Balance Equity plug,
+    and the books showed "in balance" $206,556.77 of revenue short."""
+    short = [ROWS[0], {**ROWS[1], "credit_minor": 20000}]
+    ledger = FakeLedger()
+    res = migrate_qbo_to_ledger(FakeQbo(short), ledger, "acme", cutover_date="2026-10-28")
+    assert not res.ok
+    assert "out of balance by 1,001.00" in res.error
+    assert ledger.request is None, "nothing may reach the ledger"

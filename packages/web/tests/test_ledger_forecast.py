@@ -64,6 +64,10 @@ ACCOUNTS = {
         {"code": "1010", "name": "Savings", "type": "ASSET", "subtype": "CASH"},
         {"code": "1200", "name": "Accounts Receivable", "type": "ASSET",
          "subtype": "ACCOUNTS_RECEIVABLE"},
+        # Where RGNR8 payroll posts. A ledger that owes payroll liabilities has
+        # this account by construction — the payroll engine refuses to post
+        # without it — so a fixture claiming a liability must carry it too.
+        {"code": "2300", "name": "Payroll Liabilities", "type": "LIABILITY"},
         {"code": "4100", "name": "Consulting Income", "type": "REVENUE"},
     ],
 }

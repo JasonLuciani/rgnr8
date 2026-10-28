@@ -63,6 +63,23 @@ def migrate_qbo_to_ledger(
 
     try:
         source_accounts = qbo_trial_balance_to_source_accounts(rows)
+    except GoLiveError as exc:
+        return MigrationResult(False, 0, error=str(exc))
+
+    # QuickBooks' trial balance balances on its own. If the rows read from it
+    # do not, something was lost on the way, and go-live would cover the gap
+    # with an Opening Balance Equity plug that makes the books *look* right.
+    # That is how a first migration came across $206,556.77 of revenue short
+    # and still showed "in balance". Refuse instead, and say by how much.
+    net = sum(int(str(a["balance_minor"])) for a in source_accounts)
+    if net != 0:
+        return MigrationResult(
+            False, len(source_accounts),
+            error=(f"the trial balance read from QuickBooks is out of balance by "
+                   f"{abs(net) / 100:,.2f}, so some rows did not come across. Nothing was "
+                   "imported."))
+
+    try:
         request = build_go_live_request(
             tenant, "quickbooks", cutover_date, source_accounts,
             currency=currency, coa_category=coa_category,

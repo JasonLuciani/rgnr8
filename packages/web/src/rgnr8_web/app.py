@@ -527,6 +527,7 @@ class WebApp:
         emailer: "Callable[[str, str, str], None] | None" = None,
         saved_reports: SavedReportStore | None = None,
         report_clock: "Callable[[], datetime] | None" = None,
+        business_date: "Callable[[], date] | None" = None,
         qbo: QboConnectService | None = None,
         webhooks: "WebhookEndpointStore | None" = None,
         webhook_outbox: "WebhookOutbox | None" = None,
@@ -621,6 +622,11 @@ class WebApp:
         self._saved_reports: SavedReportStore = (
             saved_reports if saved_reports is not None else InMemorySavedReportStore()
         )
+        # The real calendar date, for a deployment whose books are read live.
+        # None keeps the old behaviour of anchoring everything to the owner's
+        # saved opening date, which is what an assumptions-only tenant wants
+        # and what every fixture in the suite was written against. See `_as_of`.
+        self._business_date = business_date
         self._report_clock: Callable[[], datetime] = (
             report_clock if report_clock is not None else (lambda: datetime.now(timezone.utc))
         )
@@ -806,7 +812,7 @@ class WebApp:
         Without a ledger, the owner's inputs stand alone, exactly as before."""
         inputs = t.inputs
         if self._ledger is not None:
-            as_of = t.inputs.opening.as_of
+            as_of = self._as_of(t)
             merged, facts = forecast_from_ledger(
                 self._ledger, t.tenant_id, inputs, as_of, currency=t.config.currency,
             )
@@ -2092,10 +2098,24 @@ class WebApp:
 
     # --- invoicing (AR) and bills (AP) ---------------------------------------
 
+    def _as_of(self, t: _Tenant) -> date:
+        """The date the books are read at, and the outlook starts from.
+
+        For an assumptions-only tenant this is the owner's saved opening date:
+        their opening balance is true *as of that day* and the outlook has to
+        start from it. For a tenant whose books are read live it is today. Using
+        the saved date there read the trial balance as it stood on the day the
+        tenant was created, labelled the result "Cash today" with a POSTED badge,
+        and started the 13-week outlook two months in the past — a confident,
+        wrong figure of exactly the kind this product exists not to show.
+        """
+        if self._ledger is not None and self._business_date is not None:
+            return self._business_date()
+        return t.inputs.opening.as_of
+
     def _today(self, t: _Tenant) -> str:
-        """The business's working date. Derived from its forecast as-of date so
-        the whole app agrees on 'today' under test and in dev."""
-        return t.inputs.opening.as_of.isoformat()
+        """The business's working date, which every screen agrees on."""
+        return self._as_of(t).isoformat()
 
     def _arap_page(self, subject: str, t: _Tenant, kind: str, query: "dict[str, str]") -> Response:
         if self._ledger is None:
@@ -4333,8 +4353,8 @@ class WebApp:
         frm = query.get("from", "")
         to = query.get("to", "")
         if not frm or not to:
-            # default to the current month of the tenant's forecast as-of date
-            as_of = t.inputs.opening.as_of.isoformat()
+            # default to the current month of the tenant's working date
+            as_of = self._today(t)
             frm = f"{as_of[:7]}-01"
             to = as_of
         res = self._ledger.statements(t.tenant_id, frm, to)
@@ -4434,7 +4454,7 @@ class WebApp:
         frm = query.get("from", "")
         to = query.get("to", "")
         if not frm or not to:
-            as_of = t.inputs.opening.as_of.isoformat()
+            as_of = self._today(t)
             frm = frm or f"{as_of[:7]}-01"
             to = to or as_of
         res = self._ledger.statements(t.tenant_id, frm, to)
@@ -5537,7 +5557,7 @@ class WebApp:
     def _close_board(self, t: _Tenant) -> CloseBoard:
         board = self._close.get(t.tenant_id)
         if board is None:
-            board = default_close_board(t.inputs.opening.as_of.strftime("%Y-%m"))
+            board = default_close_board(self._as_of(t).strftime("%Y-%m"))
             self._close[t.tenant_id] = board
         return board
 

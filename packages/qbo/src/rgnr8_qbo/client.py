@@ -134,6 +134,29 @@ class QboApiClient:
         qr = data.get("QueryResponse")
         return qr if isinstance(qr, dict) else {}
 
+    # QuickBooks answers a query with at most 100 rows unless asked for more,
+    # and with at most 1,000 however it is asked. Every list read here used to
+    # be a single bare query, so a company with more than 100 accounts lost the
+    # rest without a word — the first real go-live dropped thirteen accounts
+    # carrying $206,556.77 of revenue, $68,000 of salaries and two bank accounts,
+    # and Opening Balance Equity quietly absorbed the difference.
+    PAGE_SIZE = 1000
+    MAX_PAGES = 200  # 200,000 rows: a guard against a server that never stops
+
+    def query_all(self, sql: str, entity: str) -> list[dict[str, object]]:
+        """Every row a query matches, read a page at a time."""
+        out: list[dict[str, object]] = []
+        start = 1
+        for _ in range(self.MAX_PAGES):
+            page = self._rows(
+                self.query(f"{sql} STARTPOSITION {start} MAXRESULTS {self.PAGE_SIZE}"), entity)
+            out.extend(page)
+            if len(page) < self.PAGE_SIZE:
+                return out
+            start += self.PAGE_SIZE
+        raise QboApiError(f"{entity}: more than {self.PAGE_SIZE * self.MAX_PAGES} rows; refusing "
+                          "to guess where the list ends")
+
     @staticmethod
     def _rows(qr: Mapping[str, object], entity: str) -> list[dict[str, object]]:
         rows = qr.get(entity)
@@ -162,9 +185,9 @@ class QboApiClient:
 
     def bank_accounts(self) -> list[QboAccount]:
         """Active bank accounts + their current balances (cash on hand)."""
-        qr = self.query("select * from Account where AccountType = 'Bank' and Active = true")
         out: list[QboAccount] = []
-        for r in self._rows(qr, "Account"):
+        for r in self.query_all(
+                "select * from Account where AccountType = 'Bank' and Active = true", "Account"):
             out.append(
                 QboAccount(
                     id=self._s(r, "Id"),
@@ -177,9 +200,8 @@ class QboApiClient:
 
     def open_invoices(self) -> list[QboInvoice]:
         """Invoices with an outstanding balance (accounts receivable)."""
-        qr = self.query("select * from Invoice where Balance > '0'")
         out: list[QboInvoice] = []
-        for r in self._rows(qr, "Invoice"):
+        for r in self.query_all("select * from Invoice where Balance > '0'", "Invoice"):
             out.append(
                 QboInvoice(
                     id=self._s(r, "Id"),
@@ -194,9 +216,8 @@ class QboApiClient:
 
     def open_bills(self) -> list[QboBill]:
         """Bills with an outstanding balance (accounts payable)."""
-        qr = self.query("select * from Bill where Balance > '0'")
         out: list[QboBill] = []
-        for r in self._rows(qr, "Bill"):
+        for r in self.query_all("select * from Bill where Balance > '0'", "Bill"):
             out.append(
                 QboBill(
                     id=self._s(r, "Id"),
@@ -220,7 +241,7 @@ class QboApiClient:
         where = f" where TxnDate >= '{since}'" if since else ""
         out: list[QboBankTxn] = []
 
-        for r in self._rows(self.query(f"select * from Purchase{where}"), "Purchase"):
+        for r in self.query_all(f"select * from Purchase{where}", "Purchase"):
             total = self._s(r, "TotalAmt", "0")
             out.append(
                 QboBankTxn(
@@ -236,7 +257,7 @@ class QboApiClient:
                 )
             )
 
-        for r in self._rows(self.query(f"select * from Deposit{where}"), "Deposit"):
+        for r in self.query_all(f"select * from Deposit{where}", "Deposit"):
             out.append(
                 QboBankTxn(
                     id=f"qbo-deposit-{self._s(r, 'Id')}",
@@ -251,15 +272,19 @@ class QboApiClient:
 
         return sorted(out, key=lambda t: (t.txn_date, t.id))
 
-    def chart_of_accounts(self) -> list[dict[str, str]]:
-        """Every active account: its QBO id, number (`code`), name, and QBO type.
+    def chart_of_accounts(self, *, include_inactive: bool = False) -> list[dict[str, str]]:
+        """Every account: its QBO id, number (`code`), name, and QBO type.
         This is the chart brought across at go-live, and the join table that turns
         a TrialBalance report's account rows into coded, typed source accounts.
         Accounts with no number fall back to the QBO id as the code so a migration
-        never drops an account for lacking a human number."""
-        qr = self.query("select * from Account where Active = true")
+        never drops an account for lacking a human number.
+
+        `include_inactive` is for that join: QuickBooks lets an account be made
+        inactive while it still carries history, and a trial balance row for
+        one has to find its account like any other."""
+        where = "where Active IN (true, false)" if include_inactive else "where Active = true"
         out: list[dict[str, str]] = []
-        for r in self._rows(qr, "Account"):
+        for r in self.query_all(f"select * from Account {where}", "Account"):
             acct_id = self._s(r, "Id")
             out.append({
                 "id": acct_id,
@@ -308,19 +333,29 @@ class QboApiClient:
         `qbo_trial_balance_to_source_accounts`. Debit/credit come from the
         TrialBalance report (already balanced by QuickBooks); the code and QBO
         account type come from the chart of accounts, joined by QBO account id.
-        `as_of` is an ISO date (default: today in the company's books). Rows with
-        no joinable account id — section headers and totals — are skipped."""
-        by_id = {a["id"]: a for a in self.chart_of_accounts()}
+        `as_of` is an ISO date (default: today in the company's books).
+
+        Rows with no account id — section headers and totals — are skipped. A row
+        that *has* an account id the chart doesn't know is an error, never a
+        skip: that is exactly how accounts went missing before, silently, with
+        the trial balance still appearing to balance. And the rows read are
+        checked against the report's own TOTAL, so anything that goes missing
+        for any other reason is caught here rather than plugged downstream."""
+        by_id = {a["id"]: a for a in self.chart_of_accounts(include_inactive=True)}
         params = {"start_date": as_of, "end_date": as_of} if as_of else {"date_macro": "Today"}
         report = self.report("TrialBalance", params)
         out: list[dict[str, object]] = []
+        unknown: list[str] = []
         for cols in self._report_coldata(report.get("Rows")):
             if len(cols) < 3:
                 continue
             acct_id = str(cols[0].get("id", "")).strip()
+            if not acct_id:
+                continue  # a section header or a total: no account behind it
             acct = by_id.get(acct_id)
             if acct is None:
-                continue  # totals / non-account rows carry no joinable id
+                unknown.append(f"{cols[0].get('value', '')} (id {acct_id})")
+                continue
             out.append({
                 "code": acct["code"],
                 "name": acct["name"] or str(cols[0].get("value", "")),
@@ -328,7 +363,38 @@ class QboApiClient:
                 "debit_minor": _to_minor(cols[1].get("value")),
                 "credit_minor": _to_minor(cols[2].get("value")),
             })
+        if unknown:
+            raise QboApiError(
+                "the trial balance has rows for accounts the chart of accounts did not "
+                f"return: {', '.join(unknown[:5])}{' …' if len(unknown) > 5 else ''}")
+        total = self._report_total(report.get("Rows"))
+        if total is not None:
+            got = (sum(int(str(r["debit_minor"])) for r in out),
+                   sum(int(str(r["credit_minor"])) for r in out))
+            if got != total:
+                raise QboApiError(
+                    f"read {got[0] / 100:,.2f} of debits and {got[1] / 100:,.2f} of credits, but "
+                    f"QuickBooks' trial balance totals {total[0] / 100:,.2f} / "
+                    f"{total[1] / 100:,.2f}; some rows did not come across")
         return out
+
+    @classmethod
+    def _report_total(cls, container: object) -> "tuple[int, int] | None":
+        """The (debit, credit) of the report's TOTAL row, wherever it sits."""
+        rows = container.get("Row") if isinstance(container, dict) else None
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            summary = row.get("Summary")
+            cols = summary.get("ColData") if isinstance(summary, dict) else None
+            if (isinstance(cols, list) and len(cols) >= 3 and isinstance(cols[0], dict)
+                    and str(cols[0].get("value", "")).strip().upper() == "TOTAL"):
+                return (_to_minor(cols[1].get("value") if isinstance(cols[1], dict) else None),
+                        _to_minor(cols[2].get("value") if isinstance(cols[2], dict) else None))
+            nested = cls._report_total(row.get("Rows"))
+            if nested is not None:
+                return nested
+        return None
 
     def company_info(self) -> QboCompany:
         """The connected company's name (and country)."""
