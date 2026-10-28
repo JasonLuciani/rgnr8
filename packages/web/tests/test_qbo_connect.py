@@ -204,7 +204,7 @@ def _qr(body: dict) -> HttpResponse:
     return HttpResponse(200, json.dumps({"QueryResponse": body}))
 
 
-def _connected_app(*, ledger=None, extra_queries: list | None = None):
+def _connected_app(*, ledger=None, extra_queries: list | None = None, queries: list | None = None):
     from datetime import timedelta
 
     from rgnr8_qbo import QboConnection, QboStatus
@@ -215,7 +215,7 @@ def _connected_app(*, ledger=None, extra_queries: list | None = None):
         access_expires_at=T0 + timedelta(hours=1), refresh_expires_at=T0 + timedelta(days=90),
         status=QboStatus.CONNECTED, connected_at=T0,
     ))
-    http = FakeHttpWithGet([
+    http = FakeHttpWithGet(queries if queries is not None else [
         _qr({"CompanyInfo": [{"CompanyName": "Sandbox Co"}]}),
         _qr({"Account": [
             {"Id": "1", "Name": "Checking", "AccountType": "Bank", "CurrentBalance": 1201.00},
@@ -354,8 +354,13 @@ def test_went_live_needs_the_quickbooks_opening_entry_not_just_a_chart() -> None
     app._ledger = _JournalOnly([{"source": "quickbooks", "idempotency_key": "je:2026-10-02:abc"}])
     assert app._qbo_went_live(t) is False
 
-    # A fresh process (nothing in memory) still knows, because it reads the ledger...
+    # A miss is remembered for a few minutes, so a page reload doesn't download
+    # the journal again...
     app._ledger = _JournalOnly([{"source": "quickbooks", "idempotency_key": "cutover:opening:2026-09-30"}])
+    assert app._qbo_went_live(t) is False and app._ledger.calls == 0
+    app._qbo_scan_miss.clear()
+
+    # A fresh process (nothing in memory) still knows, because it reads the ledger...
     assert app._qbo_went_live(t) is True
     # ...and remembers, so the Connections page doesn't re-read the journal each time.
     app._ledger.calls = 0
@@ -373,3 +378,120 @@ def test_last_refresh_table_puts_amounts_under_amount() -> None:
         ledger_migrated=True)
     assert '<td>Open bills (AP)</td><td class="num">$400.00</td><td class="muted">1 bill(s)</td>' in html
     assert '<td>Open invoices (AR)</td><td class="num">$2.00</td>' in html
+
+
+# --- a mirror is a copy of ONE QuickBooks company ------------------------------
+
+
+class MirrorLedger:
+    """A ledger transport with settings, a journal and a chart, recording writes."""
+
+    def __init__(self, *, settings=None, entries=None, accounts=None) -> None:
+        self.settings = dict(settings or {})
+        self.entries = list(entries or [])
+        self.accounts = list(accounts or [])
+        self.calls: list[tuple[str, str, str]] = []
+
+    def request(self, method: str, path: str, body: str, headers):
+        from rgnr8_web import LedgerResponse
+        self.calls.append((method, path, body))
+        if path.endswith("/settings"):
+            if method == "POST":
+                self.settings.update(json.loads(body))
+            return LedgerResponse(200, {"settings": dict(self.settings)})
+        if path.endswith("/entries") and method == "GET":
+            return LedgerResponse(200, {"entries": self.entries})
+        if path.endswith("/accounts") and method == "GET":
+            return LedgerResponse(200, {"accounts": self.accounts})
+        return LedgerResponse(200, {})
+
+    def posts(self, suffix: str) -> "list[dict]":
+        return [json.loads(b) for (m, p, b) in self.calls if m == "POST" and p.endswith(suffix)]
+
+
+OPENING = {"source": "quickbooks", "idempotency_key": "cutover:opening:2026-09-30"}
+CHART = [{"code": str(i), "name": n} for i, n in enumerate(
+    ["Checking", "Savings", "Accounts Receivable", "Accounts Payable", "Sales", "Rent"], start=1)]
+
+
+def _qbo_chart(names: "list[str]") -> HttpResponse:
+    return _qr({"Account": [{"Id": str(i), "Name": n, "AccountType": "Bank"}
+                            for i, n in enumerate(names, start=1)]})
+
+
+def test_the_page_names_a_different_company_instead_of_claiming_a_mirror() -> None:
+    from rgnr8_web import LedgerClient
+    ledger = MirrorLedger(settings={"book_of_record": "quickbooks", "mirror_realm_id": "R7"})
+    app = _connected_app(ledger=LedgerClient(ledger))      # connected to R42
+    page = app.handle(Request("GET", "/t/acme/connect", _h("owner@acme.com"))).body
+    assert "This isn&#x27;t the QuickBooks company your books came from" in page \
+        or "This isn't the QuickBooks company your books came from" in page
+    assert "Your books mirror QuickBooks</h2>" not in page
+    assert "Bring your full ledger across" not in page       # and never offers a second import
+    # it read one small settings row, not the journal
+    assert not any(p.endswith("/entries") for (_, p, _b) in ledger.calls)
+
+
+def test_refresh_refuses_a_different_company_before_reading_anything_from_it() -> None:
+    from rgnr8_web import LedgerClient
+    ledger = MirrorLedger(settings={"book_of_record": "quickbooks", "mirror_realm_id": "R7"},
+                          entries=[OPENING], accounts=CHART)
+    app = _connected_app(ledger=LedgerClient(ledger))      # connected to R42
+    before = app._tenants["acme"].inputs if hasattr(app, "_tenants") else None
+    r = app.handle(Request("POST", "/t/acme/connect/qbo/sync", _h("owner@acme.com")))
+    assert dict(r.extra_headers)["Location"] == "/t/acme/connect?migrate=error"
+    page = app.handle(Request("GET", "/t/acme/connect?migrate=error", _h("owner@acme.com"))).body
+    assert "your books mirror company R7" in page and "nothing was changed" in page
+    # nothing was read from the other company, and nothing was written
+    assert app._qbo.api_client("acme") is not None
+    assert not ledger.posts("/entries") and not ledger.posts("/settings")
+    if before is not None:
+        assert app._tenants["acme"].inputs is before         # the forecast wasn't replaced
+
+
+def test_books_from_before_pinning_are_pinned_once_the_chart_confirms_the_company() -> None:
+    from rgnr8_web import LedgerClient
+    ledger = MirrorLedger(entries=[OPENING], accounts=CHART)  # went live, nothing pinned
+    names = [a["name"] for a in CHART]
+    app = _connected_app(ledger=LedgerClient(ledger), queries=[_qbo_chart(names)])
+    page = app.handle(Request("GET", "/t/acme/connect", _h("owner@acme.com"))).body
+    assert "Your books mirror QuickBooks" in page             # the go-live entry proves a mirror
+    app.handle(Request("POST", "/t/acme/connect/qbo/sync", _h("owner@acme.com")))
+    pins = ledger.posts("/settings")
+    assert pins and pins[0]["mirror_realm_id"] == "R42" and pins[0]["book_of_record"] == "quickbooks"
+
+
+def test_books_from_before_pinning_refuse_a_company_whose_chart_is_not_theirs() -> None:
+    from rgnr8_web import LedgerClient
+    ledger = MirrorLedger(entries=[OPENING], accounts=CHART)
+    other = ["Operating", "Reserve", "Receivables", "Payables", "Consulting", "Office"]
+    app = _connected_app(ledger=LedgerClient(ledger), queries=[_qbo_chart(other)])
+    r = app.handle(Request("POST", "/t/acme/connect/qbo/sync", _h("owner@acme.com")))
+    assert dict(r.extra_headers)["Location"] == "/t/acme/connect?migrate=error"
+    page = app.handle(Request("GET", "/t/acme/connect?migrate=error", _h("owner@acme.com"))).body
+    assert "0 of 6 accounts" in page
+    assert not ledger.posts("/settings") and not ledger.posts("/entries")
+
+
+def test_a_disconnected_page_makes_no_ledger_call() -> None:
+    from rgnr8_web import LedgerClient
+    ledger = MirrorLedger(entries=[OPENING], accounts=CHART)
+    app, _ = _app()
+    app.set_ledger(LedgerClient(ledger))
+    app.handle(Request("GET", "/t/acme/connect", _h("owner@acme.com")))
+    assert not any("/settings" in p or "/entries" in p for (_, p, _b) in ledger.calls)
+
+
+def test_pinning_writes_the_company_to_the_ledger_and_remembers_it() -> None:
+    from types import SimpleNamespace
+
+    from rgnr8_web import LedgerClient
+    ledger = MirrorLedger()
+    app, _ = _app()
+    app.set_ledger(LedgerClient(ledger))
+    t = SimpleNamespace(tenant_id="acme")
+    assert app._qbo_pin(t, "9341453432535209", "2026-09-30") == ""
+    assert ledger.settings == {"book_of_record": "quickbooks",
+                               "mirror_realm_id": "9341453432535209", "cutover_date": "2026-09-30"}
+    ledger.calls.clear()
+    assert app._qbo_binding(t) == "9341453432535209" and not ledger.calls   # cached

@@ -487,9 +487,12 @@ def render_connect_page(
     migrate_message: str = "",
     ledger_migrated: bool = False,
     ledger_sync: "dict[str, str] | None" = None,
+    mirror_realm: str = "",
 ) -> str:
     """The connections page: QuickBooks Online status + a connect / reconnect /
-    disconnect control, a Sync-now action, and the last sync's summary.
+    disconnect control, a Refresh action, and the last refresh's summary.
+    `mirror_realm` is set when the books mirror a DIFFERENT QuickBooks company
+    than the connected one: the page says so instead of offering to import.
     Self-contained (relative links only), reuses the shell card/banner/btn CSS."""
     connect_href = f"/t/{escape(tenant)}/connect/qbo"
     disconnect_href = f"/t/{escape(tenant)}/connect/qbo/disconnect"
@@ -552,7 +555,16 @@ def render_connect_page(
     # of accounts + opening trial balance so the books mirror QuickBooks. Only
     # meaningful once connected, and hidden once it has run.
     migrate_block = ""
-    if is_connected and not ledger_migrated:
+    if is_connected and mirror_realm:
+        migrate_block = (
+            '<div class="card"><h2>This isn\'t the QuickBooks company your books came from</h2>'
+            f'<div class="banner warn">Your books mirror QuickBooks company {escape(mirror_realm)}, '
+            f'but you\'re connected to company {escape(realm_id or "")}.</div>'
+            '<p class="muted">Refresh won\'t run while they differ, so another company\'s numbers '
+            f'can never be written into these books. Reconnect company {escape(mirror_realm)} '
+            'to keep mirroring.</p></div>'
+        )
+    elif is_connected and not ledger_migrated:
         migrate_block = (
             '<div class="card"><h2>Bring your full ledger across</h2>'
             '<p>A one-time step: bring your QuickBooks <strong>chart of accounts and balances</strong> '

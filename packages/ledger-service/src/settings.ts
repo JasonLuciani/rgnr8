@@ -65,7 +65,25 @@ export interface AccountSettings {
   readonly retentionAuditDays: number;
   /** Days to keep soft-deleted rows before a sweep hard-removes them; 0 = keep forever. */
   readonly retentionSoftDeleteDays: number;
+  /**
+   * Which system is the book of record. "rgnr8" (the default, and every account
+   * that never mirrored anything) or "quickbooks" during a parallel run, when
+   * RGNR8 keeps an exact copy of one QuickBooks company.
+   */
+  readonly bookOfRecord: BookOfRecord;
+  /**
+   * The QuickBooks company (realm id) the books were brought over from. A mirror
+   * is a copy of ONE company: refreshing it from a different one would rewrite
+   * these books into someone else's, so the realm is pinned at go-live and every
+   * refresh checks it. Empty when nothing is mirrored.
+   */
+  readonly mirrorRealmId: string;
+  /** The go-live cutover date (YYYY-MM-DD) the opening balances were taken at; empty if none. */
+  readonly cutoverDate: string;
 }
+
+export type BookOfRecord = "rgnr8" | "quickbooks";
+export const BOOKS_OF_RECORD: readonly BookOfRecord[] = ["rgnr8", "quickbooks"];
 
 /** The behaviour a brand-new account gets — identical to the pre-settings world. */
 export function defaultSettings(baseCurrency = "USD"): AccountSettings {
@@ -75,6 +93,9 @@ export function defaultSettings(baseCurrency = "USD"): AccountSettings {
     multiCurrencyEnabled: false,
     retentionAuditDays: 0,
     retentionSoftDeleteDays: 0,
+    bookOfRecord: "rgnr8",
+    mirrorRealmId: "",
+    cutoverDate: "",
   };
 }
 
@@ -95,6 +116,9 @@ export function mergeSettings(
     multiCurrencyEnabled: boolean;
     retentionAuditDays: number;
     retentionSoftDeleteDays: number;
+    bookOfRecord: BookOfRecord;
+    mirrorRealmId: string;
+    cutoverDate: string;
   };
   if (patch["inventory_costing_method"] !== undefined) {
     const m = String(patch["inventory_costing_method"]).trim().toUpperCase() as InventoryCostingMethod;
@@ -116,6 +140,24 @@ export function mergeSettings(
   }
   if (patch["retention_soft_delete_days"] !== undefined) {
     next.retentionSoftDeleteDays = toDays(patch["retention_soft_delete_days"], "soft-delete retention");
+  }
+  if (patch["book_of_record"] !== undefined) {
+    const b = String(patch["book_of_record"]).trim().toLowerCase() as BookOfRecord;
+    if (!BOOKS_OF_RECORD.includes(b)) {
+      throw new SettingsError(`book of record must be one of ${BOOKS_OF_RECORD.join(", ")}`);
+    }
+    next.bookOfRecord = b;
+  }
+  if (patch["mirror_realm_id"] !== undefined) {
+    const r = String(patch["mirror_realm_id"]).trim();
+    // QuickBooks realm ids are numeric company ids; empty clears the binding.
+    if (r !== "" && !/^[0-9]{1,32}$/.test(r)) throw new SettingsError("mirror realm id must be a QuickBooks company id");
+    next.mirrorRealmId = r;
+  }
+  if (patch["cutover_date"] !== undefined) {
+    const d = String(patch["cutover_date"]).trim();
+    if (d !== "" && !/^\d{4}-\d{2}-\d{2}$/.test(d)) throw new SettingsError("cutover date must be YYYY-MM-DD");
+    next.cutoverDate = d;
   }
   return next;
 }
@@ -139,6 +181,9 @@ export function settingsJson(s: AccountSettings): Record<string, unknown> {
     multi_currency_enabled: s.multiCurrencyEnabled,
     retention_audit_days: s.retentionAuditDays,
     retention_soft_delete_days: s.retentionSoftDeleteDays,
+    book_of_record: s.bookOfRecord,
+    mirror_realm_id: s.mirrorRealmId,
+    cutover_date: s.cutoverDate,
   };
 }
 
@@ -176,6 +221,9 @@ CREATE TABLE IF NOT EXISTS account_settings (
   retention_audit_days       integer NOT NULL DEFAULT 0,
   retention_soft_delete_days integer NOT NULL DEFAULT 0
 );
+ALTER TABLE account_settings ADD COLUMN IF NOT EXISTS book_of_record  text NOT NULL DEFAULT 'rgnr8';
+ALTER TABLE account_settings ADD COLUMN IF NOT EXISTS mirror_realm_id text NOT NULL DEFAULT '';
+ALTER TABLE account_settings ADD COLUMN IF NOT EXISTS cutover_date    text NOT NULL DEFAULT '';
 `;
 
 export class PgSettingsStore implements SettingsStore {
@@ -209,7 +257,8 @@ export class PgSettingsStore implements SettingsStore {
     return this.tx(tenant, async (db) => {
       const res = await db.query(
         `SELECT inventory_costing_method, base_currency, multi_currency_enabled,
-                retention_audit_days, retention_soft_delete_days
+                retention_audit_days, retention_soft_delete_days,
+                book_of_record, mirror_realm_id, cutover_date
          FROM account_settings WHERE tenant_id=$1`,
         [tenant],
       );
@@ -221,6 +270,9 @@ export class PgSettingsStore implements SettingsStore {
         multiCurrencyEnabled: r["multi_currency_enabled"] === true || r["multi_currency_enabled"] === "t",
         retentionAuditDays: Number(r["retention_audit_days"] ?? 0),
         retentionSoftDeleteDays: Number(r["retention_soft_delete_days"] ?? 0),
+        bookOfRecord: (String(r["book_of_record"] ?? "rgnr8") === "quickbooks" ? "quickbooks" : "rgnr8"),
+        mirrorRealmId: String(r["mirror_realm_id"] ?? ""),
+        cutoverDate: String(r["cutover_date"] ?? ""),
       };
     });
   }
@@ -230,17 +282,22 @@ export class PgSettingsStore implements SettingsStore {
       db.query(
         `INSERT INTO account_settings
            (tenant_id, inventory_costing_method, base_currency, multi_currency_enabled,
-            retention_audit_days, retention_soft_delete_days)
-         VALUES ($1, $2, $3, $4, $5, $6)
+            retention_audit_days, retention_soft_delete_days,
+            book_of_record, mirror_realm_id, cutover_date)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          ON CONFLICT (tenant_id) DO UPDATE SET
            inventory_costing_method=EXCLUDED.inventory_costing_method,
            base_currency=EXCLUDED.base_currency,
            multi_currency_enabled=EXCLUDED.multi_currency_enabled,
            retention_audit_days=EXCLUDED.retention_audit_days,
-           retention_soft_delete_days=EXCLUDED.retention_soft_delete_days`,
+           retention_soft_delete_days=EXCLUDED.retention_soft_delete_days,
+           book_of_record=EXCLUDED.book_of_record,
+           mirror_realm_id=EXCLUDED.mirror_realm_id,
+           cutover_date=EXCLUDED.cutover_date`,
         [
           tenant, s.inventoryCostingMethod, s.baseCurrency, s.multiCurrencyEnabled,
           s.retentionAuditDays, s.retentionSoftDeleteDays,
+          s.bookOfRecord, s.mirrorRealmId, s.cutoverDate,
         ],
       ),
     );
