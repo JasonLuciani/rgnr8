@@ -70,3 +70,31 @@ test("one tenant's settings are invisible to another", async () => {
   const other = obj(await call(s, "GET", "/t/beta/settings"))["settings"] as Record<string, unknown>;
   assert.equal(other["inventory_costing_method"], "MOVING_AVERAGE", "beta still sees the default");
 });
+
+test("the mirror binding is stored, validated and off by default", async () => {
+  const s = svc();
+  const fresh = obj(await call(s, "GET", "/t/acme/settings"))["settings"] as Record<string, unknown>;
+  // An account that never mirrored anything is its own book of record.
+  assert.equal(fresh["book_of_record"], "rgnr8");
+  assert.equal(fresh["mirror_realm_id"], "");
+  assert.equal(fresh["cutover_date"], "");
+
+  const bound = await call(s, "POST", "/t/acme/settings", {
+    book_of_record: "QuickBooks", mirror_realm_id: "9341453432535209", cutover_date: "2026-09-30",
+  });
+  assert.equal(bound.status, 200, JSON.stringify(bound.body));
+  const again = obj(await call(s, "GET", "/t/acme/settings"))["settings"] as Record<string, unknown>;
+  assert.equal(again["book_of_record"], "quickbooks", "normalised to lower case");
+  assert.equal(again["mirror_realm_id"], "9341453432535209");
+  assert.equal(again["cutover_date"], "2026-09-30");
+  assert.equal(again["inventory_costing_method"], "MOVING_AVERAGE", "other fields untouched");
+
+  for (const badPatch of [
+    { book_of_record: "xero" },
+    { mirror_realm_id: "acme; drop" },
+    { cutover_date: "Sept 30" },
+  ]) {
+    const r = await call(s, "POST", "/t/acme/settings", badPatch);
+    assert.equal(r.status, 400, `${JSON.stringify(badPatch)} should be refused`);
+  }
+});

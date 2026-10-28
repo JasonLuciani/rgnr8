@@ -554,6 +554,14 @@ class WebApp:
         # across (go-live). Drives the connect page's migrate card; a restart
         # re-derives it from the ledger having a chart of accounts.
         self._qbo_migrated: set[str] = set()
+        # The QuickBooks company (realm id) each tenant's books mirror, as pinned in
+        # the ledger's settings at go-live. Cached once read; the ledger is the
+        # source of truth, so a restart re-reads it rather than forgetting it.
+        self._qbo_bound: dict[str, str] = {}
+        # When a journal scan last found no QuickBooks go-live (legacy tenants that
+        # predate the pinned realm): the Connections page re-scans at most every
+        # few minutes instead of downloading the journal on every load.
+        self._qbo_scan_miss: dict[str, float] = {}
         # The last migration's human message per tenant (success detail or the
         # specific failure), shown on the connect page after a migrate attempt.
         self._qbo_migrate_msg: dict[str, str] = {}
@@ -5867,14 +5875,18 @@ class WebApp:
                 "skipped": str(books.documents_skipped + books.bank_duplicates),
                 "errors": "; ".join(books.errors[:3]),
             }
+        # Only a live connection needs to know what the books mirror; a page for a
+        # disconnected or unconfigured tenant makes no ledger call at all.
+        mirror = self._qbo_mirror_state(t, realm or "") if status == "connected" else ("none", "")
         return self._shell(subject, t, "connect",
                            render_connect_page(t.tenant_id, configured=configured,
                                                status=status, realm_id=realm,
                                                last_sync=last_sync, sync_flag=sync_flag,
                                                migrate_flag=migrate_flag,
                                                migrate_message=self._qbo_migrate_msg.get(t.tenant_id, ""),
-                                               ledger_migrated=(status == "connected"
-                                                                and self._qbo_went_live(t)),
+                                               ledger_migrated=mirror[0] == "mirrored",
+                                               mirror_realm=(mirror[1] if mirror[0] == "other_company"
+                                                             else ""),
                                                ledger_sync=ledger_sync))
 
     def _qbo_begin(self, t: _Tenant) -> Response:
@@ -5895,6 +5907,72 @@ class WebApp:
                                tenant_id=t.tenant_id, target=t.tenant_id)
         return _redirect(f"/t/{t.tenant_id}/connect")
 
+    def _qbo_binding(self, t: _Tenant) -> "str | None":
+        """The QuickBooks company (realm id) these books mirror, pinned in the
+        ledger's settings at go-live: "" when nothing is pinned, None when the
+        ledger couldn't be read. One small settings read, never the journal."""
+        cached = self._qbo_bound.get(t.tenant_id)
+        if cached:
+            return cached
+        if self._ledger is None or not hasattr(self._ledger, "settings"):
+            return ""
+        res = self._ledger.settings(t.tenant_id)
+        if not res.ok:
+            return None
+        raw = res.body.get("settings")
+        settings = raw if isinstance(raw, dict) else {}
+        realm = (str(settings.get("mirror_realm_id") or "")
+                 if str(settings.get("book_of_record") or "") == "quickbooks" else "")
+        if realm:
+            self._qbo_bound[t.tenant_id] = realm
+        return realm
+
+    def _qbo_pin(self, t: _Tenant, realm: str, cutover: str) -> str:
+        """Pin the mirror to one QuickBooks company. Returns "" or why it failed."""
+        if self._ledger is None or not realm:
+            return "no QuickBooks company to pin"
+        res = self._ledger.save_settings(t.tenant_id, {
+            "book_of_record": "quickbooks", "mirror_realm_id": realm, "cutover_date": cutover})
+        if not res.ok:
+            return res.error()
+        self._qbo_bound[t.tenant_id] = realm
+        self._qbo_migrated.add(t.tenant_id)
+        return ""
+
+    def _qbo_mirror_state(self, t: _Tenant, realm: str) -> "tuple[str, str]":
+        """What the connected QuickBooks company is to these books:
+        ("mirrored", realm) — the company they were brought over from;
+        ("other_company", pinned) — a different company than the pinned one;
+        ("none", "") — nothing has been brought over yet."""
+        pinned = self._qbo_binding(t)
+        if pinned:
+            return ("mirrored", pinned) if not realm or pinned == realm else ("other_company", pinned)
+        # Books brought over before the company was pinned: the go-live entry
+        # proves a mirror exists (the next refresh checks the company and pins it).
+        return ("mirrored", "") if self._qbo_went_live(t) else ("none", "")
+
+    def _qbo_same_company(self, client: object, t: _Tenant) -> "tuple[bool, str]":
+        """For books brought over before the company was pinned: is the connected
+        QuickBooks company the one they came from? The go-live imported QuickBooks'
+        own account numbers (or ids) and names, so the books' chart must still be
+        QuickBooks' chart — nearly account for account. A different company, even
+        one set up from the same template, won't share its ids *and* names."""
+        assert self._ledger is not None
+        res = self._ledger.accounts(t.tenant_id)
+        raw = res.body.get("accounts") if res.ok else None
+        ours = [a for a in raw if isinstance(a, dict)] if isinstance(raw, list) else []
+        try:
+            theirs = client.chart_of_accounts(include_inactive=True)  # type: ignore[attr-defined]
+        except Exception:
+            return False, "couldn't read the QuickBooks chart of accounts to confirm the company"
+        names = {str(a.get("code", "")): str(a.get("name", "")).strip().lower() for a in theirs}
+        same = sum(1 for a in ours
+                   if names.get(str(a.get("code", ""))) == str(a.get("name", "")).strip().lower())
+        if ours and same >= 5 and same >= 0.9 * len(ours):
+            return True, ""
+        return False, (f"only {same} of {len(ours)} accounts in your books match this QuickBooks "
+                       "company's chart, so it doesn't look like the company they came from")
+
     def _qbo_went_live(self, t: _Tenant) -> bool:
         """True once this tenant's books were brought over from QuickBooks.
 
@@ -5910,6 +5988,9 @@ class WebApp:
             return True
         if self._ledger is None:
             return False
+        now = self._session_clock()
+        if now - self._qbo_scan_miss.get(t.tenant_id, float("-inf")) < 300:
+            return False
         res = self._ledger.entries(t.tenant_id)
         raw = res.body.get("entries") if res.ok else None
         for e in raw if isinstance(raw, list) else []:
@@ -5917,7 +5998,32 @@ class WebApp:
                     and str(e.get("idempotency_key") or "").startswith("cutover:opening:")):
                 self._qbo_migrated.add(t.tenant_id)
                 return True
+        if res.ok:
+            self._qbo_scan_miss[t.tenant_id] = now
         return False
+
+    def _qbo_company_check(self, t: _Tenant, client: object) -> str:
+        """"" when a refresh may read from this QuickBooks company, else why not.
+        Pins books brought over before pinning existed, once the chart confirms
+        they came from this company."""
+        realm = str(getattr(client, "realm_id", "") or "")
+        pinned = self._qbo_binding(t)
+        if pinned is None:
+            return ("couldn't read which QuickBooks company these books mirror, "
+                    "so nothing was changed. Try again in a moment.")
+        if pinned:
+            if realm and realm != pinned:
+                return (f"this is QuickBooks company {realm}, but your books mirror company "
+                        f"{pinned}. Refreshing would rewrite them with another company's "
+                        f"numbers, so nothing was changed. Reconnect company {pinned}.")
+            return ""
+        if not self._qbo_went_live(t):
+            return ""   # nothing brought over yet: the refresh path says so itself
+        same, why = self._qbo_same_company(client, t)
+        if not same:
+            return f"{why}. Nothing was changed. Reconnect the company your books came from."
+        problem = self._qbo_pin(t, realm, "")
+        return "" if not problem else f"couldn't pin the QuickBooks company ({problem}); nothing was changed"
 
     def _qbo_has_ledger(self, t: _Tenant) -> bool:
         """True when the ledger already holds a chart of accounts for this tenant —
@@ -5939,6 +6045,17 @@ class WebApp:
         if client is None:
             # not connected / needs reconnect — bounce back to the connect page
             return _redirect(f"/t/{t.tenant_id}/connect")
+        # A mirror is a copy of ONE QuickBooks company. Refreshing it from another
+        # would rewrite these books (and the forecast) with that company's
+        # numbers, so check which company this is before anything is read from it.
+        if self._ledger is not None:
+            refusal = self._qbo_company_check(t, client)
+            if refusal:
+                self._qbo_migrate_msg[t.tenant_id] = refusal
+                if self._audit is not None:
+                    self._audit.record(subject, "qbo.refresh_refused", self._session_clock(),
+                                       tenant_id=t.tenant_id, detail=refusal)
+                return _redirect(f"/t/{t.tenant_id}/connect?migrate=error")
         as_of = date.fromtimestamp(self._session_clock())
         try:
             inputs, summary = build_inputs_from_qbo(client, as_of=as_of, currency=t.config.currency)
@@ -6013,6 +6130,11 @@ class WebApp:
         )
         message = result.describe()
         if result.ok:
+            # Pin the mirror to this company the moment its books exist, so no
+            # later refresh can read another company into them.
+            problem = self._qbo_pin(t, str(getattr(client, "realm_id", "") or ""), cutover)
+            if problem:
+                message += f" (couldn't pin the QuickBooks company yet: {problem})"
             mirror = refresh_mirror(client, self._ledger, t.tenant_id, as_of=today.isoformat())
             message += f" (opening balances as of {cutover}); then {mirror.describe()}"
             if not mirror.ok:
