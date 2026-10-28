@@ -116,7 +116,16 @@ def _ask(what: str, call: "Callable[[], LedgerResponse]") -> "tuple[LedgerRespon
     return res, ""
 
 
-def _bank_cash(ledger: LedgerClient, tenant: str, as_of: date) -> tuple[Money, int, str]:
+# The account RGNR8's own payroll engine posts withholdings and employer taxes
+# to, and the one the ledger's liabilities read uses when no code is given
+# (`DEFAULT_PAYROLL_CODES` in ledger-service/src/payroll.ts). If that default
+# ever changes, this has to change with it.
+_PAYROLL_LIABILITY_CODE = "2300"
+
+
+def _bank_cash(
+    ledger: LedgerClient, tenant: str, as_of: date
+) -> tuple[Money, int, str, frozenset[str]]:
     """Cash on hand: the trial-balance total of the bank and cash accounts.
 
     This is a fact in the strongest sense available — it is what the business's
@@ -130,12 +139,14 @@ def _bank_cash(ledger: LedgerClient, tenant: str, as_of: date) -> tuple[Money, i
     """
     accounts, problem = _ask("the chart of accounts", lambda: ledger.accounts(tenant))
     if accounts is None:
-        return Money(0), 0, problem
+        return Money(0), 0, problem, frozenset()
     bank_codes = set()
+    codes: set[str] = set()
     raw = accounts.body.get("accounts")
     for a in raw if isinstance(raw, (list, tuple)) else []:
         if not isinstance(a, dict):
             continue
+        codes.add(str(a.get("code")))
         subtype = str(a.get("subtype") or "")
         if subtype in {"BANK", "CASH", "UNDEPOSITED_FUNDS"}:
             bank_codes.add(str(a.get("code")))
@@ -150,11 +161,11 @@ def _bank_cash(ledger: LedgerClient, tenant: str, as_of: date) -> tuple[Money, i
         return Money(0), 0, (
             "could not read cash on hand: your chart of accounts has no bank or "
             "cash account yet"
-        )
+        ), frozenset(codes)
 
     tb, problem = _ask("the trial balance", lambda: ledger.trial_balance(tenant, to=as_of.isoformat()))
     if tb is None:
-        return Money(0), 0, problem
+        return Money(0), 0, problem, frozenset(codes)
     total = 0
     rows = tb.body.get("rows")
     for r in rows if isinstance(rows, (list, tuple)) else []:
@@ -162,7 +173,7 @@ def _bank_cash(ledger: LedgerClient, tenant: str, as_of: date) -> tuple[Money, i
             continue
         # An asset is debit-positive.
         total += _minor(r.get("debit_minor")) - _minor(r.get("credit_minor"))
-    return Money(total), len(bank_codes), ""
+    return Money(total), len(bank_codes), "", frozenset(codes)
 
 
 def _open_documents(
@@ -185,7 +196,7 @@ def read_ledger_facts(
     """Read everything about the near future that the books already settle."""
     problems: list[str] = []
 
-    cash, accounts, problem = _bank_cash(ledger, tenant, as_of)
+    cash, accounts, problem, chart_codes = _bank_cash(ledger, tenant, as_of)
     if problem:
         problems.append(problem)
 
@@ -220,12 +231,23 @@ def read_ledger_facts(
 
     # Payroll liabilities are money already owed on work already done — as much
     # a fact as an unpaid bill, and one businesses routinely forget is coming.
+    #
+    # Only asked when the account RGNR8's payroll posts to exists. A company that
+    # came across from QuickBooks has QuickBooks' own account codes and no 2300,
+    # and the ledger answers "unknown account code 2300" — which was being
+    # reported as "the books couldn't be read", in a warning banner, on every
+    # page load, for every migrated company, forever. No such account means
+    # RGNR8 payroll has never posted, so nothing is owed through it; that is an
+    # answer, not a failure. (Payroll run in QuickBooks lands in QuickBooks'
+    # own liability accounts and reaches the outlook through the bills and the
+    # trial balance like any other liability.)
     liability = Money(0)
-    liabilities, problem = _ask("payroll liabilities", lambda: ledger.payroll_liabilities(tenant))
-    if liabilities is None:
-        problems.append(problem)
-    else:
-        liability = _money(liabilities.body.get("owed_minor"), currency)
+    if not chart_codes or _PAYROLL_LIABILITY_CODE in chart_codes:
+        liabilities, problem = _ask("payroll liabilities", lambda: ledger.payroll_liabilities(tenant))
+        if liabilities is None:
+            problems.append(problem)
+        else:
+            liability = _money(liabilities.body.get("owed_minor"), currency)
 
     return LedgerFacts(
         cash=cash,
