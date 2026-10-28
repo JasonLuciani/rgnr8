@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from html import escape
 
 from rgnr8_briefing.today import CHART_CSS
-from rgnr8_forecast.brand import FOREST, IVORY, RG_BASE_CSS, RG_TOKENS_CSS, finos_logo_html
+from rgnr8_forecast.brand import RG_BASE_CSS, RG_TOKENS_CSS, finos_logo_html
 
 from .assets import font_face_css
 from .audit import AuditEvent
@@ -140,9 +140,13 @@ _SHELL_CSS = f"""<style>
 {RG_TOKENS_CSS}
 {RG_BASE_CSS}
   /* --- app frame: top bar + grouped sidebar ---------------------------- */
+  /* A fixed bar height, so the sidebar below can fill exactly the rest of the
+     window: when the bar's height came from its content it moved with the
+     logo and the font, and short pages scrolled by a few pixels. */
+  .rg-bar{{min-height:60px;padding-top:0;padding-bottom:0}}
   .rg-layout{{display:grid;grid-template-columns:200px minmax(0,1fr);
     max-width:1280px;margin:0 auto;align-items:start}}
-  .rg-navwrap{{border-right:1px solid var(--rg-line);min-height:calc(100vh - 56px);
+  .rg-navwrap{{border-right:1px solid var(--rg-line);min-height:calc(100vh - 60px);
     position:sticky;top:0;padding:18px 10px 40px}}
   /* The disclosure is a phone affordance only: on a wider screen the sidebar is
      always open, so the summary is simply not displayed. `open` is hardcoded in
@@ -238,11 +242,11 @@ def _login_shell(inner: str) -> str:
     body = f"""<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;
       background:radial-gradient(1100px 460px at 50% -10%, #12352b, var(--rg-forest) 60%)">
       <div class="card" style="width:min(420px,92vw);padding:30px">
-        <div style="display:flex;justify-content:center;margin:4px 0 10px">{finos_logo_html(44, FOREST)}</div>
+        <div style="display:flex;justify-content:center;margin:4px 0 10px">{finos_logo_html(44, on_dark=False)}</div>
         <div style="text-align:center;color:var(--rg-muted);font-size:11px;letter-spacing:.16em;text-transform:uppercase;margin-bottom:20px">Bold. Timeless. Endless potential.</div>
         {inner}
       </div></div>"""
-    return _doc("RGNR8 — sign in", body)
+    return _doc("Sign in — RGNR8 Fin OS", body)
 
 
 def render_login_html(*, action: str = "/login", sso: bool = False,
@@ -406,7 +410,7 @@ through Intuit's authorized OAuth flow. You authorize RGNR8 to access the
 QuickBooks data needed to provide the Service — including your chart of accounts,
 account balances, and transactions — solely to mirror your ledger and produce the
 reports and forecasts you request. RGNR8 never receives your Intuit password. You
-may disconnect QuickBooks at any time from the Connect screen, which revokes that
+may disconnect QuickBooks at any time from the Connections screen, which revokes that
 access going forward.</p>
 
 <h2>3. Your Data</h2>
@@ -497,7 +501,7 @@ QuickBooks company. You may request deletion of your account data by contacting 
 subject to any legal retention obligations.</p>
 
 <h2>7. Your Choices</h2>
-<p>You can disconnect QuickBooks from the Connect screen, and you can request
+<p>You can disconnect QuickBooks from the Connections screen, and you can request
 access to or deletion of your data by contacting us.</p>
 
 <h2>8. Changes</h2>
@@ -518,8 +522,7 @@ _LEGAL_CSS = """<style>
   .legal-wrap a{color:var(--rg-forest);font-weight:600}
   .legal-wrap .eff{color:var(--rg-muted);font-size:13px;letter-spacing:.04em;text-transform:uppercase;margin-bottom:22px}
   .legal-wrap .foot{margin-top:34px;padding-top:18px;border-top:1px solid #e3e3e3;font-size:14px}
-  .legal-brand{font:800 20px/1 var(--rg-sans);letter-spacing:.18em;text-transform:uppercase;color:var(--rg-forest);display:block;margin-bottom:34px}
-  .legal-brand span{color:var(--rg-sage)}
+  .legal-brand{display:inline-block;text-decoration:none;margin-bottom:34px}
 </style>"""
 
 
@@ -532,7 +535,8 @@ def render_legal_html(kind: str) -> str:
     inner = body_tpl.format(eff=_LEGAL_EFFECTIVE)
     body = (
         f"{_LEGAL_CSS}<div class=\"legal-wrap\">"
-        "<a class=\"legal-brand\" href=\"/login\">RGNR<span>8</span></a>"
+        "<a class=\"legal-brand\" href=\"/login\" aria-label=\"RGNR8 Fin OS\">"
+        f"{finos_logo_html(36, on_dark=False)}</a>"
         f"{inner}</div>"
     )
     return _doc(title, body)
@@ -555,14 +559,14 @@ def _choose_tile(*, href: str, title: str, subtitle: str, accent: bool) -> str:
 def render_choose_html(*, businesses: "Iterable[tuple[str, str]]", staff: bool,
                        operator_url: str = "/operator",
                        email: "str | None" = None) -> str:
-    """The post-login 'choose your view' screen. Lists the RGNR8 Fin OS (staff
-    console) tile when the user holds a platform role, plus one tile per business
+    """The post-login 'choose your view' screen. Lists the operator console (staff)
+    tile when the user holds a platform role, plus one tile per business
     they belong to. `businesses` is an iterable of (tenant_id, display_name)."""
     tiles = []
     if staff:
         tiles.append(_choose_tile(
-            href=operator_url or "/operator", title="RGNR8 Fin OS",
-            subtitle="Operator console — onboard & manage businesses", accent=True))
+            href=operator_url or "/operator", title="Operator console",
+            subtitle="Onboard and manage businesses", accent=True))
     for tid, name in businesses:
         tiles.append(_choose_tile(
             href=f"/choose/enter?tenant={escape(str(tid))}", title=str(name or tid),
@@ -664,7 +668,7 @@ def render_shell(
     bar = (
         '<header class="rg-bar">'
         f'<a class="rg-lockup" href="/t/{escape(tenant)}" aria-label="RGNR8 Fin OS home">'
-        f"{finos_logo_html(30, IVORY)}</a>"
+        f"{finos_logo_html(30)}</a>"
         f'<span class="rg-biz">{escape(display_name)}</span>'
         '<span class="rg-who">'
         f'<span>{escape(subject or display_name)}</span>'
@@ -681,7 +685,7 @@ def render_shell(
         f'<div class="rg-layout">{nav}'
         f'<main class="shell">{body}</main></div>'
     )
-    return _doc(f"RGNR8 — {display_name}", bar + layout)
+    return _doc(f"{display_name} — RGNR8 Fin OS", bar + layout)
 
 
 def render_app_home(

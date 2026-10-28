@@ -437,8 +437,7 @@ def render_reports_list(
                 f'<a class="btn ghost" style="text-decoration:none" href="{open_href}">Open</a> '
                 f'<a class="muted" href="{base}.pdf">PDF</a> · '
                 f'<a class="muted" href="{base}.xlsx">Excel</a> · '
-                f'<a class="muted" href="{base}.csv">CSV</a> · '
-                f'<a class="muted" href="{base}.json">JSON</a></td></tr>'
+                f'<a class="muted" href="{base}.csv">CSV</a></td></tr>'
             )
         return out
 
@@ -536,9 +535,9 @@ def render_connect_page(
         sync_note = ('<div class="banner warn">Couldn\'t reach QuickBooks just now — '
                      'try Refresh again in a moment.</div>')
     elif sync_flag == "partial":
-        sync_note = ('<div class="banner warn">Synced, but some records couldn\'t be '
-                     'brought into your books — bring the full chart of accounts over below, '
-                     'then sync again.</div>')
+        sync_note = ('<div class="banner warn">Refreshed, but some records couldn\'t be '
+                     'brought into your books. Bring the full chart of accounts over below, '
+                     'then refresh again.</div>')
 
     # migration (go-live) result banner — shows the specific message when present
     migrate_note = ""
@@ -577,7 +576,7 @@ def render_connect_page(
         rows = (
             ("Cash on hand", last_sync.get("cash", ""), last_sync.get("bank_accounts", "0") + " bank account(s)"),
             ("Open invoices (AR)", last_sync.get("ar_total", ""), last_sync.get("invoice_count", "0") + " invoice(s)"),
-            ("Open bills (AP)", last_sync.get("bill_count", "0") + " bill(s)", last_sync.get("ap_total", "")),
+            ("Open bills (AP)", last_sync.get("ap_total", ""), last_sync.get("bill_count", "0") + " bill(s)"),
         )
         body = "".join(
             f'<tr><td>{escape(label)}</td><td class="num">{escape(a)}</td>'

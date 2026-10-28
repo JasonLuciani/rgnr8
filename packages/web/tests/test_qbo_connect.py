@@ -15,6 +15,7 @@ from rgnr8_qbo import (
     QboConnectService,
     QboOAuthConfig,
 )
+from rgnr8_web.ledger_client import LedgerResponse
 from rgnr8_web import (
     InMemoryUserDirectory,
     JwtAuthenticator,
@@ -324,3 +325,51 @@ def test_without_a_ledger_the_sync_still_feeds_the_forecast_alone() -> None:
     page = app.handle(Request("GET", "/t/acme/connect", _h("owner@acme.com")))
     assert "Last refresh" in page.body
     assert "Brought into your books" not in page.body
+
+
+# --- "already brought over" survives a restart, and only on a positive signal --
+
+
+class _JournalOnly:
+    """A ledger that answers one question: what's in the journal."""
+
+    def __init__(self, entries: "list[dict[str, str]]") -> None:
+        self.rows = entries
+        self.calls = 0
+
+    def entries(self, tenant: str, **_: object) -> LedgerResponse:
+        self.calls += 1
+        return LedgerResponse(200, {"entries": self.rows})
+
+
+def test_went_live_needs_the_quickbooks_opening_entry_not_just_a_chart() -> None:
+    from types import SimpleNamespace
+
+    app, _ = _app()
+    t = SimpleNamespace(tenant_id="acme")
+    # A chart from another system (or a go-live that stopped halfway) is not a
+    # QuickBooks mirror; claiming one would promise a refresh that then refuses.
+    app._ledger = _JournalOnly([{"source": "xero", "idempotency_key": "cutover:opening:2026-09-30"}])
+    assert app._qbo_went_live(t) is False
+    app._ledger = _JournalOnly([{"source": "quickbooks", "idempotency_key": "je:2026-10-02:abc"}])
+    assert app._qbo_went_live(t) is False
+
+    # A fresh process (nothing in memory) still knows, because it reads the ledger...
+    app._ledger = _JournalOnly([{"source": "quickbooks", "idempotency_key": "cutover:opening:2026-09-30"}])
+    assert app._qbo_went_live(t) is True
+    # ...and remembers, so the Connections page doesn't re-read the journal each time.
+    app._ledger.calls = 0
+    assert app._qbo_went_live(t) is True and app._ledger.calls == 0
+
+
+def test_last_refresh_table_puts_amounts_under_amount() -> None:
+    from rgnr8_web.screens import render_connect_page
+
+    html = render_connect_page(
+        "acme", configured=True, status="connected", realm_id="1",
+        last_sync={"company": "Sandbox Co", "cash": "$1.00", "bank_accounts": "1",
+                   "ar_total": "$2.00", "invoice_count": "1",
+                   "ap_total": "$400.00", "bill_count": "1"},
+        ledger_migrated=True)
+    assert '<td>Open bills (AP)</td><td class="num">$400.00</td><td class="muted">1 bill(s)</td>' in html
+    assert '<td>Open invoices (AR)</td><td class="num">$2.00</td>' in html

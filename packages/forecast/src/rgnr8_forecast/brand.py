@@ -168,12 +168,16 @@ def monogram_svg(height: int = 30, color: str = IVORY, label: str = "RGNR8") -> 
     )
 
 
-def finos_logo_html(height: int = 30, color: str = IVORY, product: str = "Fin OS") -> str:
+def finos_logo_html(height: int = 30, *, on_dark: bool = True, product: str = "Fin OS") -> str:
     """The RGNR8 Fin OS lockup, built like the primary lockup on the brand board:
     the monogram, then RGNR8 wide-tracked, with the product name beneath it in
     light caps between two hairline rules (where "VENTURES" sits). `height` is
-    the monogram's height; the type scales from it."""
-    tone = "" if color == IVORY else " on-light"
+    the monogram's height; the type scales from it. `on_dark` picks ivory on a
+    forest ground (the top bars) or forest on a light one (the sign-in card) —
+    an explicit switch, so no caller can get forest text on a forest bar by
+    passing a colour the lockup didn't expect."""
+    color = IVORY if on_dark else FOREST
+    tone = "" if on_dark else " on-light"
     return (
         f'<span class="rg-logo{tone}" style="--rg-logo-h:{height}px">'
         f"{monogram_svg(height, color, label='')}"
@@ -190,18 +194,20 @@ RG_LOGO_CSS = """/* The Fin OS lockup (finos_logo_html): monogram, RGNR8, and th
    between hairline rules. Trailing letter-spacing is cancelled with a matching
    negative margin so the tracked words centre over each other. */
 .rg-logo{display:inline-flex;align-items:center;gap:calc(var(--rg-logo-h,30px)*.4);
-  line-height:1;color:var(--rg-ivory)}
+  line-height:1;color:var(--rg-ivory,#F2EFE6)}
 .rg-logo-text{display:flex;flex-direction:column;gap:calc(var(--rg-logo-h,30px)*.17)}
-.rg-logo-word{font-family:var(--rg-sans);font-weight:600;font-size:calc(var(--rg-logo-h,30px)*.58);
+.rg-logo-word{font-family:var(--rg-sans,system-ui,sans-serif);font-weight:600;font-size:calc(var(--rg-logo-h,30px)*.58);
   line-height:1;letter-spacing:.26em;margin-right:-.26em;text-transform:uppercase;white-space:nowrap}
-.rg-logo-sub{display:flex;align-items:center;gap:.6em;font-family:var(--rg-sans);font-weight:400;
-  font-size:calc(var(--rg-logo-h,30px)*.27);line-height:1;letter-spacing:.38em;
+.rg-logo-sub{display:flex;align-items:center;gap:.6em;font-family:var(--rg-sans,system-ui,sans-serif);
+  font-weight:500;font-size:max(10px,calc(var(--rg-logo-h,30px)*.27));line-height:1;letter-spacing:.34em;
   text-transform:uppercase;color:#CBD8CC;white-space:nowrap}
-.rg-logo-sub>span{margin-right:-.38em}
+.rg-logo-sub>span{margin-right:-.34em}
 .rg-logo-sub::before,.rg-logo-sub::after{content:"";flex:1 1 auto;min-width:.8em;height:1px;
   background:currentColor;opacity:.6}
-.rg-logo.on-light{color:var(--rg-forest)}
-.rg-logo.on-light .rg-logo-sub{color:var(--rg-sage)}
+.rg-logo.on-light{color:var(--rg-forest,#0E241E)}
+/* Brand sage (#5E7F63) is 4.48:1 on white, a hair under AA for small text;
+   this is the same hue one step deeper (4.82:1). */
+.rg-logo.on-light .rg-logo-sub{color:#587A5D}
 """
 
 
@@ -458,7 +464,7 @@ def brand_bar(context: str) -> str:
     return (
         '<header class="rg-bar">'
         '<span class="rg-lockup">'
-        f"{finos_logo_html(30, IVORY)}"
+        f"{finos_logo_html(30)}"
         "</span>"
         f'<span class="rg-ctx">{escape(context)}</span>'
         "</header>"

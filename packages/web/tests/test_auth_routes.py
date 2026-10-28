@@ -303,7 +303,7 @@ def test_browser_session_cookie_works_with_an_hs256_authenticator() -> None:
 
 def test_staff_login_lands_on_the_view_chooser() -> None:
     # A staffer with no business of their own logs in once and lands on the
-    # chooser showing the RGNR8 Fin OS (operator console) tile — not auto-seated
+    # chooser showing the operator console tile — not auto-seated
     # into some tenant, and not bounced to a dead end.
     app = _make_app({"t": NOW})
     # Staff have no business to be invited into, so their credential is created
@@ -318,7 +318,7 @@ def test_staff_login_lands_on_the_view_chooser() -> None:
     page = app.handle(Request("GET", "/choose", {"cookie": _cookie_from(ok)}))
     assert page.status == 200
     assert "Choose your view" in page.body
-    assert "RGNR8 Fin OS" in page.body            # the staff console tile
+    assert "Operator console" in page.body        # the staff console tile
     assert "/operator" in page.body               # links to the console, same origin
 
 
