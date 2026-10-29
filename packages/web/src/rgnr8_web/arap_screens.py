@@ -15,6 +15,7 @@ from urllib.parse import quote
 
 from .attachment_screens import attachment_link
 from .books_screens import _card, _esc, _minor, _num, _seq, money
+from .parallel_run import form_label
 from .provenance_labels import Provenance
 from .provenance_labels import legend as prov_legend
 
@@ -131,8 +132,10 @@ def _adjust_controls(
     if open_minor > 0:
         label = "Credit" if is_ar else "Vendor credit"
         return (
-            f'<form method="post" action="/t/{_esc(tenant)}/{_esc(kind)}/{doc_id}/credits" '
-            'style="display:flex;gap:6px;align-items:center;margin:4px 0 0">'
+            f'<form method="post" action="/t/{_esc(tenant)}/{_esc(kind)}/{doc_id}/credits"'
+            + (form_label("Credit memo", "+ New → Credit memo") if is_ar
+               else form_label("Vendor credit", "+ New → Vendor credit"))
+            + ' style="display:flex;gap:6px;align-items:center;margin:4px 0 0">'
             f'<input name="amount" placeholder="{money(d.get("open_minor"))[1:]}" '
             f'style="width:100px;padding:6px 8px" inputmode="decimal">{pick}'
             f'<button class="btn ghost" style="padding:6px 10px;margin:0" type="submit" '
@@ -141,8 +144,9 @@ def _adjust_controls(
         )
     if is_ar and collected > 0:
         return (
-            f'<form method="post" action="/t/{_esc(tenant)}/{_esc(kind)}/{doc_id}/refunds" '
-            'style="display:flex;gap:6px;align-items:center;margin:4px 0 0">'
+            f'<form method="post" action="/t/{_esc(tenant)}/{_esc(kind)}/{doc_id}/refunds"'
+            f'{form_label("Refund", "+ New → Refund receipt")}'
+            ' style="display:flex;gap:6px;align-items:center;margin:4px 0 0">'
             f'<input name="amount" placeholder="{money(str(collected))[1:]}" '
             f'style="width:100px;padding:6px 8px" inputmode="decimal">{pick}'
             '<button class="btn ghost" style="padding:6px 10px;margin:0" type="submit" '
@@ -196,8 +200,10 @@ def render_documents(
         pay_cell = ""
         if can_post and open_minor > 0:
             pay_cell = (
-                f'<form method="post" action="/t/{_esc(tenant)}/{_esc(kind)}/{doc_path}/payments" '
-                'style="display:flex;gap:6px;align-items:center;margin:0">'
+                f'<form method="post" action="/t/{_esc(tenant)}/{_esc(kind)}/{doc_path}/payments"'
+                + (form_label("Receive payment", "+ New → Receive payment") if is_ar
+                   else form_label("Pay bill", "+ New → Pay bills"))
+                + ' style="display:flex;gap:6px;align-items:center;margin:0">'
                 f'<input name="amount" placeholder="{money(d.get("open_minor"))[1:]}" '
                 'style="width:110px;padding:6px 8px" inputmode="decimal">'
                 f'<input type="hidden" name="date" value="{_esc(today)}">{bank_pick}'
@@ -287,8 +293,9 @@ def _render_new_form(
     who = "Customer" if is_ar else "Vendor"
     return _card(
         f"New {'invoice' if is_ar else 'bill'}",
-        f'<form method="post" action="/t/{_esc(tenant)}/{_esc(kind)}">'
-        '<div class="grid3">'
+        f'<form method="post" action="/t/{_esc(tenant)}/{_esc(kind)}"'
+        + (form_label("Invoice", "+ New → Invoice") if is_ar else form_label("Bill", "+ New → Bill"))
+        + '><div class="grid3">'
         f'<div><label>{who}</label><select name="party_id">{options}</select></div>'
         f'<div><label>Number</label><input name="id" placeholder="{"INV-1001" if is_ar else "BILL-2001"}"></div>'
         f'<div><label>Date</label><input name="date" value="{_esc(today)}"></div>'

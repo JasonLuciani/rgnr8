@@ -68,6 +68,10 @@ V1_PRODUCTION: frozenset[str] = frozenset({
     # the form; it persists through the tenant store; its figures are labelled
     # imported. Tests: test_monday_answer.py.
     "costs",
+    # Graduated 2026-10-29: expenses (paid now). A journal entry through the
+    # ledger's posting API, gated on POST_JOURNAL and locked during the parallel
+    # run; its list is labelled posted. Tests: test_expenses.py.
+    "expenses",
 })
 
 

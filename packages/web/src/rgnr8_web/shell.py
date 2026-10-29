@@ -76,6 +76,7 @@ _NAV_GROUPS: tuple[NavGroup, ...] = (
         NavItem("receivables", "Collections", Permission.VIEW_CASH),
     )),
     NavGroup("Money out", (
+        NavItem("expenses", "Expenses", Permission.VIEW_TRANSACTIONS, needs="ledger"),
         NavItem("bills", "Bills", Permission.VIEW_TRANSACTIONS, needs="ledger"),
         NavItem("capture", "Receipts", Permission.POST_JOURNAL, needs="ledger"),
         NavItem("payroll", "Payroll", Permission.VIEW_TRANSACTIONS, needs="ledger"),
@@ -120,6 +121,7 @@ _NAV: list[tuple[str, str, Permission]] = [
     ("estimates", "Estimates", Permission.VIEW_TRANSACTIONS),
     ("pipeline", "Sales pipeline", Permission.VIEW_TRANSACTIONS),
     ("invoices", "Invoices", Permission.VIEW_TRANSACTIONS),
+    ("expenses", "Expenses", Permission.VIEW_TRANSACTIONS),
     ("bills", "Bills", Permission.VIEW_TRANSACTIONS),
     ("capture", "Receipts", Permission.POST_JOURNAL),
     ("payroll", "Payroll", Permission.VIEW_TRANSACTIONS),

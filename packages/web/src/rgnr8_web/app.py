@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from html import escape
 from typing import Any
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 from rgnr8_ar import ARReport, ChaseItem, CollectionNudge, ar_report, chase_list, draft_nudge
 from rgnr8_billing import Account, UsageSummary
@@ -104,6 +104,7 @@ from .attachment_screens import render_attachments, render_attachments_unavailab
 from .audit import AuditSink
 from .auth import Authenticator, JwtError, StaticTokenAuthenticator, sign_jwt, verify_jwt
 from .csp import new_nonce as _csp_new_nonce
+from .books_screens import money as _dollars
 from .books_screens import (
     account_label,
     render_books_home,
@@ -153,9 +154,9 @@ from .integration_screens import render_integrations, render_integrations_unavai
 from .inventory_screens import render_inventory, render_inventory_unavailable
 from .invitations import InvitationError, InvitationService
 from .job_screens import render_job, render_jobs, render_jobs_unavailable
-from .ledger_client import LedgerClient, LedgerUnavailable
+from .ledger_client import LedgerClient, LedgerResponse, LedgerUnavailable
 from .ledger_forecast import LedgerFacts, forecast_from_ledger, provenance_split
-from .multipart import MultipartError, parse_multipart
+from .multipart import MultipartError, UploadedFile, boundary_of, parse_multipart
 from .openapi import build_openapi
 from .order_screens import (
     render_orders_unavailable,
@@ -184,8 +185,18 @@ from .recurring_screens import (
 )
 from .reporting_screens import render_budget, render_general_ledger
 from .settings_screens import render_settings, render_settings_unavailable
-from rgnr8_ocr import HeuristicExtractor, to_bill_draft
-from .capture_screens import render_capture
+from rgnr8_ocr import ExtractedReceipt, HeuristicExtractor, OcrClient, to_bill_draft
+from .capture_screens import is_receipt_file, render_capture
+from .expense_screens import (
+    EXPENSE_SOURCE,
+    FORM_FIELDS as EXPENSE_FIELDS,
+    LINES as EXPENSE_LINES,
+    PAID_FROM_SUBTYPES,
+    expense_key,
+    fallback_token,
+    recent_expenses,
+    render_expenses,
+)
 from .cost_baseline import CostBaseline, as_recurring
 from .cost_baseline import from_quickbooks as baseline_from_quickbooks
 from .cost_baseline import window as cost_window
@@ -773,6 +784,10 @@ class WebApp:
         # The ledger service client. When absent, the books screens say so plainly
         # rather than pretending the client has no transactions.
         self._ledger: LedgerClient | None = None
+        # Reads a photographed or scanned receipt into text. None (the default)
+        # means no reader is wired: an uploaded receipt is still kept, and the
+        # owner types what it says. Nothing here calls out to a network service.
+        self._ocr: OcrClient | None = None
         self._budgets: dict[str, Mapping[str, Money]] = {}
         self._usage: dict[str, UsageSummary] = {}
         self._billing_accounts: dict[str, Account] = {}
@@ -895,6 +910,10 @@ class WebApp:
         """Wire the ledger service so owners can see and post to their books."""
         self._ledger = client
         self._ledger_build = None
+
+    def set_ocr(self, client: OcrClient) -> None:
+        """Wire a receipt reader, so an uploaded photo or PDF fills in the draft."""
+        self._ocr = client
 
     # How long one /ready answer from the ledger is trusted. A failed deploy
     # leaves the mismatch in place for hours, so a minute's lag costs nothing.
@@ -1360,13 +1379,21 @@ class WebApp:
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "capture":
             if req.method == "POST":
                 return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
-                                     lambda t: self._capture_scan(subject, t, req.body))
+                                     lambda t: self._capture_scan(subject, t, req))
             return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
                                  lambda t: self._capture_page(subject, t, req.query))
         if (len(parts) == 4 and parts[0] == "t" and parts[2] == "capture"
                 and parts[3] == "bill" and req.method == "POST"):
             return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
                                  lambda t: self._capture_bill(subject, t, req.body))
+
+        # --- expenses (paid now: one journal entry) ---
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "expenses":
+            if req.method == "POST":
+                return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                     lambda t: self._expense_post(subject, t, req))
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._expenses_page(subject, t, req.query))
 
         # --- financial health / ratios (read-only) ---
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "health":
@@ -1827,7 +1854,7 @@ class WebApp:
         if (len(parts) == 4 and parts[0] == "t" and parts[2] == "books"
                 and parts[3] == "entries" and req.method == "POST"):
             return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
-                                 lambda t: self._books_post_entry(subject, t, req.body))
+                                 lambda t: self._books_post_entry(subject, t, req))
         # /t/<tenant>/books/accounts/<code> -> one account's register
         if (len(parts) == 5 and parts[0] == "t" and parts[2] == "books"
                 and parts[3] == "accounts"):
@@ -2813,20 +2840,44 @@ class WebApp:
             return _redirect(f"{back}?err={_qs_escape('Choose a file to attach')}")
 
         note = fields.get("note", "").strip()
-        saved = 0
+        error = self._save_files(subject, t, kind, subject_id, files, note=note)
+        if error:
+            return _redirect(f"{back}?err={_qs_escape(error)}")
+        saved = len(files)
+        noun = "file" if saved == 1 else "files"
+        return _redirect(f"{back}?done={_qs_escape(f'Attached {saved} {noun}')}")
+
+    def _save_files(
+        self, subject: str, t: _Tenant, kind: str, subject_id: str,
+        files: "list[UploadedFile]", *, note: str = "",
+    ) -> str:
+        """Attach uploaded files to one thing; "" when every one was kept, else
+        the reason the first one wasn't. The one upload path: the paperclip page,
+        and a file sent along with a journal entry or an expense. The ledger
+        holds the limits (size, content scan), so every path gets the same ones."""
+        if self._ledger is None:
+            return "No ledger service configured"
         for f in files:
             res = self._ledger.save_attachment(
                 t.tenant_id, kind, subject_id, f.filename, f.content_type, f.content,
                 note=note,
             )
             if not res.ok:
-                return _redirect(f"{back}?err={_qs_escape(res.error())}")
-            saved += 1
-        if self._audit is not None:
+                return res.error()
+        if files and self._audit is not None:
             self._audit.record(subject, "attachment.added", self._session_clock(),
                                tenant_id=t.tenant_id, target=f"{kind}:{subject_id}")
-        noun = "file" if saved == 1 else "files"
-        return _redirect(f"{back}?done={_qs_escape(f'Attached {saved} {noun}')}")
+        return ""
+
+    def _form_and_files(self, req: Request) -> "tuple[dict[str, object], list[UploadedFile]]":
+        """A form's fields and any files sent with it, whether it came as a file
+        upload (multipart) or as a plain form or JSON. Raises MultipartError on a
+        multipart body this parser won't interpret."""
+        content_type = req.headers.get("content-type", "")
+        if boundary_of(content_type):
+            fields, files = parse_multipart(req.body, content_type)
+            return dict(fields), files
+        return self._form_or_json(req.body), []
 
     def _attachment_download(self, t: _Tenant, attachment_id: str) -> Response:
         """Serve the file back with its own name and type.
@@ -4580,9 +4631,13 @@ class WebApp:
         )
         if not res.ok:
             return self._shell(subject, t, "books", render_books_unavailable(res.error()))
+        counts = self._ledger.attachment_counts(t.tenant_id, "entry")
+        raw_counts = counts.body.get("counts") if counts.ok else None
         return self._shell(subject, t, "books",
                            render_general_ledger(t.tenant_id, res.body, frm=frm, to=to,
-                                                 id_codes=self._id_codes(t)))
+                                                 id_codes=self._id_codes(t),
+                                                 attachment_counts=raw_counts
+                                                 if isinstance(raw_counts, dict) else {}))
 
     def _budget_period(self, t: _Tenant, query: "dict[str, str]") -> str:
         period = query.get("period", "").strip()
@@ -4768,12 +4823,16 @@ class WebApp:
                            render_books_statements(f"{frm} to {to}", res.body, sealed=sealed,
                                                    id_codes=self._id_codes(t)))
 
-    def _books_post_entry(self, subject: str, t: _Tenant, body: str) -> Response:
+    def _books_post_entry(self, subject: str, t: _Tenant, req: Request) -> Response:
         """Post a journal entry from the owner form. Amounts are parsed exactly;
-        the ledger service is the one that enforces balance and period locks."""
+        the ledger service is the one that enforces balance and period locks.
+        A file sent with the form is attached to the entry once it has posted."""
         if self._ledger is None:
             return _redirect(f"/t/{t.tenant_id}/books?err=No+ledger+service+configured")
-        data = self._form_or_json(body)
+        try:
+            data, files = self._form_and_files(req)
+        except MultipartError as exc:
+            return _redirect(f"/t/{t.tenant_id}/books?err={_qs_escape(str(exc))}")
         date = str(data.get("date", "")).strip()
         memo = str(data.get("memo", "")).strip()
         lines: list[dict[str, object]] = []
@@ -4806,7 +4865,22 @@ class WebApp:
         if self._audit is not None:
             self._audit.record(subject, "journal.posted", self._session_clock(),
                                tenant_id=t.tenant_id, detail=f"{date} {memo}".strip())
-        return _redirect(f"/t/{t.tenant_id}/books?posted={_qs_escape('Entry posted')}")
+        done = f"/t/{t.tenant_id}/books?posted={_qs_escape('Entry posted')}"
+        if files:
+            failed = self._save_files(subject, t, "entry", self._entry_id(res), files)
+            if failed:
+                return _redirect(f"{done}&err={_qs_escape(self._unattached(failed))}")
+        return _redirect(done)
+
+    @staticmethod
+    def _entry_id(res: LedgerResponse) -> str:
+        entry = res.body.get("entry")
+        return str(entry.get("id") or "") if isinstance(entry, dict) else ""
+
+    @staticmethod
+    def _unattached(reason: str) -> str:
+        return (f"It was recorded, but the file wasn't attached ({reason}). Attach it "
+                "from the paperclip beside it.")
 
     # --- agent-native pipeline (JSON) ---------------------------------------
     def _post_entry_json(self, subject: str, t: _Tenant, body: str) -> Response:
@@ -5821,25 +5895,99 @@ class WebApp:
 
     # --- receipt capture (OCR → drafted bill) -------------------------------
     def _capture_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
-        body = render_capture(t.tenant_id, done=query.get("done", ""), error=query.get("err", ""))
+        """The Receipts screen. `?receipt=<attachment id>` reopens the draft for a
+        receipt kept earlier, so one put aside (or kept during the parallel run)
+        can still be recorded."""
+        kept = self._kept_receipts(t)
+        receipt = query.get("receipt", "").strip()
+        draft = None
+        receipt_name = ""
+        if receipt:
+            match = next((a for a in kept if str(a.get("id")) == receipt), None)
+            if match is not None:
+                receipt_name = str(match.get("filename") or "")
+                draft = to_bill_draft(ExtractedReceipt()).to_dict()
+        body = render_capture(
+            t.tenant_id, draft=draft, vendors=self._vendor_list(t) if draft else [],
+            receipt_id=receipt if draft else "", receipt_name=receipt_name,
+            unread=draft is not None, kept=kept,
+            done=query.get("done", ""), error=query.get("err", ""),
+        )
         return self._shell(subject, t, "capture", body)
 
-    def _capture_scan(self, subject: str, t: _Tenant, body: str) -> Response:
-        data = self._form_or_json(body)
+    def _kept_receipts(self, t: _Tenant) -> "list[Mapping[str, object]]":
+        """Receipts uploaded here and not yet recorded as an expense or a bill."""
+        if self._ledger is None:
+            return []
+        res = self._ledger.attachments(t.tenant_id, subject_kind="receipt")
+        raw = res.body.get("attachments") if res.ok else None
+        return [a for a in raw if isinstance(a, dict)] if isinstance(raw, list) else []
+
+    def _vendor_list(self, t: _Tenant) -> "list[object]":
+        if self._ledger is None:
+            return []
+        res = self._ledger.parties(t.tenant_id, "vendors")
+        if not res.ok:
+            return []
+        raw = res.body.get("parties") or res.body.get("vendors") or []
+        return list(raw) if isinstance(raw, list) else []
+
+    def _capture_scan(self, subject: str, t: _Tenant, req: Request) -> Response:
+        """Read a receipt: pasted text, an uploaded photo or PDF, or both.
+
+        An upload is kept first, before anything is read from it, so the
+        evidence survives whatever happens next: a reader that can't make it
+        out, a draft that is never confirmed, or a parallel run in which nothing
+        can be recorded here yet. Whatever is created from the draft gets it."""
+        def again(error: str) -> Response:
+            return self._shell(subject, t, "capture", render_capture(
+                t.tenant_id, kept=self._kept_receipts(t), error=error))
+
+        try:
+            data, files = self._form_and_files(req)
+        except MultipartError as exc:
+            return again(str(exc))
         text = str(data.get("text", ""))
-        if not text.strip():
-            return self._shell(subject, t, "capture",
-                               render_capture(t.tenant_id, error="Paste some receipt text first."))
-        extracted = HeuristicExtractor().extract(text)
+        upload = files[0] if files else None
+        if not text.strip() and upload is None:
+            return again("Paste the receipt's text, or choose a photo or PDF of it.")
+
+        receipt_id = receipt_name = ""
+        unread = False
+        if upload is not None:
+            if not is_receipt_file(upload.filename, upload.content_type):
+                return again("A receipt must be a photo (JPEG, PNG, HEIC, …) or a PDF.")
+            if self._ledger is None:
+                return again("No ledger service is configured, so the file can't be kept.")
+            saved = self._ledger.save_attachment(
+                t.tenant_id, "receipt", f"rcpt-{secrets.token_hex(8)}", upload.filename,
+                upload.content_type, upload.content, note="Kept from Receipts",
+            )
+            if not saved.ok:
+                return again(saved.error())
+            att = saved.body.get("attachment")
+            receipt_id = str(att.get("id") or "") if isinstance(att, dict) else ""
+            receipt_name = upload.filename
+            if not text.strip():
+                text = self._read_receipt(upload)
+                unread = not text.strip()
+        extracted = HeuristicExtractor().extract(text) if text.strip() else ExtractedReceipt()
         draft = to_bill_draft(extracted).to_dict()
-        vendors: list[object] = []
-        if self._ledger is not None:
-            res = self._ledger.parties(t.tenant_id, "vendors")
-            if res.ok:
-                raw = res.body.get("parties") or res.body.get("vendors") or []
-                vendors = list(raw) if isinstance(raw, list) else []
-        return self._shell(subject, t, "capture",
-                           render_capture(t.tenant_id, draft=draft, raw_text=text, vendors=vendors))
+        return self._shell(subject, t, "capture", render_capture(
+            t.tenant_id, draft=draft, raw_text=str(data.get("text", "")),
+            vendors=self._vendor_list(t), receipt_id=receipt_id, receipt_name=receipt_name,
+            unread=unread, kept=[a for a in self._kept_receipts(t)
+                                 if str(a.get("id")) != receipt_id]))
+
+    def _read_receipt(self, upload: UploadedFile) -> str:
+        """The text on a photographed or scanned receipt, or "" when there is no
+        reader wired (the default) or it couldn't make the file out."""
+        if self._ocr is None:
+            return ""
+        try:
+            return self._ocr.image_to_text(upload.content, upload.content_type)
+        except Exception:  # noqa: BLE001 - an unreadable receipt is typed in, not an error page
+            return ""
 
     def _capture_bill(self, subject: str, t: _Tenant, body: str) -> Response:
         back = f"/t/{t.tenant_id}/capture"
@@ -5873,7 +6021,172 @@ class WebApp:
         if self._audit is not None:
             self._audit.record(subject, "capture.bill_created", self._session_clock(),
                                tenant_id=t.tenant_id, target=doc_id)
-        return _redirect(f"/t/{t.tenant_id}/bills?done=Bill+created+from+receipt")
+        done = f"/t/{t.tenant_id}/bills?ok={_qs_escape('Bill created from the receipt')}"
+        failed = self._file_receipt(t, str(d.get("receipt", "")).strip(), "bill", doc_id)
+        if failed:
+            return _redirect(f"{done}&err={_qs_escape(self._unattached(failed))}")
+        return _redirect(done)
+
+    def _file_receipt(self, t: _Tenant, receipt: str, kind: str, subject_id: str) -> str:
+        """Move a kept receipt onto what was just recorded from it; "" when done
+        (or there was none to move), else why not."""
+        if not receipt or self._ledger is None:
+            return ""
+        res = self._ledger.file_receipt(t.tenant_id, receipt, kind, subject_id)
+        return "" if res.ok else res.error()
+
+    # --- expenses (paid now) ---------------------------------------------------
+
+    def _expenses_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        """Recent expenses, and the form to record one.
+
+        Query fields pre-fill the form: a refused submission comes back filled
+        in, and "Record as expense" on a drafted receipt arrives here with what
+        was read (`amount` and `expense_account_code` are the draft's names)."""
+        if self._ledger is None:
+            return self._shell(subject, t, "expenses", render_books_unavailable(
+                "No ledger service is configured for this deployment."))
+        accounts = self._ledger.accounts(t.tenant_id)
+        if not accounts.ok:
+            return self._shell(subject, t, "expenses",
+                               render_books_unavailable(accounts.error()))
+        entries = self._ledger.entries(t.tenant_id)
+        vendors = self._ledger.parties(t.tenant_id, "vendors")
+        dims = self._ledger.dimensions(t.tenant_id)
+        counts = self._ledger.attachment_counts(t.tenant_id, "entry")
+        raw_counts = counts.body.get("counts") if counts.ok else None
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_post = self._policy is None or Permission.POST_JOURNAL in perms
+        prefill = {k: str(query.get(k, "")) for k in EXPENSE_FIELDS if query.get(k)}
+        if query.get("amount") and "amount1" not in prefill:
+            prefill["amount1"] = prefill["total"] = str(query["amount"])
+            prefill.setdefault("desc1", "From the receipt")
+        if query.get("expense_account_code") and "code1" not in prefill:
+            prefill["code1"] = str(query["expense_account_code"])
+        id_codes = self._id_codes(t)
+        rows = recent_expenses(entries.body if entries.ok else {}, accounts.body,
+                               vendors.body if vendors.ok else {}, id_codes=id_codes)
+        body = render_expenses(
+            t.tenant_id, accounts=accounts.body, vendors=vendors.body if vendors.ok else {},
+            dimensions=dims.body if dims.ok else {}, rows=rows,
+            counts=raw_counts if isinstance(raw_counts, dict) else {},
+            can_post=can_post, token=secrets.token_urlsafe(12), today=self._today(t),
+            prefill=prefill, message=query.get("done", ""), error=query.get("err", ""),
+            id_codes=id_codes,
+        )
+        return self._shell(subject, t, "expenses", body)
+
+    def _expense_post(self, subject: str, t: _Tenant, req: Request) -> Response:
+        """Record money already spent as one balanced journal entry: each line's
+        account is debited, the paid-from account credited with the total.
+
+        Built on the ledger's ordinary posting API rather than a new document
+        type, so balance, period locks, classes and idempotency are the ledger's
+        own checks. A refusal comes back to the form with what was typed."""
+        base = f"/t/{t.tenant_id}/expenses"
+        if self._ledger is None:
+            return _redirect(f"{base}?err=No+ledger+service+configured")
+        try:
+            data, files = self._form_and_files(req)
+        except MultipartError as exc:
+            return _redirect(f"{base}?err={_qs_escape(str(exc))}")
+
+        def refuse(reason: str) -> Response:
+            kept = {k: str(data.get(k, ""))[:200] for k in EXPENSE_FIELDS
+                    if str(data.get(k, ""))}
+            return _redirect(f"{base}?{urlencode({'err': reason, **kept})}")
+
+        date = str(data.get("date", "")).strip()
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            return refuse("Give the date it was paid (YYYY-MM-DD).")
+        accounts = self._ledger.accounts(t.tenant_id)
+        listed = accounts.body.get("accounts") if accounts.ok else None
+        chart = {str(a.get("code")): a for a in (listed if isinstance(listed, list) else [])
+                 if isinstance(a, dict)}
+        if not chart:
+            return refuse(accounts.error() if not accounts.ok else "The chart has no accounts.")
+        paid_from = str(data.get("paid_from", "")).strip()
+        source = chart.get(paid_from)
+        if source is None or str(source.get("subtype")) not in PAID_FROM_SUBTYPES:
+            return refuse("Pay it from a bank, cash or credit card account. To move money "
+                          "between other accounts, post a journal entry in the Ledger.")
+
+        debits: list[tuple[str, int, str, dict[str, str]]] = []
+        try:
+            for i in range(1, EXPENSE_LINES + 1):
+                code = str(data.get(f"code{i}", "")).strip()
+                desc = str(data.get(f"desc{i}", "")).strip()
+                amount = self._amount_to_minor(str(data.get(f"amount{i}", "")))
+                if not code and amount is None:
+                    continue
+                if amount is None or amount <= 0:
+                    return refuse(f"Line {i}: give an amount greater than zero.")
+                if not code:
+                    return refuse(f"Line {i}: choose the account it was spent on.")
+                acct = chart.get(code)
+                if acct is None:
+                    return refuse(f"Line {i}: there is no account {code} in the chart.")
+                if str(acct.get("subtype")) in PAID_FROM_SUBTYPES:
+                    return refuse(f"Line {i}: {acct.get('name')} is a bank or card account. "
+                                  "Moving money between those is a transfer: post it in "
+                                  "the Ledger.")
+                debits.append((code, amount, desc, self._dimensions_of(data, suffix=str(i))))
+            total = self._amount_to_minor(str(data.get("total", "")))
+        except ValueError as exc:
+            return refuse(str(exc))
+        if not debits:
+            return refuse("Add at least one line: the account it was spent on, and how much.")
+        spent = sum(a for _c, a, _d, _x in debits)
+        if total is not None and total != spent:
+            return refuse(f"The lines add up to {_dollars(spent)} but the total is "
+                          f"{_dollars(total)}. Fix a line, or clear the total.")
+
+        vendor_id = str(data.get("vendor_id", "")).strip()
+        known = self._vendor_list(t)
+        vendor_name = vendor_id if vendor_id and not known else ""  # list unreadable: trust the pick
+        for p in known:
+            if isinstance(p, dict) and str(p.get("id")) == vendor_id:
+                vendor_name = str(p.get("name") or "")
+        if not vendor_name:
+            vendor_id = ""
+            vendor_name = str(data.get("vendor", "")).strip()
+            if not vendor_name:
+                return refuse("Say who was paid: pick a vendor or type a new one.")
+            vendor_id = _slug(vendor_name)
+            self._ledger.create_party(t.tenant_id, "vendors", vendor_id, vendor_name)
+
+        lines: list[dict[str, object]] = []
+        for code, amount, desc, dims in debits:
+            line: dict[str, object] = {"code": code, "side": "DEBIT", "amount_minor": str(amount)}
+            if desc:
+                line["memo"] = desc
+            if dims:
+                line["dimensions"] = dims
+            lines.append(line)
+        lines.append({"code": paid_from, "side": "CREDIT", "amount_minor": str(spent)})
+        note = str(data.get("memo", "")).strip()
+        memo = f"{vendor_name} — {note}" if note else vendor_name
+        token = re.sub(r"[^A-Za-z0-9_-]", "", str(data.get("token", "")))[:40] or fallback_token(
+            date, vendor_id, paid_from, [(c, a) for c, a, _d, _x in debits])
+        res = self._ledger.post_entry(
+            t.tenant_id, date, lines, memo=memo,
+            idempotency_key=expense_key(vendor_id, token), source=EXPENSE_SOURCE,
+        )
+        if not res.ok:
+            return refuse(res.error())
+        entry_id = self._entry_id(res)
+        if self._audit is not None:
+            self._audit.record(subject, "expense.recorded", self._session_clock(),
+                               tenant_id=t.tenant_id, target=entry_id,
+                               detail=f"{date} {vendor_name} {_dollars(spent)}")
+        done = f"{base}?done={_qs_escape(f'Expense recorded: {_dollars(spent)} to {vendor_name}')}"
+        failed = [e for e in (
+            self._file_receipt(t, str(data.get("receipt", "")).strip(), "entry", entry_id),
+            self._save_files(subject, t, "entry", entry_id, files),
+        ) if e]
+        if failed:
+            return _redirect(f"{done}&err={_qs_escape(self._unattached('; '.join(failed)))}")
+        return _redirect(done)
 
     def _transactions_page(self, subject: str, t: _Tenant) -> Response:
         """The bank register.

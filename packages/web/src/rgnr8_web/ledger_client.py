@@ -469,6 +469,16 @@ class LedgerClient:
             "note": note,
         })
 
+    def file_receipt(
+        self, tenant: str, attachment_id: str, subject_kind: str, subject_id: str,
+    ) -> LedgerResponse:
+        """Move a kept receipt (subject kind "receipt") onto what was recorded
+        from it: the expense's entry, or the bill."""
+        return self._call(
+            "POST", f"/t/{tenant}/attachments/{urllib.parse.quote(attachment_id)}/file",
+            {"subject_kind": subject_kind, "subject_id": subject_id},
+        )
+
     def attachment_content(self, tenant: str, attachment_id: str) -> LedgerResponse:
         return self._call(
             "GET", f"/t/{tenant}/attachments/{urllib.parse.quote(attachment_id)}/content"

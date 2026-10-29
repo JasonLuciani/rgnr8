@@ -101,7 +101,10 @@ def _reportable_table(
         + '<tr style="font-weight:700"><td colspan="2">Total</td>'
         + _num(data.get("total_minor")) + "</tr></tbody></table></div>"
         + f'<p class="note">A form is required above {threshold} paid in the '
-        "calendar year. Amounts are what was actually paid, not what was billed.</p>"
+        "calendar year. Amounts are what was actually paid, not what was billed. "
+        "Only bill payments are counted: a contractor paid by check or bank transfer "
+        "through Expenses is not counted here yet, so enter that as a bill and pay it. "
+        "(Card payments stay off a 1099-NEC either way; the card company reports them.)</p>"
     )
 
 

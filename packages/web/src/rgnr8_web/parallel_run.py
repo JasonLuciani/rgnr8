@@ -16,7 +16,7 @@ own settings (the one place that state lives).
 from __future__ import annotations
 
 import re
-from html import escape
+from html import escape, unescape
 
 # Word for word what the ledger answers with its 409, so the reason reads the
 # same whichever layer gave it.
@@ -47,6 +47,8 @@ def is_posting_path(parts: list[str], method: str) -> bool:
     action = rest[2] if n >= 3 else ""
     if head in ("invoices", "bills"):
         return n == 1 or (n == 3 and action in ("payments", "credits", "refunds"))
+    if head == "expenses":  # an expense is a journal entry, paid on the spot
+        return n == 1
     if head == "books":
         return rest[1:] in (["entries"], ["wip"], ["recurring", "run"])
     if head == "payroll":  # drafting a run (POST /payroll) posts nothing; posting it does
@@ -73,17 +75,41 @@ def is_posting_path(parts: list[str], method: str) -> bool:
     return False
 
 
-def notice_html(tenant: str) -> str:
-    """The reason, with the way to Refresh one click away."""
+def notice_html(tenant: str, form_name: str = "", qbo_path: str = "") -> str:
+    """The reason, with the way to Refresh one click away.
+
+    A form that says what it is (`form_name`, and where QuickBooks keeps the same
+    thing, `qbo_path`) gets a notice naming it, so a page of locked forms still
+    reads as a list of things you will do here, not one warning repeated."""
+    refresh = f'<a href="/t/{escape(tenant)}/connect">press Refresh</a>'
+    if form_name:
+        where = f" ({escape(qbo_path)})" if qbo_path else ""
+        return (
+            '<div class="banner warn" role="note" data-parallel-run="1">'
+            f"<strong>{escape(form_name)}</strong>: this form opens here after the"
+            " cutover, when RGNR8 becomes the book of record. Until then, add it in"
+            f" QuickBooks{where}, then {refresh} to bring it across.</div>"
+        )
     return (
         '<div class="banner warn" role="note" data-parallel-run="1">'
         "QuickBooks is the book of record during the parallel run. Add this in"
-        f' QuickBooks, then <a href="/t/{escape(tenant)}/connect">press Refresh</a>'
-        " to bring it across.</div>"
+        f" QuickBooks, then {refresh} to bring it across.</div>"
     )
 
 
-_FORM = re.compile(r'<form\b[^>]*\baction="([^"]*)"[^>]*>.*?</form>', re.DOTALL | re.IGNORECASE)
+def form_label(name: str, qbo_path: str = "") -> str:
+    """The attributes a posting form carries to name itself in the notice."""
+    out = f' data-form-name="{escape(name)}"'
+    return out + (f' data-qbo-path="{escape(qbo_path)}"' if qbo_path else "")
+
+
+_FORM = re.compile(r"<form\b([^>]*)>.*?</form>", re.DOTALL | re.IGNORECASE)
+
+
+def _attr(tag: str, name: str) -> str:
+    """One attribute's value off a form's opening tag, unescaped."""
+    m = re.search(rf'(?<![\w-]){name}="([^"]*)"', tag)
+    return unescape(m.group(1)) if m else ""
 
 
 def _posts(action: str) -> bool:
@@ -93,7 +119,7 @@ def _posts(action: str) -> bool:
 def has_posting_form(html: str) -> bool:
     """Whether the page holds any form that would post: only then is it worth
     asking the ledger whose books these are."""
-    return any(_posts(m.group(1)) for m in _FORM.finditer(html))
+    return any(_posts(_attr(m.group(1), "action")) for m in _FORM.finditer(html))
 
 
 def posting_forms_to_notice(html: str, tenant: str) -> str:
@@ -103,6 +129,9 @@ def posting_forms_to_notice(html: str, tenant: str) -> str:
     Forms that don't post (a customer, a budget, a rule) are left as they are.
     """
     def swap(m: re.Match[str]) -> str:
-        return notice_html(tenant) if _posts(m.group(1)) else m.group(0)
+        tag = m.group(1)
+        if not _posts(_attr(tag, "action")):
+            return m.group(0)
+        return notice_html(tenant, _attr(tag, "data-form-name"), _attr(tag, "data-qbo-path"))
 
     return _FORM.sub(swap, html)

@@ -237,3 +237,58 @@ test("a flagged upload is refused (content scan), a clean one is accepted", asyn
   });
   assert.equal(good.status, 201);
 });
+
+// --- a receipt kept before anything is recorded from it ----------------------
+
+test("a receipt can be kept before anything is recorded, then filed onto the entry", async () => {
+  const { svc, entryId } = await ready();
+  const kept = await attach(svc, "receipt", "rcpt-abc123", { id: "att-rcpt" });
+  assert.equal(kept.status, 201, JSON.stringify(kept.body));
+
+  const waiting = obj(await call(svc, "GET", "/t/acme/attachments", "", {
+    subject_kind: "receipt",
+  }))["attachments"] as Row[];
+  assert.deepEqual(waiting.map((a) => a["id"]), ["att-rcpt"], "listed while it waits");
+
+  const filed = await call(svc, "POST", "/t/acme/attachments/att-rcpt/file", {
+    subject_kind: "entry", subject_id: entryId,
+  });
+  assert.equal(filed.status, 200, JSON.stringify(filed.body));
+  assert.equal((obj(filed)["attachment"] as Row)["subject_id"], entryId);
+
+  const onEntry = obj(await call(svc, "GET", "/t/acme/attachments", "", {
+    subject_kind: "entry", subject_id: entryId,
+  }))["attachments"] as Row[];
+  assert.deepEqual(onEntry.map((a) => a["id"]), ["att-rcpt"], "same file, now evidence");
+  const back = await call(svc, "GET", "/t/acme/attachments/att-rcpt/content");
+  assert.equal(String(obj(back)["content_base64"]), B64, "the bytes moved with it");
+  const left = obj(await call(svc, "GET", "/t/acme/attachments", "", {
+    subject_kind: "receipt",
+  }))["attachments"] as Row[];
+  assert.equal(left.length, 0, "no longer waiting");
+});
+
+test("only a kept receipt is filed, and only onto something real", async () => {
+  const { svc, entryId } = await ready();
+  await attach(svc, "entry", entryId, { id: "att-evidence" });
+  const moved = await call(svc, "POST", "/t/acme/attachments/att-evidence/file", {
+    subject_kind: "bill", subject_id: "BILL-1",
+  });
+  assert.equal(moved.status, 400);
+  assert.match(String(obj(moved)["error"]), /only a kept receipt/);
+
+  await attach(svc, "receipt", "rcpt-1", { id: "att-rcpt" });
+  const nowhere = await call(svc, "POST", "/t/acme/attachments/att-rcpt/file", {
+    subject_kind: "entry", subject_id: "acme:999",
+  });
+  assert.equal(nowhere.status, 400);
+  assert.match(String(obj(nowhere)["error"]), /unknown journal entry/);
+  const missing = await call(svc, "POST", "/t/acme/attachments/att-nope/file", {
+    subject_kind: "entry", subject_id: entryId,
+  });
+  assert.equal(missing.status, 400);
+  assert.match(String(obj(missing)["error"]), /unknown attachment/);
+
+  const badId = await attach(svc, "receipt", "../../etc");
+  assert.equal(badId.status, 400, "a kept receipt's id must be path-safe");
+});

@@ -38,6 +38,7 @@ A provisional surface graduates to production (moves into `V1_PRODUCTION` in `sc
 
 - **2026-08-20 — Bank feed / Transactions + review Inbox (C-1).** Reads through the tenant-isolated ledger; categorize/accept is RBAC-gated (`CATEGORIZE_TXNS`) and posts through the authoritative ledger; the review queue carries provenance labels (imported → posted → reconciled). Tests: `test_scope.py::test_bank_feed_is_graduated_to_v1`, `::test_review_inbox_carries_provenance_labels`.
 - **2026-10-29 — Running costs (PR 5, issue 14).** Tenant-isolated behind `EDIT_ASSUMPTIONS`; the only inputs are add/remove, and the amount is always re-read from the QuickBooks Profit and Loss, never taken from the form; the baseline persists through the tenant store (shared by every worker), not process memory; its figures carry the imported label. Tests: `test_monday_answer.py`, `test_scope.py::test_running_costs_is_graduated`. Recorded by Claude on the owner's instruction to execute the fix plan.
+- **2026-10-29 — Expenses (paid now).** Tenant-isolated; recording one is gated on `POST_JOURNAL` and posts one balanced journal entry through the ledger's own posting API (idempotent on the form's token); the paid-from account must be a bank, cash or credit card account; the form is locked during the parallel run; the list is labelled posted. Tests: `test_expenses.py`. Recorded by Claude on the owner's instruction.
 
 ## How the product enforces this
 

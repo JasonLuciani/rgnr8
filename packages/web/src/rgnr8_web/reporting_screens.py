@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from .attachment_screens import attachment_link
 from .books_screens import _card, _esc, _minor, _num, _seq, account_label, account_number
 from .provenance_labels import Provenance, most_cautious
 
@@ -28,8 +29,12 @@ def _banner(kind: str, text: str) -> str:
 def render_general_ledger(
     tenant: str, data: Mapping[str, object], *, frm: str = "", to: str = "",
     id_codes: frozenset[str] = frozenset(),
+    attachment_counts: Mapping[str, object] | None = None,
 ) -> str:
-    """Every posting, grouped by account, with a running balance."""
+    """Every posting, grouped by account, with a running balance, and a
+    paperclip on each row: the receipt behind an entry is one click from the
+    report you open when a number looks wrong."""
+    counts = attachment_counts or {}
     blocks = []
     for a in _seq(data.get("accounts")):
         if not isinstance(a, Mapping):
@@ -38,21 +43,25 @@ def render_general_ledger(
         for r in _seq(a.get("rows")):
             if not isinstance(r, Mapping):
                 continue
+            entry_id = str(r.get("entry_id") or "")
+            clip = (attachment_link(tenant, "entry", entry_id,
+                                    _minor(counts.get(entry_id, 0)) or 0) if entry_id else "")
             rows.append(
                 f"<tr><td class='muted'>{_esc(r.get('date'))}</td>"
                 f"<td>{_esc(r.get('memo')) or '—'}</td>"
                 f"<td class='muted' style='font-size:12px'>{_esc(r.get('entry_id'))}</td>"
+                f"<td>{clip}</td>"
                 f"{_num(r.get('debit_minor'))}{_num(r.get('credit_minor'))}"
                 f"{_num(r.get('balance_minor'))}</tr>"
             )
         table = (
             '<div class="table-scroll"><table><thead><tr><th>Date</th><th>Memo</th>'
-            '<th>Entry</th><th class="num">Debit</th><th class="num">Credit</th>'
+            '<th>Entry</th><th></th><th class="num">Debit</th><th class="num">Credit</th>'
             '<th class="num">Balance</th></tr></thead><tbody>'
-            f'<tr class="muted"><td colspan="5">Opening balance</td>'
+            f'<tr class="muted"><td colspan="6">Opening balance</td>'
             f'{_num(a.get("opening_minor"))}</tr>'
             + "".join(rows)
-            + '<tr style="font-weight:700"><td colspan="3">Closing balance</td>'
+            + '<tr style="font-weight:700"><td colspan="4">Closing balance</td>'
             + _num(a.get("total_debit_minor")) + _num(a.get("total_credit_minor"))
             + _num(a.get("closing_minor")) + "</tr></tbody></table></div>"
         )
