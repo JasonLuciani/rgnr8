@@ -67,8 +67,10 @@ import {
   type CutoverContext,
 } from "./cutover.js";
 import {
+  AfterCutoverError,
   BookOfRecordError,
   MIRROR_KEY_PREFIX,
+  cutOver,
   PARALLEL_RUN_MESSAGE,
   QUICKBOOKS_SOURCE,
   guardBackend,
@@ -575,6 +577,13 @@ export class LedgerService {
           if (!data) return bad("invalid JSON body");
           const current = await store.get(String(tenant));
           const next = mergeSettings(current, data);
+          // After a cutover only a backout hands the book back to QuickBooks
+          // (it removes what the cutover made); flipping the setting alone would
+          // leave RGNR8's documents behind a QuickBooks mirror.
+          if (next.bookOfRecord === "quickbooks" && current.bookOfRecord !== "quickbooks"
+              && await cutOver(this.backend, tenant)) {
+            return conflict("this account has cut over to RGNR8; back out the cutover to return to QuickBooks");
+          }
           // Switching the inventory costing method mid-stream would strand the
           // existing on-hand value (moving average keeps no lots; FIFO keeps no
           // blended figure), so it is only allowed when nothing is on the shelf.
@@ -1743,6 +1752,9 @@ export class LedgerService {
       }
     } catch (err) {
       if (err instanceof BookOfRecordError) return bookOfRecordConflict();
+      if (err instanceof AfterCutoverError) {
+        return { status: 409, body: { error: err.message, code: err.code } };
+      }
       if (err instanceof PeriodClosedError) return conflict(err.message);
       if (err instanceof ArApError) return bad(err.message);
       if (err instanceof ReconcileError) return bad(err.message);

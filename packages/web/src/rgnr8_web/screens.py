@@ -518,6 +518,7 @@ def render_connect_page(
     migrate_message: str = "",
     ledger_migrated: bool = False,
     mirror_realm: str = "",
+    cut_over: bool = False,
 ) -> str:
     """The connections page: QuickBooks Online status + a connect / reconnect /
     disconnect control, a Refresh action, and the last refresh's summary.
@@ -547,9 +548,12 @@ def render_connect_page(
                   f'{escape(realm_id)}</p>' if realm_id else "")
 
     if is_connected:
-        action = (
+        # After cutover RGNR8 keeps the books; there is nothing left to refresh.
+        refresh = "" if cut_over else (
             f'<form method="post" action="{sync_href}" style="display:inline">'
-            f'<button class="btn" type="submit">Refresh from QuickBooks</button></form> '
+            f'<button class="btn" type="submit">Refresh from QuickBooks</button></form> ')
+        action = (
+            refresh +
             f'<a class="btn ghost" style="text-decoration:none" href="{connect_href}">Reconnect</a> '
             f'<form method="post" action="{disconnect_href}" style="display:inline">'
             f'<button class="btn ghost" type="submit">Disconnect</button></form>'
@@ -603,7 +607,7 @@ def render_connect_page(
             f'<form method="post" action="{migrate_href}" style="margin-top:8px">'
             '<button class="btn" type="submit">Bring over chart of accounts + balances</button></form></div>'
         )
-    elif is_connected and ledger_migrated:
+    elif is_connected and ledger_migrated and not cut_over:
         migrate_block = (
             '<div class="card"><h2>Your books mirror QuickBooks</h2>'
             '<p class="muted">QuickBooks is still your book of record during the parallel run: '

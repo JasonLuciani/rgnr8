@@ -199,3 +199,85 @@ test("the whole cutover and backout run on Postgres too", async () => {
   assert.equal((await call(s, "POST", "/t/acme/cutover/backout")).status, 200);
   assert.equal((await call(s, "GET", "/t/acme/invoices/1037")).status, 404);
 });
+
+// --- from the independent review ---------------------------------------------
+
+async function cutOver(s: LedgerService): Promise<void> {
+  const p = await plan(s);
+  const done = await call(s, "POST", "/t/acme/cutover/execute",
+    { cutover_date: "2026-10-31", signed_by: "J. Accountant", report_hash: p["report_hash"] });
+  assert.equal(done.status, 200, JSON.stringify(done.body));
+}
+
+const CATCH_UP = {
+  date: "2026-11-06", source: "quickbooks", idempotency_key: "qbo-mirror:2026-11-06:after",
+  lines: [{ code: "1000", side: "DEBIT", amount_minor: "28995" }, { code: "1200", side: "CREDIT", amount_minor: "28995" }],
+};
+
+test("after cutover nothing more is copied from QuickBooks, and only backout hands the book back", async () => {
+  const s = await mirrored();
+  await cutOver(s);
+  // A payment taken in QuickBooks would otherwise arrive here AND be collected in RGNR8.
+  const copied = await call(s, "POST", "/t/acme/entries", CATCH_UP);
+  assert.equal(copied.status, 409);
+  assert.equal(obj(copied)["code"], "cut_over");
+  const flipped = await call(s, "POST", "/t/acme/settings", { book_of_record: "quickbooks" });
+  assert.equal(flipped.status, 409);
+  // The way back is the backout, after which QuickBooks is copied again.
+  assert.equal((await call(s, "POST", "/t/acme/cutover/backout")).status, 200);
+  assert.equal((await call(s, "POST", "/t/acme/entries", CATCH_UP)).status, 201);
+});
+
+test("a credit on a document that came over at cutover must say where it goes, and then reaches income", async () => {
+  const s = await mirrored();
+  await cutOver(s);
+  const blind = await call(s, "POST", "/t/acme/invoices/1038/credits", { date: "2026-11-06", amount_minor: "4000" });
+  assert.equal(blind.status, 400);
+  assert.match(String(obj(blind)["error"]), /account_code/);
+  const named = await call(s, "POST", "/t/acme/invoices/1038/credits",
+    { date: "2026-11-06", amount_minor: "4000", account_code: "4000" });
+  assert.equal(named.status, 200, JSON.stringify(named.body));
+  const tb = obj(await call(s, "GET", "/t/acme/trial-balance"))["rows"] as Array<Record<string, string>>;
+  const bal = (code: string) => {
+    const r = tb.find((x) => x["code"] === code)!;
+    return BigInt(r["debit_minor"]!) - BigInt(r["credit_minor"]!);
+  };
+  assert.equal(bal("1200"), 38995n - 4000n, "A/R follows its documents");
+});
+
+test("a cutover interrupted halfway can be backed out and run again", async () => {
+  const backend = new InMemoryBackend();
+  const s = await mirrored(backend);
+  const p = await plan(s);
+  // The settings write fails once, after the documents were saved.
+  const settings = backend.settings();
+  const save = settings.save.bind(settings);
+  let failed = false;
+  settings.save = async (tenant, value) => {
+    if (!failed && value.bookOfRecord === "rgnr8") {
+      failed = true;
+      throw new Error("connection reset");
+    }
+    return save(tenant, value);
+  };
+  const broken = await call(s, "POST", "/t/acme/cutover/execute",
+    { cutover_date: "2026-10-31", signed_by: "J. Accountant", report_hash: p["report_hash"] });
+  assert.notEqual(broken.status, 200);
+  assert.match(String((await plan(s))["blockers"]), /didn't finish: back it out first/);
+  assert.equal((await call(s, "POST", "/t/acme/cutover/backout")).status, 200);
+  assert.equal((await call(s, "GET", "/t/acme/invoices/1037")).status, 404);
+  const again = await plan(s);
+  assert.deepEqual(again["blockers"], []);
+  await cutOver(s);
+});
+
+test("balances in two A/R accounts block the cutover", async () => {
+  const s = await mirrored();
+  await call(s, "POST", "/t/acme/accounts", { code: "1210", name: "A/R - Retainage", type: "ASSET", subtype: "ACCOUNTS_RECEIVABLE" });
+  // The mirror moves part of A/R into the second account.
+  await call(s, "POST", "/t/acme/entries", {
+    date: "2026-11-01", source: "quickbooks", idempotency_key: "qbo-mirror:2026-11-01:split",
+    lines: [{ code: "1210", side: "DEBIT", amount_minor: "10000" }, { code: "1200", side: "CREDIT", amount_minor: "10000" }],
+  });
+  assert.match(String((await plan(s))["blockers"]), /balances sit in 2 receivable accounts \(1200, 1210\)/);
+});

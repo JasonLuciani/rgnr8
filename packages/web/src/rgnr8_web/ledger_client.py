@@ -370,7 +370,7 @@ class LedgerClient:
 
     def issue_credit(
         self, tenant: str, kind: str, doc_id: str, date: str,
-        *, amount_minor: str = "", memo: str = "",
+        *, amount_minor: str = "", memo: str = "", account_code: str = "",
     ) -> LedgerResponse:
         """Reduce what is owed on an open invoice or bill."""
         payload: dict[str, object] = {"date": date}
@@ -378,11 +378,13 @@ class LedgerClient:
             payload["amount_minor"] = amount_minor
         if memo:
             payload["memo"] = memo
+        if account_code:
+            payload["account_code"] = account_code
         return self._call("POST", f"/t/{tenant}/{kind}/{doc_id}/credits", payload)
 
     def issue_refund(
         self, tenant: str, doc_id: str, date: str,
-        *, amount_minor: str = "", memo: str = "", bank_code: str = "",
+        *, amount_minor: str = "", memo: str = "", bank_code: str = "", account_code: str = "",
     ) -> LedgerResponse:
         """Send money back on an invoice that was already collected."""
         payload: dict[str, object] = {"date": date}
@@ -392,6 +394,8 @@ class LedgerClient:
             payload["memo"] = memo
         if bank_code:
             payload["bank_code"] = bank_code
+        if account_code:
+            payload["account_code"] = account_code
         return self._call("POST", f"/t/{tenant}/invoices/{doc_id}/refunds", payload)
 
     def record_payment(

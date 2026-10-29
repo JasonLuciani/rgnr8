@@ -1338,6 +1338,13 @@ def test_cutover_and_backout_end_to_end_against_the_real_service(ledger_service:
     status = _req(app, "cuco", "/t/cuco/connect/cutover").body
     assert "RGNR8 is your book of record" in status and "J. Accountant" in status
     assert "can no longer be backed out" in status  # the owner's entry just now
+    # A credit on 1037 has no income line of its own to reverse, so the form asks where it goes.
+    invoices = _req(app, "cuco", "/t/cuco/invoices").body
+    assert 'name="account_code" aria-label="Account" required' in invoices
+    blind = _req(app, "cuco", "/t/cuco/invoices/1037/credits", "POST", "amount=40.00&date=2026-10-29")
+    assert "say%20which%20account" in dict(blind.extra_headers)["Location"]
+    named = _req(app, "cuco", "/t/cuco/invoices/1037/credits", "POST", "amount=40.00&account_code=4000&date=2026-10-29")
+    assert "ok=" in dict(named.extra_headers)["Location"], dict(named.extra_headers)["Location"]
 
 
 def test_backing_out_a_cutover_through_the_web_app(ledger_service: str) -> None:

@@ -11,6 +11,7 @@ Amounts arrive as integer minor-unit strings and are formatted exactly.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from urllib.parse import quote
 
 from .attachment_screens import attachment_link
 from .books_screens import _card, _esc, _minor, _num, _seq, money
@@ -94,8 +95,24 @@ def _tax_note(d: Mapping[str, object]) -> str:
     )
 
 
+def _only_control_lines(d: Mapping[str, object], control_codes: frozenset[str]) -> bool:
+    """A document that came over at cutover: its one line is the A/R or A/P
+    balance it stands for, so a credit can't reverse an income or expense line."""
+    lines = [ln for ln in _seq(d.get("lines")) if isinstance(ln, Mapping)]
+    return bool(lines) and all(str(ln.get("account_code")) in control_codes for ln in lines)
+
+
+def _account_pick(accounts: "tuple[tuple[str, str], ...]") -> str:
+    options = '<option value="">Account…</option>' + "".join(
+        f'<option value="{_esc(c)}">{_esc(c)} {_esc(n)}</option>' for c, n in accounts)
+    return (f'<select name="account_code" aria-label="Account" required '
+            f'style="width:auto;padding:6px 8px">{options}</select>')
+
+
 def _adjust_controls(
-    tenant: str, kind: str, d: Mapping[str, object], can_post: bool
+    tenant: str, kind: str, d: Mapping[str, object], can_post: bool,
+    credit_accounts: "tuple[tuple[str, str], ...]" = (),
+    control_codes: frozenset[str] = frozenset(),
 ) -> str:
     """Credit what is still owed; refund what has already been collected.
 
@@ -105,7 +122,8 @@ def _adjust_controls(
     """
     if not can_post:
         return ""
-    doc_id = _esc(d.get("id"))
+    doc_id = _esc(quote(str(d.get("id") or ""), safe=""))
+    pick = _account_pick(credit_accounts) if _only_control_lines(d, control_codes) else ""
     open_minor = _minor(d.get("open_minor")) or 0
     total = _minor(d.get("total_minor")) or 0
     collected = total - open_minor
@@ -117,7 +135,7 @@ def _adjust_controls(
             f'<form method="post" action="/t/{_esc(tenant)}/{_esc(kind)}/{doc_id}/credits" '
             'style="display:flex;gap:6px;align-items:center;margin:4px 0 0">'
             f'<input name="amount" placeholder="{money(d.get("open_minor"))[1:]}" '
-            'style="width:100px;padding:6px 8px" inputmode="decimal">'
+            f'style="width:100px;padding:6px 8px" inputmode="decimal">{pick}'
             f'<button class="btn ghost" style="padding:6px 10px;margin:0" type="submit" '
             f'title="Reduce what is owed — the document itself is never edited">'
             f'{label}</button></form>'
@@ -127,7 +145,7 @@ def _adjust_controls(
             f'<form method="post" action="/t/{_esc(tenant)}/{_esc(kind)}/{doc_id}/refunds" '
             'style="display:flex;gap:6px;align-items:center;margin:4px 0 0">'
             f'<input name="amount" placeholder="{money(str(collected))[1:]}" '
-            'style="width:100px;padding:6px 8px" inputmode="decimal">'
+            f'style="width:100px;padding:6px 8px" inputmode="decimal">{pick}'
             '<button class="btn ghost" style="padding:6px 10px;margin:0" type="submit" '
             'title="Send money back — this moves cash out of the bank">'
             "Refund</button></form>"
@@ -147,6 +165,8 @@ def render_documents(
     message: str = "",
     error: str = "",
     banks: "tuple[tuple[str, str], ...]" = (),
+    credit_accounts: "tuple[tuple[str, str], ...]" = (),
+    control_codes: frozenset[str] = frozenset(),
 ) -> str:
     """The invoices or bills list, with totals, plus the create/collect forms.
 
@@ -155,8 +175,10 @@ def render_documents(
     RGNR8's default 1000 (a QuickBooks chart, after cutover)."""
     bank_pick = ""
     if len(banks) > 1:
-        options = "".join(f'<option value="{_esc(c)}">{_esc(n)}</option>' for c, n in banks)
-        bank_pick = (f'<select name="bank_code" aria-label="Bank account" '
+        # No default: money landing in the wrong bank is a reconciliation problem.
+        options = '<option value="">Bank…</option>' + "".join(
+            f'<option value="{_esc(c)}">{_esc(n)}</option>' for c, n in banks)
+        bank_pick = (f'<select name="bank_code" aria-label="Bank account" required '
                      f'style="width:auto;padding:6px 8px">{options}</select>')
     is_ar = kind == "invoices"
     who = "Customer" if is_ar else "Vendor"
@@ -168,13 +190,14 @@ def render_documents(
         if not isinstance(d, Mapping):
             continue
         doc_id = _esc(d.get("id"))
+        doc_path = _esc(quote(str(d.get("id") or ""), safe=""))
         open_minor = _minor(d.get("open_minor")) or 0
         overdue = open_minor > 0 and str(d.get("due_date")) < today
         party = names.get(str(d.get("party_id")), str(d.get("party_id")))
         pay_cell = ""
         if can_post and open_minor > 0:
             pay_cell = (
-                f'<form method="post" action="/t/{_esc(tenant)}/{_esc(kind)}/{doc_id}/payments" '
+                f'<form method="post" action="/t/{_esc(tenant)}/{_esc(kind)}/{doc_path}/payments" '
                 'style="display:flex;gap:6px;align-items:center;margin:0">'
                 f'<input name="amount" placeholder="{money(d.get("open_minor"))[1:]}" '
                 'style="width:110px;padding:6px 8px" inputmode="decimal">'
@@ -190,7 +213,7 @@ def render_documents(
             f"{_num(d.get('total_minor'))}{_num(d.get('open_minor'))}"
             f"<td>{_status_chip(d.get('status'), overdue)}</td>"
             f"<td>{_paperclip(tenant, kind, d, attachment_counts)}</td>"
-            f"<td>{pay_cell}{_adjust_controls(tenant, kind, d, can_post)}</td></tr>"
+            f"<td>{pay_cell}{_adjust_controls(tenant, kind, d, can_post, credit_accounts, control_codes)}</td></tr>"
         )
 
     empty = (

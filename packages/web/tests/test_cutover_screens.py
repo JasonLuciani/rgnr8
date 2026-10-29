@@ -74,3 +74,13 @@ def test_connections_and_routes_are_never_refused_as_postings() -> None:
 
     for path in ("/t/acme/connect/cutover", "/t/acme/connect/cutover/backout"):
         assert not is_posting_path([p for p in path.split("/") if p], "POST"), path
+
+
+def test_a_payment_has_no_bank_until_one_is_chosen() -> None:
+    docs = {"documents": [{**DOC, "id": "INV/7 #2"}], "open_total_minor": "5000"}
+    page = render_documents("acme", "invoices", docs, {}, today="2026-11-05", can_post=True,
+                            banks=(("10", "Operating Checking"), ("11", "Savings")))
+    assert 'name="bank_code" aria-label="Bank account" required' in page
+    assert '<option value="">Bank…</option><option value="10">' in page  # blank comes first
+    # The id is one path segment, whatever QuickBooks numbered it.
+    assert 'action="/t/acme/invoices/INV%2F7%20%232/payments"' in page

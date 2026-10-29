@@ -102,7 +102,10 @@ While QuickBooks is the book of record, RGNR8 mirrors it and posts nothing of it
 4. **Sign off and cut over.** The form needs the name of the person who signed the report. The ledger refuses unless the plan still has the fingerprint they signed, and refuses a difference in the tie-out unless the signer accepts it. Cutover then:
    - creates the open invoices and bills as documents **without posting them** (their amounts are already in A/R and A/P);
    - locks every month through the cutover month;
-   - makes RGNR8 the book of record (posting opens up; the "Add this in QuickBooks" notices go).
+   - makes RGNR8 the book of record (posting opens up; the "Add this in QuickBooks" notices go);
+   - stops copying from QuickBooks: Refresh is gone from Connections and the ledger refuses any QuickBooks copy, so a payment taken in QuickBooks afterwards is never collected twice.
+
+   Only the owner or controller can cut over or back out. Balances in more than one A/R (or A/P) account block the plan: combine them in QuickBooks first. If a cutover stops halfway (a restart, a lost connection), the plan says so; back it out, then run it again. A credit or refund on an invoice or bill that came over at cutover has to name its income or expense account, since the document carries only its balance.
 5. **The way back.** Until RGNR8 records anything of its own (any entry, or a payment against one of the new documents), the cutover page offers **Back out the cutover**: QuickBooks becomes the book of record again and the documents cutover created are removed. Refresh afterwards. Once RGNR8 has recorded its first entry, the way back closes; corrections from then on are ordinary reversing entries.
 
 The signer, the date, the report fingerprint and any backout are kept in the ledger (`rgnr8_cutover`) and the web audit log (`cutover.executed`, `cutover.backed_out`).

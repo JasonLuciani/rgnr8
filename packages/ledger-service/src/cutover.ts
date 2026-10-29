@@ -34,6 +34,7 @@ import type { LedgerBackend } from "./backend.js";
 import { isQuickBooksCopy } from "./bookOfRecord.js";
 import type { DocKind, DocRecord, PartyKind } from "./documents.js";
 import type { OpenItem } from "./openItems.js";
+import { DEFAULT_CONTROLS, controlCode as arapControlCode } from "./arap.js";
 
 export class CutoverError extends Error {}
 
@@ -44,8 +45,15 @@ export interface CutoverRecord {
   readonly executedAt: string;
   /** The documents cutover created, so a backout removes exactly those. */
   readonly docs: readonly { readonly kind: DocKind; readonly id: string }[];
-  readonly state: "live" | "backed_out";
+  /** executing (begun, maybe interrupted) -> live -> backed_out. */
+  readonly state: "executing" | "live" | "backed_out";
   readonly backedOutAt: string;
+}
+
+/** Whether a cutover has begun and hasn't been backed out: QuickBooks is no
+ *  longer the source, and nothing may be copied from it or switch back to it. */
+export function cutoverActive(r: CutoverRecord | undefined): boolean {
+  return r !== undefined && r.state !== "backed_out";
 }
 
 export interface CutoverStore {
@@ -76,7 +84,7 @@ CREATE TABLE IF NOT EXISTS rgnr8_cutover (
   report_hash   text NOT NULL,
   executed_at   text NOT NULL,
   docs          text NOT NULL,
-  state         text NOT NULL CHECK (state IN ('live', 'backed_out')),
+  state         text NOT NULL CHECK (state IN ('executing', 'live', 'backed_out')),
   backed_out_at text NOT NULL DEFAULT ''
 );
 `;
@@ -119,7 +127,8 @@ export class PgCutoverStore implements CutoverStore {
         reportHash: String(r["report_hash"]),
         executedAt: String(r["executed_at"]),
         docs: JSON.parse(String(r["docs"])) as CutoverRecord["docs"],
-        state: String(r["state"]) === "backed_out" ? "backed_out" : "live",
+        state: (["executing", "live", "backed_out"] as const)
+          .find((s) => s === String(r["state"])) ?? "executing",
         backedOutAt: String(r["backed_out_at"] ?? ""),
       };
     });
@@ -213,6 +222,10 @@ export async function planCutover(ctx: CutoverContext, cutoverDate: string): Pro
   const blockers: string[] = [];
   const today = ctx.now().slice(0, 10);
   const settings = await ctx.backend.settings().get(tenant);
+  const previous = await ctx.backend.cutovers().get(tenant);
+  if (previous?.state === "executing") {
+    blockers.push("a previous cutover didn't finish: back it out first, then plan again");
+  }
   if (settings.bookOfRecord !== "quickbooks") {
     blockers.push("RGNR8 is already the book of record for this account");
   }
@@ -259,6 +272,18 @@ export async function planCutover(ctx: CutoverContext, cutoverDate: string): Pro
   const control = (subtype: AccountSubtype): bigint =>
     tb.rows.filter((r) => r.subtype === subtype)
       .reduce((sum, r) => sum + r.debit.minorUnits - r.credit.minorUnits, 0n);
+  // Every invoice is collected against one A/R account and every bill paid from
+  // one A/P account. Balances in several would all be cleared into one of them.
+  for (const [subtype, label] of [[AccountSubtype.ACCOUNTS_RECEIVABLE, "receivable"],
+    [AccountSubtype.ACCOUNTS_PAYABLE, "payable"]] as const) {
+    const held = tb.rows.filter((r) => r.subtype === subtype
+      && r.debit.minorUnits - r.credit.minorUnits !== 0n);
+    if (held.length > 1) {
+      blockers.push(`balances sit in ${held.length} ${label} accounts `
+        + `(${held.map((r) => r.code).join(", ")}): combine them in QuickBooks first, `
+        + "or RGNR8 would clear them all through one");
+    }
+  }
   const sum = (kind: DocKind): bigint =>
     docs.filter((d) => d.kind === kind).reduce((s, d) => s + d.openMinor, 0n);
   const ar = control(AccountSubtype.ACCOUNTS_RECEIVABLE);
@@ -310,6 +335,14 @@ export async function executeCutover(
 
   const docs = ctx.backend.documents();
   const settings = await ctx.backend.settings().get(tenant);
+  // Written first, so a run that stops halfway (a restart, a lost connection)
+  // can still be backed out: the record lists every document it may have made.
+  const begun: CutoverRecord = {
+    cutoverDate: plan.cutoverDate, signedBy: req.signedBy.trim(), reportHash: plan.hash,
+    executedAt: ctx.now(), docs: plan.docs.map((d) => ({ kind: d.kind, id: d.id })),
+    state: "executing", backedOutAt: "",
+  };
+  await ctx.backend.cutovers().save(tenant, begun);
   const controls = {
     invoice: await controlCode(ctx, AccountSubtype.ACCOUNTS_RECEIVABLE),
     bill: await controlCode(ctx, AccountSubtype.ACCOUNTS_PAYABLE),
@@ -336,28 +369,25 @@ export async function executeCutover(
   }
   await ctx.backend.periods(ctx.tenant).lockThrough(ctx.tenant, asPeriodKey(plan.cutoverDate.slice(0, 7)));
   await ctx.backend.settings().save(tenant, { ...settings, bookOfRecord: "rgnr8" });
-  await ctx.backend.openItems().replace(tenant, { asOf: "", items: [] });
-  const record: CutoverRecord = {
-    cutoverDate: plan.cutoverDate, signedBy: req.signedBy.trim(), reportHash: plan.hash,
-    executedAt: ctx.now(), docs: plan.docs.map((d) => ({ kind: d.kind, id: d.id })),
-    state: "live", backedOutAt: "",
-  };
+  const record: CutoverRecord = { ...begun, state: "live" };
   await ctx.backend.cutovers().save(tenant, record);
+  // Last: until here, a backout and a fresh plan still have the copy to use.
+  await ctx.backend.openItems().replace(tenant, { asOf: "", items: [] });
   return { record, plan };
 }
 
 async function controlCode(ctx: CutoverContext, subtype: AccountSubtype): Promise<string> {
-  const chart = await ctx.backend.chart(ctx.tenant);
-  const match = chart.listActive().filter((a) => a.subtype === subtype)
-    .sort((a, b) => a.code.localeCompare(b.code))[0];
-  return match?.code ?? "";
+  // The account AR/AP will collect and pay against, chosen by the same rule.
+  return arapControlCode(await ctx.backend.chart(ctx.tenant), subtype,
+    subtype === AccountSubtype.ACCOUNTS_RECEIVABLE ? DEFAULT_CONTROLS.arCode : DEFAULT_CONTROLS.apCode);
 }
 
 /** Why a backout can't happen now, or "" when it can. */
 export async function backoutBlocker(ctx: CutoverContext): Promise<string> {
   const tenant = String(ctx.tenant);
   const record = await ctx.backend.cutovers().get(tenant);
-  if (!record || record.state !== "live") return "there is no cutover to back out";
+  if (!cutoverActive(record)) return "there is no cutover to back out";
+  if (!record) return "there is no cutover to back out";
   const own = (await ctx.backend.store(ctx.tenant).list(ctx.tenant)).filter((e) => !isQuickBooksCopy(e));
   if (own.length) {
     return "RGNR8 has recorded its first entries since the cutover; backing out would lose them";
@@ -377,6 +407,8 @@ export async function backOutCutover(ctx: CutoverContext): Promise<CutoverRecord
   const blocker = await backoutBlocker(ctx);
   if (blocker) throw new CutoverError(blocker);
   const record = (await ctx.backend.cutovers().get(tenant))!;
+  // An interrupted run may not have made them all; deleting one that isn't
+  // there is a no-op.
   for (const d of record.docs) await ctx.backend.documents().deleteDoc(tenant, d.kind, d.id);
   const settings = await ctx.backend.settings().get(tenant);
   await ctx.backend.settings().save(tenant, { ...settings, bookOfRecord: "quickbooks" });

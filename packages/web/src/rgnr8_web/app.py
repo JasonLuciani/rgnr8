@@ -489,6 +489,8 @@ def _qs_escape(text: str) -> str:
 
 
 # The Connections page's one-time result (see `WebApp._connect_result`).
+_AFTER_CUTOVER = ("RGNR8 has been the book of record since the cutover, so nothing more "
+                  "is copied from QuickBooks. To go back, back out the cutover.")
 _CONNECT_FLASH = "rgnr8_connect_flash"
 
 
@@ -1355,16 +1357,17 @@ class WebApp:
             return self._require(subject, token_tenant, parts[1], P.MANAGE_CONNECTORS,
                                  lambda t: self._connect_page(subject, t, req.headers))
 
-        # /t/<tenant>/connect/cutover -> move the book of record to RGNR8 (and back)
+        # /t/<tenant>/connect/cutover -> move the book of record to RGNR8 (and back).
+        # Owner/controller authority: it decides which books are the real ones.
         if len(parts) == 4 and parts[0] == "t" and parts[2] == "connect" and parts[3] == "cutover":
             if req.method == "POST":
-                return self._require(subject, token_tenant, parts[1], P.MANAGE_CONNECTORS,
+                return self._require(subject, token_tenant, parts[1], P.MANAGE_SETTINGS,
                                      lambda t: self._cutover_execute(subject, t, req.body))
-            return self._require(subject, token_tenant, parts[1], P.MANAGE_CONNECTORS,
+            return self._require(subject, token_tenant, parts[1], P.MANAGE_SETTINGS,
                                  lambda t: self._cutover_page(subject, t, req.query))
         if (len(parts) == 5 and parts[0] == "t" and parts[2] == "connect" and parts[3] == "cutover"
                 and parts[4] == "backout" and req.method == "POST"):
-            return self._require(subject, token_tenant, parts[1], P.MANAGE_CONNECTORS,
+            return self._require(subject, token_tenant, parts[1], P.MANAGE_SETTINGS,
                                  lambda t: self._cutover_backout(subject, t))
 
         # /t/<tenant>/connect/qbo -> start the QBO OAuth flow (redirect to Intuit)
@@ -2281,14 +2284,20 @@ class WebApp:
         raw_counts = counts.body.get("counts") if counts.ok else None
         chart = self._ledger.accounts(t.tenant_id)
         listed = chart.body.get("accounts") if chart.ok else None
+        rows = [a for a in (listed if isinstance(listed, list) else []) if isinstance(a, dict)]
         banks = tuple((str(a.get("code")), str(a.get("name")))
-                      for a in (listed if isinstance(listed, list) else [])
-                      if isinstance(a, dict) and a.get("subtype") == "BANK")
+                      for a in rows if a.get("subtype") == "BANK")
+        # A credit on a document that came over at cutover names its account.
+        reverses = "REVENUE" if kind == "invoices" else "EXPENSE"
         body = render_documents(
             t.tenant_id, kind, docs.body, parties.body if parties.ok else {},
             today=self._today(t), can_post=can_post,
             attachment_counts=raw_counts if isinstance(raw_counts, dict) else None,
             message=query.get("ok", ""), error=query.get("err", ""), banks=banks,
+            credit_accounts=tuple((str(a.get("code")), str(a.get("name")))
+                                  for a in rows if a.get("type") == reverses and a.get("active", True)),
+            control_codes=frozenset(str(a.get("code")) for a in rows
+                                    if a.get("subtype") in ("ACCOUNTS_RECEIVABLE", "ACCOUNTS_PAYABLE")),
         )
         return self._shell(subject, t, kind, body)
 
@@ -2424,16 +2433,17 @@ class WebApp:
             return _redirect(f"{back}?err={_qs_escape('Enter a positive amount')}")
         date = str(data.get("date", "")).strip() or self._today(t)
         memo = str(data.get("memo", "")).strip()
+        account_code = str(data.get("account_code", "")).strip()
 
         if action == "credits":
             res = self._ledger.issue_credit(
                 t.tenant_id, kind, doc_id, date,
-                amount_minor=str(minor) if minor else "", memo=memo,
+                amount_minor=str(minor) if minor else "", memo=memo, account_code=account_code,
             )
         else:
             res = self._ledger.issue_refund(
                 t.tenant_id, doc_id, date,
-                amount_minor=str(minor) if minor else "", memo=memo,
+                amount_minor=str(minor) if minor else "", memo=memo, account_code=account_code,
             )
         if not res.ok:
             return _redirect(f"{back}?err={_qs_escape(res.error())}")
@@ -6273,12 +6283,20 @@ class WebApp:
         # Only a live connection needs to know what the books mirror; a page for a
         # disconnected or unconfigured tenant makes no ledger call at all.
         mirror = self._qbo_mirror_state(t, realm or "") if status == "connected" else ("none", "")
-        cutover_card = (
-            '<div class="card"><h2>Move to RGNR8</h2><p>When the parallel run is done, cut over '
-            "at a month-end: RGNR8 becomes the book of record, with a way back until it records "
-            "anything of its own.</p>"
-            f'<a class="btn ghost" href="/t/{t.tenant_id}/connect/cutover">Plan the cutover</a></div>'
-            if mirror[0] == "mirrored" else "")
+        cut_over = mirror[0] == "mirrored" and self._cut_over(t)
+        if cut_over:
+            cutover_card = (
+                '<div class="card"><h2>RGNR8 is your book of record</h2><p>The parallel run has '
+                "ended: nothing more is copied from QuickBooks.</p>"
+                f'<a class="btn ghost" href="/t/{t.tenant_id}/connect/cutover">View the cutover</a></div>')
+        elif mirror[0] == "mirrored":
+            cutover_card = (
+                '<div class="card"><h2>Move to RGNR8</h2><p>When the parallel run is done, cut over '
+                "at a month-end: RGNR8 becomes the book of record, with a way back until it records "
+                "anything of its own.</p>"
+                f'<a class="btn ghost" href="/t/{t.tenant_id}/connect/cutover">Plan the cutover</a></div>')
+        else:
+            cutover_card = ""
         page = self._shell(subject, t, "connect", cutover_card +
                            render_connect_page(t.tenant_id, configured=configured,
                                                status=status, realm_id=realm,
@@ -6286,6 +6304,7 @@ class WebApp:
                                                migrate_flag=migrate_flag,
                                                migrate_message=migrate_message,
                                                ledger_migrated=mirror[0] == "mirrored",
+                                               cut_over=cut_over,
                                                mirror_realm=(mirror[1] if mirror[0] == "other_company"
                                                              else "")))
         if flash is None:
@@ -6316,6 +6335,19 @@ class WebApp:
     # How long one read of a tenant's book of record is trusted. Short, because
     # cutover flips it back to RGNR8 and posting has to open up again soon after.
     _BOOK_OF_RECORD_TTL = 60.0
+
+    def _cut_over(self, t: _Tenant) -> bool:
+        """Whether this account has cut over to RGNR8 (or a cutover is under way).
+
+        Read fresh each time: it is only asked on Connections and before a copy
+        from QuickBooks, and a stale answer would copy QuickBooks into books RGNR8
+        now keeps. An unreadable ledger answers False; it refuses copies itself.
+        """
+        if self._ledger is None or not hasattr(self._ledger, "cutover_status"):
+            return False
+        res = self._ledger.cutover_status(t.tenant_id)
+        record = res.body.get("record") if res.ok else None
+        return isinstance(record, dict) and str(record.get("state") or "") in ("executing", "live")
 
     def _parallel_run(self, t: _Tenant) -> bool:
         """Whether QuickBooks is this tenant's book of record right now.
@@ -6500,6 +6532,8 @@ class WebApp:
         if client is None:
             # not connected / needs reconnect — bounce back to the connect page
             return _redirect(f"/t/{t.tenant_id}/connect")
+        if self._cut_over(t):
+            return self._connect_result(t, "migrate", False, _AFTER_CUTOVER)
         # A mirror is a copy of ONE QuickBooks company. Refreshing it from another
         # would rewrite these books (and the forecast) with that company's
         # numbers, so check which company this is before anything is read from it.
@@ -6567,6 +6601,8 @@ class WebApp:
         if self._ledger is None:
             return self._connect_result(
                 t, "migrate", False, "no ledger service is configured for this deployment")
+        if self._cut_over(t):
+            return self._connect_result(t, "migrate", False, _AFTER_CUTOVER)
         client = self._qbo.api_client(t.tenant_id)
         if client is None:
             return _redirect(f"/t/{t.tenant_id}/connect")
