@@ -120,7 +120,7 @@ def test_collections_and_the_forecast_count_quickbooks_receivables() -> None:
     app = _app(_MirrorLedger())
     page = _get(app, "/t/acme/receivables")
     assert "of $389.95 total AR" in page and "$16.75 more on QuickBooks' side" in page
-    assert page.index("Receivables &amp; collections") < page.index("$16.75 more")  # under the title
+    assert page.index("<h1>Collections</h1>") < page.index("$16.75 more")  # under the title
     fc = app._forecast(app._tenants["acme"])
     assert not any(n.startswith("no receivables provided") for n in fc.data_quality)
     invoices = app._effective_inputs(app._tenants["acme"]).invoices

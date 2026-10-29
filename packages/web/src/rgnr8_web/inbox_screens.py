@@ -191,10 +191,7 @@ def render_inbox(
     )
     summary = (
         f'<p class="sub">Waiting: <strong>{money(view.get("pending_in_minor"))}</strong> in · '
-        f'<strong>{money(view.get("pending_out_minor"))}</strong> out · '
-        f'<a class="btn-link" href="/t/{_esc(tenant)}/inbox/rules">Rules</a> · '
-        f'<a class="btn-link" href="/t/{_esc(tenant)}/inbox?status=POSTED">Already posted</a> · '
-        f'<a class="btn-link" href="/t/{_esc(tenant)}/inbox?status=EXCLUDED">Excluded</a></p>'
+        f'<strong>{money(view.get("pending_out_minor"))}</strong> out</p>'
     )
 
     # Provenance: for-review lines are IMPORTED (from the bank, not yet in the

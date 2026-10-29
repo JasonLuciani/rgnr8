@@ -129,7 +129,7 @@ def test_books_home_shows_trial_balance_and_entry_form() -> None:
     app, _t, _a = _app()
     r = _req(app, "/t/acme/books")
     assert r.status == 200
-    assert "Trial Balance" in r.body
+    assert "Trial balance" in r.body
     assert "$3,000.00" in r.body          # cash 300000 minor, formatted exactly
     assert "In balance" in r.body
     assert "Record a transaction" in r.body   # owner may post

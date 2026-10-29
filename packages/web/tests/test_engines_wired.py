@@ -145,7 +145,7 @@ def _scenario_inputs() -> ForecastInputs:
 def test_scenario_page_offers_templates_in_shell() -> None:
     app = _app(_scenario_inputs())
     r = app.handle(Request("GET", "/t/acme/scenarios", _h("owner@acme.com")))
-    assert r.status == 200 and "Scenario planning" in r.body
+    assert r.status == 200 and "<h1>Scenarios</h1>" in r.body
     assert 'class="rg-nav"' in r.body                     # wrapped in the shell
     for label in ("Hire someone", "Customer pays late", "Take a loan", "One-time expense"):
         assert label in r.body
@@ -195,7 +195,7 @@ def _ar_inputs() -> ForecastInputs:
 def test_ar_page_worst_first_with_escalating_tone() -> None:
     app = _app(_ar_inputs())
     r = app.handle(Request("GET", "/t/acme/receivables", _h("owner@acme.com")))
-    assert r.status == 200 and "Receivables" in r.body
+    assert r.status == 200 and "<h1>Collections</h1>" in r.body
     # chase list is worst-first: oldest/biggest invoice ranks first
     assert r.body.index("INV-A") < r.body.index("INV-B") < r.body.index("INV-C")
     # nudge tone escalates with age, most-overdue first

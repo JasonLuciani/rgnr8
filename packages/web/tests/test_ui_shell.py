@@ -97,7 +97,7 @@ def test_team_page_is_gated_and_lists_members() -> None:
     owner_cookie = _cookie_from(app.handle(Request("POST", "/login", {}, "email=owner@acme.com&role=owner")))
     r = app.handle(Request("GET", "/t/acme/team", {"cookie": owner_cookie}))
     assert r.status == 200
-    assert "Team &amp; roles" in r.body
+    assert "<h1>Team</h1>" in r.body
     assert "owner@acme.com" in r.body and "book@acme.com" in r.body
 
     book_cookie = _cookie_from(app.handle(Request("POST", "/login", {}, "email=book@acme.com&role=bookkeeper")))

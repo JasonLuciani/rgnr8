@@ -54,7 +54,7 @@ def test_cash_page_is_in_shell() -> None:
 def test_briefing_page_renders_in_shell() -> None:
     r = _app().handle(Request("GET", "/t/acme/briefing", _h("owner@acme.com")))
     assert r.status == 200
-    assert "This week's briefing" in r.body and "Ask your CFO" in r.body
+    assert "<h1>Weekly briefing</h1>" in r.body and "Ask your CFO" in r.body
     assert "13-week glance" in r.body
     assert "http://" not in r.body and "https://" not in r.body
 

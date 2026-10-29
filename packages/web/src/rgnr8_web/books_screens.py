@@ -146,24 +146,12 @@ def render_books_home(
         + _num(tb.get("total_credit_minor"), ccy)
         + "</tr></tbody></table></div>"
     )
-    actions = (
-        f'<span><a class="btn-link" href="/t/{_esc(tenant)}/books/accounts">Chart of accounts</a>'
-        f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/statements">Statements</a>'
-        f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/gl">General ledger</a>'
-        f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/budget">Budget</a>'
-        f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/reconcile">Reconcile</a>'
-        f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/dimensions">Classes</a>'
-        f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/recurring">Recurring</a>'
-        f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/split">Split account</a>'
-        f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/wip">Work in progress</a>'
-        f' · <a class="btn-link" href="/t/{_esc(tenant)}/inventory">Inventory</a></span>'
-    )
     out = ""
     if message:
         out += _banner("good", message)
     if error:
         out += _banner("warn", error)
-    out += _card("Trial Balance", table, actions)
+    out += _card("Trial balance", table)
     if can_post:
         out += _render_entry_form(tenant, accounts, dimensions or {})
     return out

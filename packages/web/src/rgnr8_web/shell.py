@@ -24,6 +24,7 @@ from rgnr8_forecast.brand import RG_BASE_CSS, RG_TOKENS_CSS, finos_logo_html
 from .assets import font_face_css
 from .audit import AuditEvent
 from .components import Action, metric, page_header, status_chip
+from .page_frame import frame
 from .rbac import Membership, Permission, Role, User
 from .scope import PROVISIONAL_NOTE, is_provisional
 
@@ -223,6 +224,14 @@ _SHELL_CSS = f"""<style>
   .rg-prov-legend{{margin:8px 0}}
   .rg-prov-legend>summary{{cursor:pointer;font:600 12px/1.4 var(--rg-sans);color:var(--rg-muted)}}
   .rg-prov-legend .row-item{{display:flex;gap:8px;align-items:baseline;margin:2px 0}}
+  /* Sub-pages as tabs under the title (they were a run-on line of links). */
+  .rg-tabs{{display:flex;flex-wrap:wrap;gap:4px 18px;margin:-4px 0 16px;
+    border-bottom:1px solid var(--rg-line)}}
+  .rg-tabs a{{padding:8px 0;margin-bottom:-1px;font:600 13px/1.3 var(--rg-sans);
+    color:var(--rg-muted);text-decoration:none;border-bottom:2px solid transparent}}
+  .rg-tabs a:hover{{color:var(--rg-ink)}}
+  .rg-tabs a[aria-current=page]{{color:var(--rg-ink);border-bottom-color:var(--rg-ink)}}
+  .page-foot{{margin-top:28px;padding-top:12px;border-top:1px solid var(--rg-line)}}
   @media(max-width:640px){{
     .rg-nav{{display:none}}
     table{{font-size:12.5px}}
@@ -644,6 +653,22 @@ def _provisional_banner() -> str:
     )
 
 
+# Sections whose screens aren't nav items of their own, and the nav item
+# they belong under.
+_SECTION_ALIASES = {"inbox": "transactions"}
+
+
+def nav_label(section: str) -> str:
+    """The nav label for a section ("" for the cash home's own "" suffix is the
+    home label); "" when the section isn't in the nav."""
+    wanted = _SECTION_ALIASES.get(section, section)
+    for group in _NAV_GROUPS:
+        for item in group.items:
+            if item.suffix == wanted:
+                return item.label
+    return ""
+
+
 def render_shell(
     *,
     tenant: str,
@@ -656,6 +681,7 @@ def render_shell(
     hide_provisional: bool = False,
     available: "frozenset[str] | None" = None,
     deploy_notice: str = "",
+    here: str = "",
 ) -> str:
     """Wrap a screen body in the role-aware app shell (top bar + grouped sidebar).
 
@@ -687,6 +713,11 @@ def render_shell(
     # this tops every screen until the two services match again.
     if deploy_notice:
         body = f'<div class="banner warn" role="alert">{escape(deploy_notice)}</div>' + body
+    # Every screen in the same frame: the nav label as its title, then tabs,
+    # then banners, then the screen, with the labels' legend at the foot.
+    # `here` is the path after /t/<tenant>/ (with query), for the current tab.
+    body = frame(body, title=nav_label(active_suffix), tenant=tenant,
+                 section=active_suffix, here=here or active_suffix)
     nav = _nav_html(tenant, permissions, active,
                     hide_provisional=hide_provisional, available=available)
     layout = (
