@@ -11,6 +11,7 @@ import re
 import pytest
 from test_books import DEFAULT_ROUTES, FakeTransport, _inputs
 
+from rgnr8_copilot import FakeLLM
 from rgnr8_forecast import ForecastConfig, Money
 from rgnr8_web import LedgerClient, Request, WebApp
 from rgnr8_web.page_frame import TABS, frame
@@ -20,7 +21,7 @@ NAV = [(item.suffix, item.label) for group in _NAV_GROUPS for item in group.item
 
 
 def _app() -> WebApp:
-    app = WebApp()
+    app = WebApp(ask_llm=FakeLLM())  # Ask is only a screen when it is switched on
     app.add_tenant("acme", "Acme Co", _inputs(),
                    ForecastConfig(minimum_cash=Money.from_decimal("1000.00")), token="tok")
     app.set_ledger(LedgerClient(FakeTransport(dict(DEFAULT_ROUTES)), token="svc"))
