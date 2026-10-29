@@ -1270,3 +1270,26 @@ def test_a_parallel_run_takes_only_the_mirrors_entries(ledger_service: str) -> N
     assert mirror.status == 201
     entries = app._ledger.entries("parco").body["entries"]
     assert [e["source"] for e in entries] == ["quickbooks"]   # what Refresh checks
+
+
+def test_quickbooks_open_items_reach_the_invoices_screen_through_the_real_service(
+    ledger_service: str,
+) -> None:
+    """A parallel-run account: the snapshot is stored by the real ledger (it
+    posts nothing, so the book-of-record guard lets it through) and Invoices
+    shows QuickBooks' open invoices instead of an empty list."""
+    from types import SimpleNamespace
+
+    _seed(ledger_service, "oico", "PROFESSIONAL_SERVICES")
+    app = _app(ledger_service, ["oico"])
+    assert app._qbo_pin(SimpleNamespace(tenant_id="oico"), "9341453432535209", "2026-09-30") == ""
+    saved = app._ledger.save_open_items("oico", {
+        "as_of": "2026-10-29",
+        "invoices": [{"qbo_id": "130", "number": "1037", "party": "Northwind", "date": "2026-10-01",
+                      "due_date": "2026-10-31", "open_minor": "38995"}],
+        "bills": [],
+    })
+    assert saved.status == 200, saved.body
+    assert app._ledger.entries("oico").body["entries"] == []  # nothing posted
+    page = _req(app, "oico", "/t/oico/invoices").body
+    assert "Open in QuickBooks as of 2026-10-29" in page and "Northwind" in page

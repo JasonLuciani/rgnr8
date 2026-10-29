@@ -421,5 +421,13 @@ export {
   RatiosError,
   type RatiosContext,
 } from "./ratios.js";
-export { rlsDdl, appRoleDdl, superuserWarning, TENANT_TABLES } from "./security.js";
+export { rlsDdl, appRoleDdl, superuserWarning, TENANT_TABLES, TENANT_TABLES_SINCE_RLS } from "./security.js";
+export {
+  InMemoryOpenItemsStore,
+  PgOpenItemsStore,
+  OpenItemsError,
+  type OpenItem,
+  type OpenItemsSnapshot,
+  type OpenItemsStore,
+} from "./openItems.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";

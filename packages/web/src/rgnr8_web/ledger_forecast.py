@@ -44,6 +44,7 @@ from rgnr8_forecast import (
 )
 
 from .ledger_client import LedgerClient, LedgerResponse
+from .open_items import as_forecast_items, read_open_items
 
 LEDGER = "ledger"
 ASSUMPTION = "assumption"
@@ -228,6 +229,16 @@ def read_ledger_facts(
             amount=_money(d.get("open_minor"), currency),
             provenance=Provenance(LEDGER, "bill", doc_id),
         ))
+
+    # A QuickBooks mirror has A/R and A/P balances but no documents behind them,
+    # so the books alone say "nothing is owed" while QuickBooks has invoices open.
+    # Then the open items QuickBooks reported at the last Refresh stand in, as
+    # facts from QuickBooks. Real documents always win: after cutover they exist.
+    if not raw_invoices and not raw_bills:
+        snapshot = read_open_items(ledger, tenant, currency)
+        if snapshot is not None and not snapshot.empty:
+            qbo_invoices, qbo_bills = as_forecast_items(snapshot, as_of, currency)
+            invoices, bills = list(qbo_invoices), list(qbo_bills)
 
     # Payroll liabilities are money already owed on work already done — as much
     # a fact as an unpaid bill, and one businesses routinely forget is coming.

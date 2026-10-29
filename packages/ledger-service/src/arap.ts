@@ -1,4 +1,5 @@
 import {
+  AccountSubtype,
   Money,
   PostingEngine,
   asIdempotencyKey,
@@ -147,11 +148,30 @@ function idFor(chart: ChartOfAccounts, code: string, role: string): AccountId {
   return account.id;
 }
 
-function controls(overrides: Partial<ControlAccounts> | undefined): ControlAccounts {
+/**
+ * The account playing a control role in THIS chart.
+ *
+ * The codes in DEFAULT_CONTROLS are RGNR8's own chart. A chart brought over
+ * from QuickBooks numbers its accounts its own way, and posting an invoice to a
+ * hard-coded "1200" there either fails or hits the wrong account. So: the one
+ * account with the role's subtype; when there are several, the default code if
+ * it is one of them, else the lowest code (deterministic, and the one an
+ * accountant would call "the" A/R account); with none, the default code.
+ */
+function controlCode(chart: ChartOfAccounts, subtype: AccountSubtype, fallback: string): string {
+  const matches = chart.listActive().filter((a) => a.subtype === subtype);
+  if (matches.length === 0) return fallback;
+  if (matches.some((a) => a.code === fallback)) return fallback;
+  return [...matches].sort((a, b) => a.code.localeCompare(b.code))[0]!.code;
+}
+
+function controls(chart: ChartOfAccounts, overrides: Partial<ControlAccounts> | undefined): ControlAccounts {
   return {
-    arCode: overrides?.arCode ?? DEFAULT_CONTROLS.arCode,
-    apCode: overrides?.apCode ?? DEFAULT_CONTROLS.apCode,
-    bankCode: overrides?.bankCode ?? DEFAULT_CONTROLS.bankCode,
+    arCode: overrides?.arCode
+      ?? controlCode(chart, AccountSubtype.ACCOUNTS_RECEIVABLE, DEFAULT_CONTROLS.arCode),
+    apCode: overrides?.apCode
+      ?? controlCode(chart, AccountSubtype.ACCOUNTS_PAYABLE, DEFAULT_CONTROLS.apCode),
+    bankCode: overrides?.bankCode ?? controlCode(chart, AccountSubtype.BANK, DEFAULT_CONTROLS.bankCode),
   };
 }
 
@@ -284,7 +304,7 @@ export async function createDocument(
   const party = await ctx.docs.getParty(ctx.tenant, partyKind, req.party_id);
   if (!party) throw new ArApError(`unknown ${partyKind} ${req.party_id}`);
 
-  const ctrl = controls(req.accounts);
+  const ctrl = controls(ctx.chart, req.accounts);
   const { docLines, records, totalMinor: netMinor } = buildLines(req, ctx.chart, ctx.currency);
   if (netMinor <= 0n) throw new ArApError("a document must total more than zero");
 
@@ -405,7 +425,7 @@ export async function recordPayment(
     );
   }
 
-  const ctrl = controls({ ...accounts, ...(req.bank_code ? { bankCode: req.bank_code } : {}) });
+  const ctrl = controls(ctx.chart, { ...accounts, ...(req.bank_code ? { bankCode: req.bank_code } : {}) });
   const bank = idFor(ctx.chart, ctrl.bankCode, "bank");
   const control = idFor(
     ctx.chart,
@@ -640,7 +660,7 @@ export async function issueCredit(
     );
   }
 
-  const ctrl = controls(req.accounts);
+  const ctrl = controls(ctx.chart, req.accounts);
   const accountCode = primaryAccountOf(doc, req.account_code);
   const creditId = String(req.id ?? "").trim() || `CM-${docId}-${date}`;
   const memo = String(req.memo ?? "").trim() || `Credit against ${docId}`;
@@ -716,7 +736,7 @@ export async function issueRefund(
     );
   }
 
-  const ctrl = controls(req.accounts);
+  const ctrl = controls(ctx.chart, req.accounts);
   const bankCode = String(req.bank_code ?? "").trim() || ctrl.bankCode;
   const accountCode = primaryAccountOf(doc, req.account_code);
   const memo = String(req.memo ?? "").trim() || `Refund of ${docId}`;

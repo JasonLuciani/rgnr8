@@ -97,6 +97,17 @@ export const TENANT_TABLES: readonly string[] = Object.freeze([
  * rather than assumed absent, and each table is guarded so a schema that
  * predates one of them still migrates.
  */
+/**
+ * Tenant tables created after migration 100 (the RLS policies) was applied.
+ * They can't join TENANT_TABLES: migration 100's SQL is built from that list,
+ * and changing an applied migration stops the ledger booting. Each gets its
+ * policy in a later migration instead (see migrations.ts), and the app role is
+ * granted them along with the rest.
+ */
+export const TENANT_TABLES_SINCE_RLS: readonly string[] = Object.freeze([
+  "mirror_open_item", // migration 26, policy in 101
+]);
+
 export function rlsDdl(tables: readonly string[] = TENANT_TABLES): string {
   return tables
     .map(
@@ -139,7 +150,7 @@ function ident(name: string): string {
 export function appRoleDdl(
   role: string,
   password: string,
-  tables: readonly string[] = TENANT_TABLES,
+  tables: readonly string[] = [...TENANT_TABLES, ...TENANT_TABLES_SINCE_RLS],
 ): string {
   const quoted = ident(role);
   if (password.includes("'")) {
