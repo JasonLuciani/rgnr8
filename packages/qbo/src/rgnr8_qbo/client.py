@@ -103,10 +103,27 @@ class QboBankTxn:
     account: str       # the QBO bank account the movement is on
 
 
+_MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august",
+           "september", "october", "november", "december")
+
+
+def fiscal_month(name: str) -> int:
+    """QuickBooks' FiscalYearStartMonth ("July") as a month number; January when
+    it is missing or not a month, which is what QuickBooks assumes too."""
+    text = name.strip().lower()
+    for i, month in enumerate(_MONTHS, start=1):
+        if text and (text == month or (len(text) >= 3 and month.startswith(text))):
+            return i
+    return 1
+
+
 @dataclass(frozen=True, slots=True)
 class QboCompany:
     name: str
     country: str = ""
+    # The month the company's fiscal year starts (1 = January). QuickBooks
+    # names it ("July"); a company that never set one is on the calendar year.
+    fiscal_year_start_month: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,6 +316,9 @@ class QboApiClient:
             out.append({
                 "id": acct_id,
                 "code": self._s(r, "AcctNum") or acct_id,
+                # The account number as QuickBooks holds it, "" when the account
+                # has none and `code` is QuickBooks' internal id instead.
+                "number": self._s(r, "AcctNum"),
                 "name": self._s(r, "Name"),
                 "account_type": self._s(r, "AccountType"),
             })
@@ -340,7 +360,7 @@ class QboApiClient:
 
     def trial_balance(self, *, as_of: str = "") -> list[dict[str, object]]:
         """The company's trial balance as go-live `source_accounts` input rows —
-        {code, name, account_type, debit_minor, credit_minor} — ready for
+        {code, name, account_type, numbered, debit_minor, credit_minor} — ready for
         `qbo_trial_balance_to_source_accounts`. Debit/credit come from the
         TrialBalance report (already balanced by QuickBooks); the code and QBO
         account type come from the chart of accounts, joined by QBO account id.
@@ -371,6 +391,9 @@ class QboApiClient:
                 "code": acct["code"],
                 "name": acct["name"] or str(cols[0].get("value", "")),
                 "account_type": acct["account_type"],
+                # False when `code` is QuickBooks' internal id, not a number the
+                # company gave the account: screens show such accounts by name.
+                "numbered": bool(acct["number"]),
                 "debit_minor": _to_minor(cols[1].get("value")),
                 "credit_minor": _to_minor(cols[2].get("value")),
             })
@@ -442,4 +465,5 @@ class QboApiClient:
         addr = r.get("CompanyAddr")
         if isinstance(addr, dict):
             country = self._s(addr, "Country")
-        return QboCompany(name=self._s(r, "CompanyName"), country=country)
+        return QboCompany(name=self._s(r, "CompanyName"), country=country,
+                          fiscal_year_start_month=fiscal_month(self._s(r, "FiscalYearStartMonth")))

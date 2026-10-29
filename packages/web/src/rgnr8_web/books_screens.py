@@ -86,18 +86,79 @@ def code_order(code: object) -> tuple[object, ...]:
     return tuple((0, int(p), "") if p.isdigit() else (1, 0, p.lower()) for p in parts if p)
 
 
-def render_chart_of_accounts(tenant: str, data: Mapping[str, object]) -> str:
+# Account codes and what they mean to a person. Books mirrored from QuickBooks
+# keep QuickBooks' code for every account, because that is how the two join;
+# for an account QuickBooks has no number for, that code is QuickBooks' internal
+# id ("57"), which means nothing to anyone. The app records which codes those
+# are (`id_codes`), and screens show those accounts by name alone, ordered by
+# type and then name; real account numbers keep showing and sort numerically.
+
+def account_number(code: object, id_codes: frozenset[str] = frozenset()) -> str:
+    """The number to show for an account: its code, or "" when the code is
+    only QuickBooks' internal id."""
+    text = str(code if code is not None else "")
+    return "" if text in id_codes else text
+
+
+def account_label(code: object, name: object,
+                  id_codes: frozenset[str] = frozenset()) -> str:
+    """How an account reads in a list or a picker: "4000 — Sales", or just
+    "Sales" when there's no real number. Plain text; escape it to insert it."""
+    number = account_number(code, id_codes)
+    named = str(name or "")
+    if not named:
+        return str(code if code is not None else "")
+    return f"{number} — {named}" if number else named
+
+
+_TYPE_RANK = {"ASSET": 0, "LIABILITY": 1, "EQUITY": 2, "REVENUE": 3, "EXPENSE": 4}
+
+
+def account_order(code: object, name: object, type_: object,
+                  id_codes: frozenset[str] = frozenset()) -> tuple[object, ...]:
+    """Sort key for accounts on screen. A fully numbered chart sorts by number,
+    as it always has. Where some codes are QuickBooks ids, the number can't
+    carry the order, so accounts go by type (assets, liabilities, equity,
+    income, expenses), numbered ones first by number, then the rest by name."""
+    if not id_codes:
+        return (0, 0, code_order(code), "")
+    rank = _TYPE_RANK.get(str(type_ or ""), len(_TYPE_RANK))
+    if str(code if code is not None else "") in id_codes:
+        return (rank, 1, (), str(name or "").lower())
+    return (rank, 0, code_order(code), "")
+
+
+def account_options(accounts: Mapping[str, object],
+                    id_codes: frozenset[str] = frozenset()) -> str:
+    """<option>s for an account picker, in screen order, each labelled the way
+    `account_label` reads. The value is always the stored code."""
+    listed = sorted((a for a in _seq(accounts.get("accounts")) if isinstance(a, Mapping)),
+                    key=lambda a: account_order(a.get("code"), a.get("name"), a.get("type"),
+                                                id_codes))
+    return "".join(
+        f'<option value="{_esc(a.get("code"))}">'
+        f'{_esc(account_label(a.get("code"), a.get("name"), id_codes))}</option>'
+        for a in listed
+    )
+
+
+def render_chart_of_accounts(tenant: str, data: Mapping[str, object], *,
+                             id_codes: frozenset[str] = frozenset()) -> str:
     accounts = sorted((a for a in _seq(data.get("accounts")) if isinstance(a, Mapping)),
-                      key=lambda a: code_order(a.get("code")))
+                      key=lambda a: account_order(a.get("code"), a.get("name"), a.get("type"),
+                                                  id_codes))
+    # A chart with no real numbers at all drops the column rather than show it empty.
+    numbers = not accounts or any(account_number(a.get("code"), id_codes) for a in accounts)
     rows = []
     for a in accounts:
-        if not isinstance(a, Mapping):
-            continue
         code = _esc(a.get("code"))
         sub = a.get("subtype") or a.get("type")
+        number = (f'<td class="muted">{_esc(account_number(a.get("code"), id_codes))}</td>'
+                  if numbers else "")
         rows.append(
-            f'<tr><td><a href="/t/{_esc(tenant)}/books/accounts/{code}">{code}</a></td>'
-            f"<td>{_esc(a.get('name'))}</td><td>{_esc(a.get('type'))}</td>"
+            f'<tr>{number}'
+            f'<td><a href="/t/{_esc(tenant)}/books/accounts/{code}">{_esc(a.get("name"))}</a></td>'
+            f"<td>{_esc(a.get('type'))}</td>"
             f'<td class="muted">{_esc(sub)}</td></tr>'
         )
     empty = (
@@ -105,8 +166,9 @@ def render_chart_of_accounts(tenant: str, data: Mapping[str, object]) -> str:
         "No accounts yet — this business's chart hasn't been set up.</td></tr>"
     )
     table = (
-        '<div class="table-scroll"><table><thead><tr><th>Code</th><th>Account</th>'
-        "<th>Type</th><th>Detail type</th></tr></thead><tbody>"
+        '<div class="table-scroll"><table><thead><tr>'
+        + ("<th>No.</th>" if numbers else "")
+        + "<th>Account</th><th>Type</th><th>Detail type</th></tr></thead><tbody>"
         + ("".join(rows) or empty)
         + "</tbody></table></div>"
     )
@@ -124,6 +186,7 @@ def render_books_home(
     can_post: bool,
     message: str = "",
     error: str = "",
+    id_codes: frozenset[str] = frozenset(),
 ) -> str:
     ccy = str(tb.get("currency", "USD"))
     out = ""
@@ -140,9 +203,9 @@ def render_books_home(
         out += _banner("good", "In balance — total debits equal total credits")
     else:
         out += _banner("warn", "OUT OF BALANCE — this should never happen; contact support")
-    out += render_accounts_by_type(tenant, accounts, tb, ccy)
+    out += render_accounts_by_type(tenant, accounts, tb, ccy, id_codes=id_codes)
     if can_post:
-        out += _render_entry_form(tenant, accounts, dimensions or {})
+        out += _render_entry_form(tenant, accounts, dimensions or {}, id_codes=id_codes)
     return out
 
 
@@ -156,20 +219,25 @@ _TYPE_ORDER = (
 
 def render_accounts_by_type(
     tenant: str, accounts: Mapping[str, object], tb: Mapping[str, object], ccy: str,
+    *, id_codes: frozenset[str] = frozenset(),
 ) -> str:
     """The Ledger's opening view: every account under its type, with its balance
     in the direction people read it (what you owe as a positive amount owed),
-    numbers in numeric order, and a total per type."""
+    numbers in numeric order, and a total per type. An account with no real
+    number sorts by name with its number left blank; a chart with no numbers at
+    all drops the column."""
     balances: dict[str, int] = {}
     for r in _seq(tb.get("rows")):
         if isinstance(r, Mapping):
             balances[str(r.get("code"))] = (_minor(r.get("debit_minor")) or 0) - (
                 _minor(r.get("credit_minor")) or 0)
     listed = [a for a in _seq(accounts.get("accounts")) if isinstance(a, Mapping)]
+    numbers = any(account_number(a.get("code"), id_codes) for a in listed)
+    cols = 3 if numbers else 2
     sections = []
     for kind, heading, sign in _TYPE_ORDER:
         mine = sorted((a for a in listed if str(a.get("type")) == kind),
-                      key=lambda a: code_order(a.get("code")))
+                      key=lambda a: account_order(a.get("code"), a.get("name"), kind, id_codes))
         if not mine:
             continue
         total = 0
@@ -178,13 +246,15 @@ def render_accounts_by_type(
             code = _esc(a.get("code"))
             amount = sign * balances.get(str(a.get("code")), 0)
             total += amount
+            number = (f'<td class="muted">{_esc(account_number(a.get("code"), id_codes))}</td>'
+                      if numbers else "")
             body.append(
                 f'<tr><td><a href="/t/{_esc(tenant)}/books/accounts/{code}">{_esc(a.get("name"))}</a></td>'
-                f'<td class="muted">{code}</td>{_num(amount, ccy)}</tr>'
+                f"{number}{_num(amount, ccy)}</tr>"
             )
         sections.append(
-            f'<tr class="rg-eyebrow"><td colspan="3">{_esc(heading)}</td></tr>' + "".join(body)
-            + f'<tr style="font-weight:700"><td colspan="2">Total {_esc(heading.lower())}</td>'
+            f'<tr class="rg-eyebrow"><td colspan="{cols}">{_esc(heading)}</td></tr>' + "".join(body)
+            + f'<tr style="font-weight:700"><td colspan="{cols - 1}">Total {_esc(heading.lower())}</td>'
             f"{_num(total, ccy)}</tr>"
         )
     if not sections:
@@ -192,24 +262,30 @@ def render_accounts_by_type(
                  "set up.</p>")
     else:
         table = (
-            '<div class="table-scroll"><table><thead><tr><th>Account</th><th>No.</th>'
-            '<th class="num">Balance</th></tr></thead><tbody>' + "".join(sections)
+            '<div class="table-scroll"><table><thead><tr><th>Account</th>'
+            + ("<th>No.</th>" if numbers else "")
+            + '<th class="num">Balance</th></tr></thead><tbody>' + "".join(sections)
             + "</tbody></table></div>"
         )
     return _card("Accounts", table)
 
 
-def render_trial_balance(tenant: str, tb: Mapping[str, object]) -> str:
+def render_trial_balance(tenant: str, tb: Mapping[str, object], *,
+                         id_codes: frozenset[str] = frozenset()) -> str:
     """Every account's debit or credit balance, and that the two sides agree."""
     ccy = str(tb.get("currency", "USD"))
     rows = []
     ordered = sorted((r for r in _seq(tb.get("rows")) if isinstance(r, Mapping)),
-                     key=lambda r: code_order(r.get("code")))
+                     key=lambda r: account_order(r.get("code"), r.get("name"), r.get("type"),
+                                                 id_codes))
+    numbers = not ordered or any(account_number(r.get("code"), id_codes) for r in ordered)
     for r in ordered:
         code = _esc(r.get("code"))
+        number = (f'<td class="muted">{_esc(account_number(r.get("code"), id_codes))}</td>'
+                  if numbers else "")
         rows.append(
-            f'<tr><td><a href="/t/{_esc(tenant)}/books/accounts/{code}">{code}</a></td>'
-            f"<td>{_esc(r.get('name'))}</td>"
+            f"<tr>{number}"
+            f'<td><a href="/t/{_esc(tenant)}/books/accounts/{code}">{_esc(r.get("name"))}</a></td>'
             f"{_num(r.get('debit_minor'), ccy)}{_num(r.get('credit_minor'), ccy)}</tr>"
         )
     empty = (
@@ -224,10 +300,11 @@ def render_trial_balance(tenant: str, tb: Mapping[str, object]) -> str:
     )
     table = (
         balance_banner
-        + '<div class="table-scroll"><table><thead><tr><th>Code</th><th>Account</th>'
-        '<th class="num">Debit</th><th class="num">Credit</th></tr></thead><tbody>'
+        + '<div class="table-scroll"><table><thead><tr>'
+        + ("<th>No.</th>" if numbers else "")
+        + '<th>Account</th><th class="num">Debit</th><th class="num">Credit</th></tr></thead><tbody>'
         + ("".join(rows) or empty)
-        + '<tr style="font-weight:700"><td colspan="2">Totals</td>'
+        + f'<tr style="font-weight:700"><td colspan="{2 if numbers else 1}">Totals</td>'
         + _num(tb.get("total_debit_minor"), ccy)
         + _num(tb.get("total_credit_minor"), ccy)
         + "</tr></tbody></table></div>"
@@ -238,14 +315,9 @@ def render_trial_balance(tenant: str, tb: Mapping[str, object]) -> str:
 def _render_entry_form(
     tenant: str, accounts: Mapping[str, object],
     dimensions: Mapping[str, object] | None = None,
+    *, id_codes: frozenset[str] = frozenset(),
 ) -> str:
-    options = []
-    for a in _seq(accounts.get("accounts")):
-        if not isinstance(a, Mapping):
-            continue
-        code = _esc(a.get("code"))
-        options.append(f'<option value="{code}">{code} — {_esc(a.get("name"))}</option>')
-    opts = "".join(options)
+    opts = account_options(accounts, id_codes)
     if not opts:
         return _card(
             "Record a transaction",
@@ -287,7 +359,8 @@ def _render_entry_form(
 
 # --- account register --------------------------------------------------------
 
-def render_register(tenant: str, reg: Mapping[str, object]) -> str:
+def render_register(tenant: str, reg: Mapping[str, object], *,
+                    id_codes: frozenset[str] = frozenset()) -> str:
     rows = []
     for r in _seq(reg.get("rows")):
         if not isinstance(r, Mapping):
@@ -313,13 +386,14 @@ def render_register(tenant: str, reg: Mapping[str, object]) -> str:
         + "</tr></tbody></table></div>"
     )
     back = f'<a class="btn-link" href="/t/{_esc(tenant)}/books">Back to books</a>'
-    return _card(f"{_esc(reg.get('code'))} — {_esc(reg.get('name'))}", table, back)
+    return _card(account_label(reg.get("code"), reg.get("name"), id_codes), table, back)
 
 
 # --- statements from the client's own books ----------------------------------
 
 def render_books_statements(
     period: str, data: Mapping[str, object], *, sealed: bool = False,
+    id_codes: frozenset[str] = frozenset(),
 ) -> str:
     ccy = str(data.get("currency", "USD"))
     income = data.get("income_statement")
@@ -336,7 +410,8 @@ def render_books_statements(
     if isinstance(income, Mapping):
         def lines(key: str) -> str:
             return "".join(
-                f"<tr><td>{_esc(l.get('code'))}</td><td>{_esc(l.get('name'))}</td>"
+                f"<tr><td>{_esc(account_number(l.get('code'), id_codes))}</td>"
+                f"<td>{_esc(l.get('name'))}</td>"
                 f"{_num(_cents(l.get('amount')), ccy)}</tr>"
                 for l in _seq(income.get(key))
                 if isinstance(l, Mapping)
@@ -365,7 +440,8 @@ def render_books_statements(
         )
         def section(key: str, label: str) -> str:
             body = "".join(
-                f"<tr><td>{_esc(l.get('code'))}</td><td>{_esc(l.get('name'))}</td>"
+                f"<tr><td>{_esc(account_number(l.get('code'), id_codes))}</td>"
+                f"<td>{_esc(l.get('name'))}</td>"
                 f"{_num(_cents(l.get('amount')), ccy)}</tr>"
                 for l in _seq(bs.get(key))
                 if isinstance(l, Mapping)

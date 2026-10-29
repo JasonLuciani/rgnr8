@@ -41,6 +41,14 @@ class TenantState:
     # The optional modules this business has switched on (see `modules`);
     # None for a business that never chose, which means all of them off.
     modules: list[str] | None = None
+    # The account codes in these books that are QuickBooks' internal ids, not
+    # account numbers (QuickBooks has no number for those accounts). Recorded
+    # from QuickBooks at go-live and on every Refresh; None until then, which
+    # shows every code as a number, as before.
+    qbo_id_codes: list[str] | None = None
+    # The month this business's fiscal year starts (1 = January), from
+    # QuickBooks on Refresh or set in Settings; None means January.
+    fiscal_year_start_month: int | None = None
 
     @property
     def min_cash_override(self) -> Money | None:
@@ -58,6 +66,8 @@ class TenantState:
             "decisions": list(self.decisions),
             "cost_baseline": self.cost_baseline,
             "modules": self.modules,
+            "qbo_id_codes": self.qbo_id_codes,
+            "fiscal_year_start_month": self.fiscal_year_start_month,
         }
 
     @staticmethod
@@ -67,6 +77,8 @@ class TenantState:
         decisions_obj = d.get("decisions")
         baseline = d.get("cost_baseline")
         modules = d.get("modules")
+        id_codes = d.get("qbo_id_codes")
+        fy_month = d.get("fiscal_year_start_month")
         payment_overrides: dict[str, int] = {}
         if isinstance(overrides_obj, dict):
             payment_overrides = {str(k): int(v) for k, v in overrides_obj.items()}
@@ -79,6 +91,10 @@ class TenantState:
             decisions=decisions,
             cost_baseline=dict(baseline) if isinstance(baseline, dict) else None,
             modules=[str(m) for m in modules] if isinstance(modules, list) else None,
+            qbo_id_codes=[str(c) for c in id_codes] if isinstance(id_codes, list) else None,
+            fiscal_year_start_month=(fy_month if isinstance(fy_month, int)
+                                     and not isinstance(fy_month, bool) and 1 <= fy_month <= 12
+                                     else None),
         )
 
 

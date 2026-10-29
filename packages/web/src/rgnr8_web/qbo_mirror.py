@@ -44,6 +44,10 @@ class MirrorResult:
     up_to_date: bool = False
     error: str = ""
     mismatches: list[str] = field(default_factory=list)
+    # For each account read from QuickBooks: True when its code is QuickBooks'
+    # account number, False when it is QuickBooks' internal id (the account has
+    # no number). Empty when the trial balance couldn't be read.
+    numbered: dict[str, bool] = field(default_factory=dict)
 
     def describe(self) -> str:
         if not self.ok:
@@ -105,10 +109,13 @@ def refresh_mirror(client: Any, ledger: Any, tenant: str, *, as_of: str) -> Mirr
         return MirrorResult(False, error=f"could not read the QuickBooks trial balance: {plain_qbo_error(exc)}")
     target: dict[str, int] = {}
     meta: dict[str, dict[str, object]] = {}
+    numbered: dict[str, bool] = {}
     for r in qbo_rows:
         code = str(r.get("code", "")).strip()
         target[code] = target.get(code, 0) + _int(r.get("debit_minor")) - _int(r.get("credit_minor"))
         meta[code] = r
+        if "numbered" in r:
+            numbered[code] = bool(r["numbered"])
     if sum(target.values()) != 0:
         return MirrorResult(False, error=(
             f"the trial balance read from QuickBooks is out of balance by "
@@ -142,7 +149,7 @@ def refresh_mirror(client: Any, ledger: Any, tenant: str, *, as_of: str) -> Mirr
               for code in set(target) | set(ours)}
     deltas = {c: d for c, d in deltas.items() if d != 0}
     if not deltas:
-        return MirrorResult(True, accounts_created=created, up_to_date=True)
+        return MirrorResult(True, accounts_created=created, up_to_date=True, numbered=numbered)
 
     lines = [{"code": c, "side": "DEBIT" if d > 0 else "CREDIT", "amount_minor": str(abs(d))}
              for c, d in sorted(deltas.items())]
@@ -170,7 +177,8 @@ def refresh_mirror(client: Any, ledger: Any, tenant: str, *, as_of: str) -> Mirr
     entry_id = str(entry.get("id")) if isinstance(entry, dict) else ""
     if mismatches:
         return MirrorResult(False, accounts_moved=len(deltas), accounts_created=created,
-                            entry_id=entry_id, mismatches=mismatches,
+                            entry_id=entry_id, mismatches=mismatches, numbered=numbered,
                             error=f"{len(mismatches)} account(s) still differ from QuickBooks")
     return MirrorResult(True, accounts_moved=len(deltas), accounts_created=created,
-                        moved_minor=sum(abs(d) for d in deltas.values()) // 2, entry_id=entry_id)
+                        moved_minor=sum(abs(d) for d in deltas.values()) // 2, entry_id=entry_id,
+                        numbered=numbered)

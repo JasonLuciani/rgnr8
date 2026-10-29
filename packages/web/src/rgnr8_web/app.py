@@ -201,7 +201,7 @@ from .parallel_run import (
 )
 from .debt_screens import render_debt, render_debt_unavailable, render_loan_detail
 from .asset_screens import render_asset_detail, render_assets, render_assets_unavailable
-from .health_screens import render_health, render_health_unavailable
+from .health_screens import fiscal_year_start, render_health, render_health_unavailable
 from .ask_screens import render_ask, render_ask_unavailable
 from .copilot_bridge import AskService, LedgerReaderAdapter, copilot_scopes
 from rgnr8_copilot import AskAnswer, Conversation, LLMProvider
@@ -2554,6 +2554,7 @@ class WebApp:
             can_post=can_post,
             message=query.get("posted", ""),
             error=query.get("err", ""),
+            id_codes=self._id_codes(t),
         )
         return self._shell(subject, t, "books", body)
 
@@ -2563,7 +2564,8 @@ class WebApp:
         res = self._ledger.trial_balance(t.tenant_id)
         if not res.ok:
             return self._shell(subject, t, "books", render_books_unavailable(res.error()))
-        return self._shell(subject, t, "books", render_trial_balance(t.tenant_id, res.body))
+        return self._shell(subject, t, "books", render_trial_balance(
+            t.tenant_id, res.body, id_codes=self._id_codes(t)))
 
     def _books_accounts_page(self, subject: str, t: _Tenant) -> Response:
         if self._ledger is None:
@@ -2571,7 +2573,8 @@ class WebApp:
         res = self._ledger.accounts(t.tenant_id)
         if not res.ok:
             return self._shell(subject, t, "books", render_books_unavailable(res.error()))
-        return self._shell(subject, t, "books", render_chart_of_accounts(t.tenant_id, res.body))
+        return self._shell(subject, t, "books", render_chart_of_accounts(
+            t.tenant_id, res.body, id_codes=self._id_codes(t)))
 
     def _books_register_page(self, subject: str, t: _Tenant, code: str) -> Response:
         if self._ledger is None:
@@ -2579,7 +2582,8 @@ class WebApp:
         res = self._ledger.register(t.tenant_id, code)
         if not res.ok:
             return self._shell(subject, t, "books", render_books_unavailable(res.error()))
-        return self._shell(subject, t, "books", render_register(t.tenant_id, res.body))
+        return self._shell(subject, t, "books", render_register(
+            t.tenant_id, res.body, id_codes=self._id_codes(t)))
 
     def _books_split_page(self, subject: str, t: _Tenant, method: str, body: str) -> Response:
         """The guided commingled-account split (A-2). Reads the tenant's imported
@@ -2975,6 +2979,7 @@ class WebApp:
             dimensions=dims.body if dims.ok else {},
             can_post=can_post,
             message=query.get("done", ""), error=query.get("err", ""),
+            id_codes=self._id_codes(t),
         )
         return self._shell(subject, t, "inbox", body)
 
@@ -3054,6 +3059,7 @@ class WebApp:
             t.tenant_id, res.body, accounts.body if accounts.ok else {},
             can_post=can_post,
             message=query.get("done", ""), error=query.get("err", ""),
+            id_codes=self._id_codes(t),
         )
         return self._shell(subject, t, "inbox", body)
 
@@ -4254,6 +4260,7 @@ class WebApp:
             accounts.body if accounts.ok else {}, as_of,
             can_post=can_post,
             message=query.get("done", ""), error=query.get("err", ""),
+            id_codes=self._id_codes(t),
         ))
 
     def _recurring_save(self, subject: str, t: _Tenant, body: str) -> Response:
@@ -4415,7 +4422,8 @@ class WebApp:
         if not res.ok:
             return self._shell(subject, t, "books", render_books_unavailable(res.error()))
         return self._shell(subject, t, "books",
-                           render_general_ledger(t.tenant_id, res.body, frm=frm, to=to))
+                           render_general_ledger(t.tenant_id, res.body, frm=frm, to=to,
+                                                 id_codes=self._id_codes(t)))
 
     def _budget_period(self, t: _Tenant, query: "dict[str, str]") -> str:
         period = query.get("period", "").strip()
@@ -4435,6 +4443,7 @@ class WebApp:
             t.tenant_id, period, res.body, accounts.body if accounts.ok else {},
             can_post=can_post,
             message=query.get("done", ""), error=query.get("err", ""),
+            id_codes=self._id_codes(t),
         ))
 
     def _budget_save(self, subject: str, t: _Tenant, body: str) -> Response:
@@ -4483,7 +4492,8 @@ class WebApp:
         res = self._ledger.accounts(t.tenant_id)
         if not res.ok:
             return self._shell(subject, t, "books", render_books_unavailable(res.error()))
-        return self._shell(subject, t, "books", render_pick_account(t.tenant_id, res.body))
+        return self._shell(subject, t, "books", render_pick_account(
+            t.tenant_id, res.body, id_codes=self._id_codes(t)))
 
     def _reconcile_page(
         self, subject: str, t: _Tenant, code: str, query: "dict[str, str]"
@@ -4595,7 +4605,8 @@ class WebApp:
         board = self._close.get(t.tenant_id)
         sealed = bool(board and board.sealed and board.period == frm[:7])
         return self._shell(subject, t, "books",
-                           render_books_statements(f"{frm} to {to}", res.body, sealed=sealed))
+                           render_books_statements(f"{frm} to {to}", res.body, sealed=sealed,
+                                                   id_codes=self._id_codes(t)))
 
     def _books_post_entry(self, subject: str, t: _Tenant, body: str) -> Response:
         """Post a journal entry from the owner form. Amounts are parsed exactly;
@@ -5265,9 +5276,12 @@ class WebApp:
             else:
                 raw = res.body.get("settings", {})
                 current = raw if isinstance(raw, dict) else {}
+                state = self._store.load(t.tenant_id)
                 body = render_settings(
                     t.tenant_id, current,
-                    modules_on=enabled_modules(self._store.load(t.tenant_id).modules),
+                    modules_on=enabled_modules(state.modules),
+                    fiscal_year_start_month=state.fiscal_year_start_month or 1,
+                    mirrors_quickbooks=str(current.get("book_of_record") or "") == "quickbooks",
                     can_manage_settings=can_settings,
                     can_manage_retention=can_retention,
                     can_erase=can_erase,
@@ -5295,6 +5309,17 @@ class WebApp:
         if self._ledger is None:
             return _redirect(f"{back}?err=No+ledger+service+configured")
         data = self._form_or_json(body)
+        # The fiscal year start lives with this app's state, not the ledger's
+        # settings: it only decides which dates a "year to date" figure covers.
+        fiscal_changed = False
+        raw_month = str(data.get("fiscal_year_start_month", "")).strip()
+        if raw_month:
+            if raw_month not in {str(i) for i in range(1, 13)}:
+                return _redirect(f"{back}?err=Choose+the+month+your+fiscal+year+starts+in")
+            t.state = self._store.load(t.tenant_id)  # on top of what's stored now
+            if t.state.fiscal_year_start_month != int(raw_month):
+                t.state.fiscal_year_start_month = int(raw_month)
+                fiscal_changed = True
         patch: dict[str, object] = {}
         for key in ("inventory_costing_method", "base_currency", "multi_currency_enabled"):
             if str(data.get(key, "")).strip():
@@ -5309,11 +5334,15 @@ class WebApp:
                 if not may_retention:
                     return _redirect(f"{back}?err=Changing+retention+needs+the+Manage+data+retention+permission")
                 patch[key] = str(data.get(key, "")).strip()
-        if not patch:
+        if not patch and not fiscal_changed:
             return _redirect(f"{back}?done=Nothing+to+change")
-        res = self._ledger.save_settings(t.tenant_id, patch)
-        if not res.ok:
-            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if patch:
+            res = self._ledger.save_settings(t.tenant_id, patch)
+            if not res.ok:
+                return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        if fiscal_changed:
+            self._store.save(t.tenant_id, t.state)
+            patch["fiscal_year_start_month"] = raw_month
         if self._audit is not None:
             self._audit.record(subject, "settings.saved", self._session_clock(),
                                tenant_id=t.tenant_id, target=",".join(sorted(patch.keys())))
@@ -5504,7 +5533,34 @@ class WebApp:
         res = self._ledger.ratios(t.tenant_id, as_of=query.get("as_of", ""))
         if not res.ok:
             return self._shell(subject, t, "health", render_health_unavailable(res.error()))
-        return self._shell(subject, t, "health", render_health(t.tenant_id, res.body))
+        return self._shell(subject, t, "health", render_health(
+            t.tenant_id, res.body, fiscal=self._fiscal_year_to_date(t, res.body)))
+
+    def _fiscal_year_to_date(
+        self, t: _Tenant, ratios: Mapping[str, object],
+    ) -> "dict[str, object] | None":
+        """Revenue and net income from the start of this business's fiscal year to
+        the health page's as-of date, from the books' own income statement. None
+        when it can't be read, and the page says what its figures cover instead."""
+        assert self._ledger is not None
+        try:
+            end = date.fromisoformat(str(ratios.get("as_of") or self._today(t)))
+        except ValueError:
+            return None
+        month = self._store.load(t.tenant_id).fiscal_year_start_month or 1
+        start = fiscal_year_start(end, month)
+        res = self._ledger.statements(t.tenant_id, start.isoformat(), end.isoformat())
+        income = res.body.get("income_statement") if res.ok else None
+        if not isinstance(income, Mapping):
+            return None
+
+        def minor(v: object) -> "int | None":
+            # financial-statements/1 carries minor units as JSON numbers.
+            return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+        return {"start": start, "end": end, "start_month": month,
+                "revenue_minor": minor(income.get("total_revenue")),
+                "net_income_minor": minor(income.get("net_income"))}
 
     # --- Ask RGNR8 (conversational finance) ---------------------------------
     # Display cap: how many past exchanges to render (the copilot separately trims
@@ -6512,6 +6568,53 @@ class WebApp:
         problem = self._qbo_pin(t, realm, "")
         return "" if not problem else f"couldn't pin the QuickBooks company ({problem}); nothing was changed"
 
+    def _record_quickbooks_facts(
+        self, t: _Tenant, *, numbered: "Mapping[str, bool] | None" = None,
+        fiscal_month: "int | None" = None,
+    ) -> None:
+        """Remember two things QuickBooks knows about these books that the ledger
+        doesn't hold: which account codes are QuickBooks' internal ids rather
+        than account numbers, and the month the fiscal year starts.
+
+        A refresh only reads accounts with a balance, so an account it didn't
+        see keeps what was recorded for it before. Saved on top of what's stored
+        now, so a change made through the other worker isn't written over."""
+        if not numbered and fiscal_month is None:
+            return
+        t.state = self._store.load(t.tenant_id)
+        if numbered:
+            ids = set(t.state.qbo_id_codes or ())
+            ids -= {code for code, has_number in numbered.items() if has_number}
+            ids |= {code for code, has_number in numbered.items() if not has_number}
+            t.state.qbo_id_codes = sorted(ids)
+        if fiscal_month is not None:
+            t.state.fiscal_year_start_month = fiscal_month
+        self._store.save(t.tenant_id, t.state)
+
+    @staticmethod
+    def _numbering(client: object, seen: "Mapping[str, bool]") -> "dict[str, bool]":
+        """Which codes are account numbers, for the whole QuickBooks chart. The
+        refresh's trial balance (`seen`) only lists accounts with a balance, so
+        books brought over before this was recorded would otherwise keep showing
+        ids for every account at zero today. One more read of the chart; if it
+        fails, what the trial balance showed is still recorded."""
+        out: dict[str, bool] = {}
+        try:
+            chart = client.chart_of_accounts(include_inactive=True)  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001 - the trial balance's answer stands
+            chart = []
+        for a in chart if isinstance(chart, list) else []:
+            if isinstance(a, dict) and "number" in a and a.get("code"):
+                out[str(a["code"])] = bool(a["number"])
+        out.update(seen)
+        return out
+
+    def _id_codes(self, t: _Tenant) -> frozenset[str]:
+        """The account codes to show by name, not as numbers (see
+        `_record_quickbooks_facts`). Read from the store each time so both
+        workers agree."""
+        return frozenset(self._store.load(t.tenant_id).qbo_id_codes or ())
+
     def _qbo_has_ledger(self, t: _Tenant) -> bool:
         """True when the ledger already holds a chart of accounts for this tenant —
         read from the ledger itself, so a restart can't forget it."""
@@ -6556,6 +6659,7 @@ class WebApp:
         t.inputs = merge_refresh(t.inputs, inputs)
         t._dirty = True
         self._qbo_last_sync[t.tenant_id] = summary
+        self._record_quickbooks_facts(t, fiscal_month=summary.fiscal_year_start_month)
         if self._audit is not None:
             self._audit.record(subject, "qbo.synced", self._session_clock(),
                                tenant_id=t.tenant_id,
@@ -6577,6 +6681,7 @@ class WebApp:
                     "bring over your chart of accounts and balances first — a refresh "
                     "keeps an existing mirror current, it doesn't create one"))
             mirror = refresh_mirror(client, self._ledger, t.tenant_id, as_of=as_of.isoformat())
+            self._record_quickbooks_facts(t, numbered=self._numbering(client, mirror.numbered))
             detail = mirror.describe()
             if mirror.mismatches:
                 detail += ": " + "; ".join(mirror.mismatches[:3])
@@ -6628,6 +6733,12 @@ class WebApp:
             if problem:
                 message += f" (couldn't pin the QuickBooks company yet: {problem})"
             mirror = refresh_mirror(client, self._ledger, t.tenant_id, as_of=today.isoformat())
+            try:
+                fiscal: int | None = client.company_info().fiscal_year_start_month
+            except Exception:  # noqa: BLE001 - the next Refresh reads it again
+                fiscal = None
+            self._record_quickbooks_facts(t, numbered=self._numbering(client, mirror.numbered),
+                                          fiscal_month=fiscal)
             message += f" (opening balances as of {cutover}); then {mirror.describe()}"
             if mirror.ok:
                 problem = self._store_open_items(t, client, today)

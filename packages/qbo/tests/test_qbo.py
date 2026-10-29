@@ -461,6 +461,19 @@ def test_api_client_query_builds_url_and_auth() -> None:
     assert "minorversion=65" in url
     assert "from+CompanyInfo" in url or "from%20CompanyInfo" in url
     assert headers["Authorization"] == "Bearer tok-abc"
+    assert company.fiscal_year_start_month == 1   # none set: the calendar year
+
+
+def test_company_info_reads_the_fiscal_year_start() -> None:
+    from rgnr8_qbo import QboApiClient
+    from rgnr8_qbo.client import fiscal_month
+
+    http = FakeHttp([_qr({"CompanyInfo": [
+        {"CompanyName": "Sandbox Co", "FiscalYearStartMonth": "July"}]})])
+    client = QboApiClient(http=http, api_base="https://sandbox-quickbooks.api.intuit.com",
+                          realm_id="R9", access_token="tok-abc")
+    assert client.company_info().fiscal_year_start_month == 7
+    assert [fiscal_month(m) for m in ("October", "oct", "", "Smarch", "ma")] == [10, 10, 1, 1, 1]
 
 
 def test_api_client_bank_accounts() -> None:
