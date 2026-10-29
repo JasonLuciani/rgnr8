@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from .books_screens import _card, _esc
+from .modules import OPTIONAL_MODULES
 
 
 def _options(values: list[tuple[str, str]], selected: str = "") -> str:
@@ -29,6 +30,22 @@ def render_settings_unavailable(detail: str = "") -> str:
     )
 
 
+def _modules_form(tenant: str, on: frozenset[str]) -> str:
+    """One switch per optional module. Off takes it out of the sidebar only."""
+    rows = "".join(
+        '<label class="rg-check"><input type="checkbox" name="module" '
+        f'value="{_esc(key)}"{" checked" if key in on else ""}>'
+        f'<span><strong>{_esc(label)}</strong> <span class="muted">{_esc(what)}</span></span></label>'
+        for key, (label, what) in OPTIONAL_MODULES.items()
+    )
+    return (
+        '<p class="muted">Show only what this business uses. Switching a module off '
+        "takes it out of the sidebar; its pages and records stay.</p>"
+        f'<form method="post" action="/t/{_esc(tenant)}/settings/modules">{rows}'
+        '<button class="btn" type="submit" style="margin-top:10px">Save modules</button></form>'
+    )
+
+
 def render_settings(
     tenant: str,
     settings: Mapping[str, object],
@@ -36,6 +53,7 @@ def render_settings(
     can_manage_settings: bool,
     can_manage_retention: bool,
     can_erase: bool,
+    modules_on: frozenset[str] = frozenset(),
     done: str = "",
     error: str = "",
 ) -> str:
@@ -81,6 +99,8 @@ def render_settings(
     )
 
     sections = [_card("Account options", options_form)]
+    if can_manage_settings:
+        sections.append(_card("Modules", _modules_form(tenant, modules_on)))
 
     # --- data retention (MANAGE_DATA_RETENTION) ---
     if can_manage_retention:

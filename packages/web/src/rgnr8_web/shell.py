@@ -24,6 +24,8 @@ from rgnr8_forecast.brand import RG_BASE_CSS, RG_TOKENS_CSS, finos_logo_html
 from .assets import font_face_css
 from .audit import AuditEvent
 from .components import Action, metric, page_header, status_chip
+from .modules import OPTIONAL_MODULES
+from .modules import capability as module_capability
 from .page_frame import frame
 from .rbac import Membership, Permission, Role, User
 from .scope import PROVISIONAL_NOTE, is_provisional
@@ -235,10 +237,23 @@ _SHELL_CSS = f"""<style>
   .more-reports>summary{{cursor:pointer;font:600 13px/1.4 var(--rg-sans);color:var(--rg-muted)}}
   .page-foot{{margin-top:28px;padding-top:12px;border-top:1px solid var(--rg-line)}}
   @media(max-width:640px){{
-    .rg-nav{{display:none}}
     table{{font-size:12.5px}}
     th,td{{padding:9px 10px}}
+    /* A wide table scrolls inside itself instead of pushing the page sideways. */
+    .shell table{{display:block;max-width:100%;overflow-x:auto}}
+    .shell{{padding:18px 14px 48px}}
   }}
+  /* Fingers, not cursors: 44px targets wherever the nav is a phone menu or the
+     pointer is coarse (they were ~32px). */
+  @media (max-width:860px),(pointer:coarse){{
+    .rg-nav a,.rg-tabs a{{min-height:44px;display:flex;align-items:center}}
+    .btn,.chip,button{{min-height:44px}}
+    .rg-navwrap>summary{{min-height:44px;display:flex;align-items:center}}
+  }}
+  .chip{{max-width:100%;white-space:normal;text-align:left}}
+  .rg-check{{display:flex;gap:10px;align-items:flex-start;margin:10px 0;font:400 14px/1.4 var(--rg-sans);
+    letter-spacing:0;text-transform:none;color:var(--rg-ink)}}
+  .rg-check input{{width:auto;margin-top:3px}}
 </style>"""
 
 _ASSIGNABLE_ROLES = [r for r in Role if not r.is_platform]
@@ -622,6 +637,10 @@ def _nav_html(
                 continue
             if item.needs and available is not None and item.needs not in available:
                 continue
+            # An optional module shows only where this business switched it on.
+            if (item.suffix in OPTIONAL_MODULES and available is not None
+                    and module_capability(item.suffix) not in available):
+                continue
             provisional = is_provisional(item.suffix)
             if provisional and hide_provisional:
                 continue
@@ -642,6 +661,10 @@ def _nav_html(
     return (
         '<details class="rg-navwrap" open><summary aria-label="Menu">Menu</summary>'
         '<nav class="rg-nav" aria-label="Sections">' + "".join(groups_html) + "</nav></details>"
+        + script_open()
+        + "if(window.matchMedia&&matchMedia('(max-width:860px)').matches){"
+          "var w=document.querySelector('.rg-navwrap');if(w)w.removeAttribute('open');}"
+        + "</script>"
     )
 
 

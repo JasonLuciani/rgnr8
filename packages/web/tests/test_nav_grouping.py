@@ -145,7 +145,14 @@ def test_wiring_a_capability_brings_its_screens_back() -> None:
 
     app.set_ledger(_StubLedger())          # type: ignore[arg-type]
     body = _page(app, path="/t/acme/team")
-    assert {"Invoices", "Bills", "Projects", "Estimates", "Ledger"} <= set(_nav_labels(body))
+    assert {"Invoices", "Bills", "Ledger"} <= set(_nav_labels(body))
+    # Projects and Estimates are optional modules: wired, but off until this
+    # business switches them on.
+    assert not {"Projects", "Estimates"} & set(_nav_labels(body))
+    state = app._store.load("acme")
+    state.modules = ["jobs", "estimates"]
+    app._store.save("acme", state)
+    assert {"Projects", "Estimates"} <= set(_nav_labels(_page(app, path="/t/acme/team")))
     # and the group headings come back with them
     assert {"Money in", "Money out"} <= set(_group_labels(body))
 
