@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from .books_screens import _card, _esc, _minor, money
+from .books_screens import _card, _esc, _minor, account_label, account_number, account_order, money
 
 
 def _banner(kind: str, text: str) -> str:
@@ -25,22 +25,26 @@ def _seq(v: object) -> list[object]:
     return list(v) if isinstance(v, (list, tuple)) else []
 
 
-def render_pick_account(tenant: str, accounts: Mapping[str, object]) -> str:
+def render_pick_account(tenant: str, accounts: Mapping[str, object], *,
+                        id_codes: frozenset[str] = frozenset()) -> str:
     """The list of accounts that can be reconciled — cash and credit cards."""
     rows = []
-    for a in _seq(accounts.get("accounts")):
-        if not isinstance(a, Mapping):
-            continue
+    listed = sorted((a for a in _seq(accounts.get("accounts")) if isinstance(a, Mapping)),
+                    key=lambda a: account_order(a.get("code"), a.get("name"), a.get("type"),
+                                                id_codes))
+    for a in listed:
         subtype = str(a.get("subtype") or "")
         type_ = str(a.get("type") or "")
+        # "10xx" is the cash range of a numbered chart; a QuickBooks id that
+        # happens to start with 10 says nothing about the account.
         bankish = subtype in {"CASH", "BANK", "CREDIT_CARD"} or (
-            type_ == "ASSET" and str(a.get("code", "")).startswith("10")
+            type_ == "ASSET" and account_number(a.get("code"), id_codes).startswith("10")
         )
         if not bankish:
             continue
         code = _esc(a.get("code"))
         rows.append(
-            f"<tr><td>{code}</td><td>{_esc(a.get('name'))}</td>"
+            f"<tr><td>{_esc(account_number(a.get('code'), id_codes))}</td><td>{_esc(a.get('name'))}</td>"
             f'<td><a class="btn-link" href="/t/{_esc(tenant)}/books/reconcile/{code}">'
             "Reconcile</a></td></tr>"
         )
@@ -49,7 +53,7 @@ def render_pick_account(tenant: str, accounts: Mapping[str, object]) -> str:
         "No bank or credit-card accounts in the chart yet.</td></tr>"
     )
     table = (
-        '<div class="table-scroll"><table><thead><tr><th>Code</th><th>Account</th><th></th>'
+        '<div class="table-scroll"><table><thead><tr><th>No.</th><th>Account</th><th></th>'
         "</tr></thead><tbody>" + ("".join(rows) or empty) + "</tbody></table></div>"
     )
     back = f'<a class="btn-link" href="/t/{_esc(tenant)}/books">Back to books</a>'
@@ -203,6 +207,7 @@ def render_reconcile(
     can_post: bool,
     message: str = "",
     error: str = "",
+    id_codes: frozenset[str] = frozenset(),
 ) -> str:
     """The reconciliation worksheet for one account."""
     code = str(view.get("account_code", ""))
@@ -280,11 +285,12 @@ def render_reconcile(
     if error:
         head += _banner("warn", error)
 
-    title = f"Reconcile {code} — {_esc(view.get('account_name'))}"
+    # Plain text: the card escapes its title.
+    title = f"Reconcile {account_label(code, view.get('account_name'), id_codes)}"
     back = f'<a class="btn-link" href="/t/{_esc(tenant)}/books/reconcile">Other accounts</a>'
     return (
         head
-        + _card(f"{title} · as of {_esc(date)}", tally + finish, back)
+        + _card(f"{title} · as of {date}", tally + finish, back)
         + _statement_form(tenant, code, date, balance_minor)
         + (_import_form(tenant, code, date, balance_minor) if can_post else "")
         + _card("Transactions", table)

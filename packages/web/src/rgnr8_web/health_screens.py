@@ -8,8 +8,31 @@ the same balances the statements use, so this can't disagree with the books.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import date
 
 from .books_screens import _banner, _card, _esc, _seq, money
+
+_MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August",
+           "September", "October", "November", "December")
+
+
+def month_name(month: int) -> str:
+    return _MONTHS[month - 1] if 1 <= month <= 12 else _MONTHS[0]
+
+
+def fiscal_year_start(as_of: date, start_month: int) -> date:
+    """The first day of the fiscal year `as_of` falls in, for a fiscal year that
+    starts in `start_month` (1 = January, the calendar year)."""
+    month = start_month if 1 <= start_month <= 12 else 1
+    year = as_of.year if as_of.month >= month else as_of.year - 1
+    return date(year, month, 1)
+
+
+def period_words(start: date, end: date) -> str:
+    """"Jul 1 – Oct 29, 2026", or "Jul 1, 2025 – Mar 3, 2026" across a year end."""
+    head = f"{_MONTHS[start.month - 1][:3]} {start.day}" + (
+        "" if start.year == end.year else f", {start.year}")
+    return f"{head} – {_MONTHS[end.month - 1][:3]} {end.day}, {end.year}"
 
 
 def render_health_unavailable(detail: str = "") -> str:
@@ -44,7 +67,11 @@ def _group(title: str, health: object, rows: str) -> str:
     return _card(title, read + rows)
 
 
-def render_health(tenant: str, ratios: Mapping[str, object]) -> str:
+def render_health(tenant: str, ratios: Mapping[str, object], *,
+                  fiscal: Mapping[str, object] | None = None) -> str:
+    """`fiscal`, when the app could read it, is the fiscal year to date from the
+    books' own statements: {"start": date, "end": date, "start_month": int,
+    "revenue_minor": int, "net_income_minor": int}."""
     liq = _as_map(ratios.get("liquidity"))
     lev = _as_map(ratios.get("leverage"))
     prof = _as_map(ratios.get("profitability"))
@@ -52,8 +79,29 @@ def render_health(tenant: str, ratios: Mapping[str, object]) -> str:
     covenants = _seq(ratios.get("covenants"))
 
     as_of = _esc(ratios.get("as_of"))
-    header = (f'<p class="muted">As of {as_of}. Figures come straight from your books; revenue '
-              f"and net income are everything they hold through {as_of}.</p>")
+    period = ""
+    if fiscal is not None:
+        start, end = fiscal.get("start"), fiscal.get("end")
+        if isinstance(start, date) and isinstance(end, date):
+            period = period_words(start, end)
+    if period and fiscal is not None:
+        month = fiscal.get("start_month")
+        header = (f'<p class="muted">As of {as_of}. Figures come straight from your books. '
+                  "Revenue and net income below are for your fiscal year to date (it starts "
+                  f"in {_esc(month_name(month if isinstance(month, int) else 1))}); the ratios "
+                  f"use everything the books hold through {as_of}.</p>")
+        earnings = (
+            _metric(f"Revenue, fiscal year to date ({period})", money(fiscal.get("revenue_minor")))
+            + _metric(f"Net income, fiscal year to date ({period})",
+                      money(fiscal.get("net_income_minor"))))
+    else:
+        header = (f'<p class="muted">As of {as_of}. Figures come straight from your books; revenue '
+                  f"and net income are everything they hold through {as_of}.</p>")
+        earnings = (
+            _metric(f"Revenue, through {ratios.get('as_of') or 'today'}",
+                    money(inputs.get("revenue_minor")))
+            + _metric(f"Net income, through {ratios.get('as_of') or 'today'}",
+                      money(inputs.get("net_income_minor"))))
 
     liquidity = _group(
         "Liquidity — can you cover the short term?", liq.get("health"),
@@ -89,9 +137,7 @@ def render_health(tenant: str, ratios: Mapping[str, object]) -> str:
 
     basis = _card(
         "The numbers behind it",
-        _metric(f"Revenue, through {ratios.get('as_of') or 'today'}", money(inputs.get("revenue_minor")))
-        + _metric(f"Net income, through {ratios.get('as_of') or 'today'}",
-                  money(inputs.get("net_income_minor")))
+        earnings
         + _metric("Total assets", money(inputs.get("total_assets_minor")))
         + _metric("Total liabilities", money(inputs.get("total_liabilities_minor")))
         + _metric("Equity", money(inputs.get("equity_minor")))

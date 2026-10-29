@@ -67,9 +67,30 @@ def test_trial_balance_joins_the_report_with_the_chart() -> None:
     by_code = {r["code"]: r for r in rows}
     assert set(by_code) == {"1000", "2300", "3000"}          # the TOTAL row is skipped
     assert by_code["1000"] == {"code": "1000", "name": "Checking", "account_type": "Bank",
-                               "debit_minor": 120100, "credit_minor": 0}
+                               "numbered": True, "debit_minor": 120100, "credit_minor": 0}
     assert by_code["2300"]["credit_minor"] == 70100 and by_code["2300"]["debit_minor"] == 0
     assert by_code["2300"]["account_type"] == "Other Current Liability"  # from the chart join
+
+
+def test_an_account_without_a_number_is_coded_by_its_id_and_says_so() -> None:
+    """A company that doesn't number its accounts still comes across whole, coded
+    by QuickBooks' id; each row says whether its code is a real number, so the
+    screens can show that account by name instead of by a meaningless "57"."""
+    accounts = [{"Id": "57", "Name": "Checking", "AccountType": "Bank"},
+                {"Id": "2", "AcctNum": "2300", "Name": "Payroll Liabilities",
+                 "AccountType": "Other Current Liability"},
+                {"Id": "3", "Name": "Owner Equity", "AccountType": "Equity"}]
+    report = {"Rows": {"Row": [
+        {"ColData": [{"value": "Checking", "id": "57"}, {"value": "1,201.00"}, {"value": ""}]},
+        {"ColData": [{"value": "Payroll Liabilities", "id": "2"}, {"value": ""}, {"value": "701.00"}]},
+        {"ColData": [{"value": "Owner Equity", "id": "3"}, {"value": ""}, {"value": "500.00"}]},
+    ]}}
+    client = QboApiClient(http=FakeHttp(accounts, report), api_base="https://sandbox",
+                          realm_id="R1", access_token="tok")
+    rows = {r["code"]: r["numbered"] for r in client.trial_balance(as_of="2026-08-25")}
+    assert rows == {"57": False, "2300": True, "3": False}
+    chart = {a["code"]: a["number"] for a in client.chart_of_accounts()}
+    assert chart == {"57": "", "2300": "2300", "3": ""}
 
 # The go-live converter that consumes these rows is exercised end to end in the
 # web package's test_qbo_migrate.py — the qbo package doesn't depend on it.

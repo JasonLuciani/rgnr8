@@ -104,7 +104,7 @@ def _only_control_lines(d: Mapping[str, object], control_codes: frozenset[str]) 
 
 def _account_pick(accounts: "tuple[tuple[str, str], ...]") -> str:
     options = '<option value="">Account…</option>' + "".join(
-        f'<option value="{_esc(c)}">{_esc(c)} {_esc(n)}</option>' for c, n in accounts)
+        f'<option value="{_esc(c)}">{_esc(n)}</option>' for c, n in accounts)
     return (f'<select name="account_code" aria-label="Account" required '
             f'style="width:auto;padding:6px 8px">{options}</select>')
 
