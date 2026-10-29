@@ -106,6 +106,7 @@ from .books_screens import (
     render_books_home,
     render_books_statements,
     render_chart_of_accounts,
+    render_trial_balance,
     render_register,
 )
 from .books_screens import (
@@ -486,6 +487,13 @@ def _qs_escape(text: str) -> str:
 
 # The Connections page's one-time result (see `WebApp._connect_result`).
 _CONNECT_FLASH = "rgnr8_connect_flash"
+
+
+def _signed_money(m: Money) -> str:
+    """A change in money, signed the way a person writes it: +$1,000.00 / −$1,000.00."""
+    if m.minor_units == 0:
+        return format_money(m)
+    return ("+" if m.minor_units > 0 else "\u2212") + format_money(Money(abs(m.minor_units), m.currency))
 
 
 def _cookie(headers: "dict[str, str]", name: str) -> str | None:
@@ -1684,6 +1692,11 @@ class WebApp:
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "books":
             return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
                                  lambda t: self._books_page(subject, t, req.query))
+        # /t/<tenant>/books/trial-balance -> every account's debit/credit balance
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "books"
+                and parts[3] == "trial-balance"):
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._books_trial_balance_page(subject, t))
         # /t/<tenant>/books/accounts -> chart of accounts
         if len(parts) == 4 and parts[0] == "t" and parts[2] == "books" and parts[3] == "accounts":
             return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
@@ -2503,6 +2516,14 @@ class WebApp:
             error=query.get("err", ""),
         )
         return self._shell(subject, t, "books", body)
+
+    def _books_trial_balance_page(self, subject: str, t: _Tenant) -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "books", render_books_unavailable())
+        res = self._ledger.trial_balance(t.tenant_id)
+        if not res.ok:
+            return self._shell(subject, t, "books", render_books_unavailable(res.error()))
+        return self._shell(subject, t, "books", render_trial_balance(t.tenant_id, res.body))
 
     def _books_accounts_page(self, subject: str, t: _Tenant) -> Response:
         if self._ledger is None:
@@ -5808,6 +5829,10 @@ class WebApp:
             "scenario": scenario.name,
             "trough_delta": diff.trough_delta.to_decimal_string(),
             "cushion_delta": diff.cushion_delta.to_decimal_string(),
+            # The same changes as people read money: "+$1,000.00", "−$1,000.00".
+            # The raw decimals above stay for API callers that compute with them.
+            "trough_delta_display": _signed_money(diff.trough_delta),
+            "cushion_delta_display": _signed_money(diff.cushion_delta),
             "breach_week_before": diff.breach_week_before,
             "breach_week_after": diff.breach_week_after,
             "weekly_closing_deltas": [d.to_decimal_string() for d in diff.weekly_closing_deltas],

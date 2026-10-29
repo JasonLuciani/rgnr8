@@ -231,6 +231,8 @@ _SHELL_CSS = f"""<style>
     color:var(--rg-muted);text-decoration:none;border-bottom:2px solid transparent}}
   .rg-tabs a:hover{{color:var(--rg-ink)}}
   .rg-tabs a[aria-current=page]{{color:var(--rg-ink);border-bottom-color:var(--rg-ink)}}
+  .more-reports{{margin-top:14px}}
+  .more-reports>summary{{cursor:pointer;font:600 13px/1.4 var(--rg-sans);color:var(--rg-muted)}}
   .page-foot{{margin-top:28px;padding-top:12px;border-top:1px solid var(--rg-line)}}
   @media(max-width:640px){{
     .rg-nav{{display:none}}

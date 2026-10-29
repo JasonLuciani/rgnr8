@@ -428,6 +428,13 @@ def render_packages_body(tenant: str, periods: Sequence[str], configured: bool) 
 
 
 # --- Reports (in-shell baseline + saved report index) -----------------------
+# The reports an owner uses, in the order they'd look for them.
+OWNER_REPORTS: tuple[str, ...] = (
+    "cash_flow_outlook", "weekly_briefing", "financial_statements",
+    "ar_aging", "budget_vs_actual", "runway",
+)
+
+
 def render_reports_list(
     tenant: str,
     baselines: Sequence[ReportSpec],
@@ -454,10 +461,21 @@ def render_reports_list(
             )
         return out
 
+    # The six an owner reaches for; the rest (board pack, transaction detail,
+    # and the operator's own usage and reconciliation checks) one click down.
+    owners = [s for s in baselines if s.id in OWNER_REPORTS]
+    owners.sort(key=lambda s: OWNER_REPORTS.index(s.id))
+    more = [s for s in baselines if s.id not in OWNER_REPORTS]
     baseline_table = (
         '<table><thead><tr><th>Report</th><th></th></tr></thead>'
-        f'<tbody>{_rows(baselines)}</tbody></table>'
+        f'<tbody>{_rows(owners)}</tbody></table>'
     )
+    if more:
+        baseline_table += (
+            f'<details class="more-reports"><summary>More reports ({len(more)})</summary>'
+            '<table><thead><tr><th>Report</th><th></th></tr></thead>'
+            f'<tbody>{_rows(more)}</tbody></table></details>'
+        )
     if saved:
         saved_block = (
             '<h2>Saved reports</h2>'
@@ -686,13 +704,15 @@ def render_scenario_body(tenant: str, display_name: str) -> str:
       function fmtWeek(w){{ return (w===null||w===undefined) ? 'no breach' : ('week '+w); }}
       function renderDiff(d){{
         var box=document.getElementById('scnResult');
+        // Every value is escaped: the scenario name comes from the request.
+        var esc=function(v){{var e=document.createElement('span');e.textContent=String(v==null?'':v);return e.innerHTML;}};
         box.innerHTML =
-          '<h2>'+d.scenario+'</h2>'+
+          '<h2>'+esc(d.scenario)+'</h2>'+
           '<div class="tiles">'+
-          '<div class="tile"><div class="k">Low-point change</div><div class="v">'+d.trough_delta+'</div></div>'+
-          '<div class="tile"><div class="k">Cushion change</div><div class="v">'+d.cushion_delta+'</div></div>'+
-          '<div class="tile"><div class="k">Breach before</div><div class="v">'+fmtWeek(d.breach_week_before)+'</div></div>'+
-          '<div class="tile"><div class="k">Breach after</div><div class="v">'+fmtWeek(d.breach_week_after)+'</div></div>'+
+          '<div class="tile"><div class="k">Low-point change</div><div class="v">'+esc(d.trough_delta_display||d.trough_delta)+'</div></div>'+
+          '<div class="tile"><div class="k">Cushion change</div><div class="v">'+esc(d.cushion_delta_display||d.cushion_delta)+'</div></div>'+
+          '<div class="tile"><div class="k">Breach before</div><div class="v">'+esc(fmtWeek(d.breach_week_before))+'</div></div>'+
+          '<div class="tile"><div class="k">Breach after</div><div class="v">'+esc(fmtWeek(d.breach_week_after))+'</div></div>'+
           '</div>';
         box.style.display='block';
         box.scrollIntoView({{behavior:'smooth',block:'start'}});
