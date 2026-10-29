@@ -17,6 +17,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from html import escape
+from urllib.parse import quote
 
 from rgnr8_briefing.today import CHART_CSS
 from rgnr8_forecast.brand import RG_BASE_CSS, RG_TOKENS_CSS, finos_logo_html
@@ -283,7 +284,7 @@ def _login_shell(inner: str) -> str:
 def render_login_html(*, action: str = "/login", sso: bool = False,
                       credentials: bool = False, error: str | None = None,
                       notice: str | None = None, signup_open: bool = False,
-                      reset_open: bool = False) -> str:
+                      reset_open: bool = False, next_path: str | None = None) -> str:
     """The brand login screen. `sso=True` shows a 'Sign in with SSO' button (real
     IdP). `credentials=True` shows the real email + password form (production
     browser login). Otherwise the dev email + role form is shown (static/dev
@@ -291,7 +292,9 @@ def render_login_html(*, action: str = "/login", sso: bool = False,
     because RGNR8 is invitation-only wherever a user directory exists and an
     open link there just sends people to a dead end. `reset_open` adds the
     forgot-password link, which is only honest once account email can actually
-    deliver the reset — otherwise it leads somewhere nothing arrives from."""
+    deliver the reset — otherwise it leads somewhere nothing arrives from.
+    `next_path` is the page sign-in interrupted; the caller has already checked
+    it is an in-app path, and the form posts it back so sign-in can return there."""
     err = f'<div class="card" style="border-color:#F5C4C6;background:#FDECEC;color:#B02A2F">{escape(error)}</div>' if error else ""
     note = f'<div class="card" style="border-color:#BFE3C9;background:#EAF7EE;color:#1f6f43">{escape(notice)}</div>' if notice else ""
     if sso:
@@ -302,7 +305,8 @@ def render_login_html(*, action: str = "/login", sso: bool = False,
     elif credentials:
         form = (
             f'<form method="post" action="{escape(action)}">'
-            '<label>Work email</label><input name="email" type="email" placeholder="you@company.com" autocomplete="username" required>'
+            + (f'<input type="hidden" name="next" value="{escape(next_path)}">' if next_path else "")
+            + '<label>Work email</label><input name="email" type="email" placeholder="you@company.com" autocomplete="username" required>'
             '<label>Password</label><input name="password" type="password" autocomplete="current-password" required>'
             '<button class="btn" style="width:100%;margin-top:18px" type="submit">Sign in</button>'
             "</form>"
@@ -589,7 +593,8 @@ def _choose_tile(*, href: str, title: str, subtitle: str, accent: bool) -> str:
 
 def render_choose_html(*, businesses: "Iterable[tuple[str, str]]", staff: bool,
                        operator_url: str = "/operator",
-                       email: "str | None" = None) -> str:
+                       email: "str | None" = None,
+                       next_path: "str | None" = None) -> str:
     """The post-login 'choose your view' screen. Lists the operator console (staff)
     tile when the user holds a platform role, plus one tile per business
     they belong to. `businesses` is an iterable of (tenant_id, display_name)."""
@@ -599,8 +604,12 @@ def render_choose_html(*, businesses: "Iterable[tuple[str, str]]", staff: bool,
             href=operator_url or "/operator", title="Operator console",
             subtitle="Onboard and manage businesses", accent=True))
     for tid, name in businesses:
+        # The business sign-in interrupted carries the page to return to.
+        back = ""
+        if next_path and next_path.split("/")[2:3] == [str(tid)]:
+            back = "&next=" + quote(next_path, safe="")
         tiles.append(_choose_tile(
-            href=f"/choose/enter?tenant={escape(str(tid))}", title=str(name or tid),
+            href=f"/choose/enter?tenant={quote(str(tid), safe='')}{back}", title=str(name or tid),
             subtitle="Enter this business", accent=False))
     heading = ('<div style="text-align:center;font:700 18px/1.2 var(--rg-sans);'
                'color:var(--rg-forest);margin-bottom:4px">Choose your view</div>')

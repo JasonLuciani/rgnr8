@@ -16,11 +16,11 @@ import os
 import re
 import secrets
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from html import escape
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 from rgnr8_ar import ARReport, ChaseItem, CollectionNudge, ar_report, chase_list, draft_nudge
 from rgnr8_billing import Account, UsageSummary
@@ -516,6 +516,63 @@ def _html(status: int, body: str, extra: "tuple[tuple[str, str], ...]" = ()) -> 
 
 def _redirect(location: str, extra: "tuple[tuple[str, str], ...]" = ()) -> Response:
     return Response(302, "", "text/html; charset=utf-8", (("Location", location), *extra))
+
+
+# The longest return address sign-in will carry. App pages with their query
+# strings are far shorter; anything longer is dropped rather than truncated.
+_NEXT_MAX = 512
+
+
+def _safe_next(value: object, tenants: "Iterable[str] | None" = None) -> "str | None":
+    """`value` if it is safe to send a browser to after sign-in, else None.
+
+    Only an in-app business page qualifies: a path that starts with `/t/<id>/`
+    (or is `/t/<id>`), with no scheme, no host, no protocol-relative `//`, no
+    backslash (browsers read `/\\host` as `//host`) and no control characters
+    (which could split a header). With `tenants`, the business in the path must
+    also be one of them, so the way back can't lead into a business the person
+    isn't a member of. Everything else is dropped and sign-in lands on /app, so
+    the redirect is never an open redirect."""
+    if not isinstance(value, str) or not value or len(value) > _NEXT_MAX:
+        return None
+    if any(ord(c) < 0x20 or c in "\\\x7f" for c in value):
+        return None
+    if not value.startswith("/t/") or value.startswith("//"):
+        return None
+    parts = urlsplit(value)
+    if parts.scheme or parts.netloc:
+        return None
+    seg = parts.path.split("/")
+    if len(seg) < 3 or not seg[2]:
+        return None
+    if tenants is not None and seg[2] not in set(tenants):
+        return None
+    return value
+
+
+def _signed_out_page(req: Request) -> "Response | None":
+    """Where a browser goes when it asks for an app page without a live session.
+
+    The /t/ routes are the pages people open; the JSON API lives under /api/.
+    A signed-out (or expired) page request used to get the API's raw 401
+    `{"error": "missing or invalid bearer token"}`, which reads as a broken app.
+    A page GET now goes to sign-in carrying the page as `next`; a form POST goes
+    to sign-in with a 303 (the browser follows with a GET, so nothing is
+    replayed and nothing was done). A caller that asks for JSON only, or posts
+    JSON, still gets the 401 it can act on. None means: answer with the 401."""
+    if not req.route.startswith("/t/"):
+        return None
+    accept = req.headers.get("accept", "").lower()
+    if "json" in accept and "text/html" not in accept:
+        return None
+    if req.method in ("GET", "HEAD"):
+        nxt = _safe_next(req.path)
+        return _redirect("/login?next=" + quote(nxt, safe="") if nxt else "/login")
+    ct = req.headers.get("content-type", "").lower()
+    if req.method == "POST" and ct.startswith(("application/x-www-form-urlencoded",
+                                               "multipart/form-data")):
+        return Response(303, "", "text/html; charset=utf-8", (("Location", "/login"),))
+    return None
 
 
 def _json(status: int, payload: object) -> Response:
@@ -1122,10 +1179,11 @@ class WebApp:
 
         # --- UI: login / logout (no auth required) ---
         if route == "/login" and req.method == "GET":
-            return self._login_page(
-                200,
-                notice=("Account created — sign in." if req.query.get("notice") == "created" else None),
-            )
+            nxt = _safe_next(req.query.get("next"))
+            notice = ("Account created — sign in." if req.query.get("notice") == "created"
+                      else "Your session ended. Sign in to pick up where you left off."
+                      if nxt else None)
+            return self._login_page(200, notice=notice, next_path=nxt)
         if route == "/login" and req.method == "POST":
             return self._login_post(req)
         # --- end-user auth (invitation signup / verify / reset) ---
@@ -1185,6 +1243,16 @@ class WebApp:
             # the surface — the JSON API — still gets the 401.
             if route in ("/", "/app"):
                 return _redirect("/login")
+            # The same for any business page: sign in, then come back to it.
+            page = _signed_out_page(req)
+            if page is not None:
+                loc = page.headers.get("Location", "")
+                if (req.method in ("GET", "HEAD") and loc.startswith("/login")
+                        and self._session_subject(req) is not None):
+                    # Signed in, but no business picked yet (the chooser's cookie
+                    # carries only who you are): finish choosing, not sign in again.
+                    return _redirect("/choose" + loc[len("/login"):])
+                return page
             return _json(401, {"error": "missing or invalid bearer token"})
         token_tenant, subject = principal
         _VIEW_AS.set(self._resolve_view_as(req, subject))
@@ -4839,16 +4907,19 @@ class WebApp:
         if self._session_secret is None:
             return _html(400, render_login_html(sso=True, error="Self-issued login is disabled — use SSO."))
         data = self._form_or_json(req.body)
+        # Where the browser was headed when sign-in interrupted it. Re-checked
+        # against the person's own businesses once we know them.
+        nxt = _safe_next(data.get("next"))
         email = str(data.get("email", "")).strip()
         if "@" not in email:
-            return self._login_page(400, error="Enter a valid work email.")
+            return self._login_page(400, error="Enter a valid work email.", next_path=nxt)
         role_raw = str(data.get("role", "owner"))
         # Real credential login (public track): verify the password + verified email
         # via the AuthService. On any failure, respond without distinguishing why.
         if self._auth_service is not None:
             authed = self._auth_service.login(email, str(data.get("password", "")))
             if authed is None:
-                return self._login_failure(req)
+                return self._login_failure(req, next_path=nxt)
         # Seat the user record first, so the founder bootstrap and the staff check
         # below can run even before any business is provisioned.
         subject = email
@@ -4880,13 +4951,16 @@ class WebApp:
             return self._login_page(
                 403, error="This account isn't a member of any business yet. "
                            "Ask the owner to send you an invitation.")
+        # The way back only counts if it is one of this person's businesses.
+        nxt = _safe_next(nxt, businesses)
         # Exactly one business and not staff → skip the chooser, straight in.
         if total == 1 and not is_staff:
-            return _redirect("/app", (("Set-Cookie",
+            return _redirect(nxt or "/app", (("Set-Cookie",
                 self._session_cookie(sub=subject, tenant=businesses[0])),))
         # Staff, or more than one destination → the "choose your view" screen.
         # The cookie carries only `sub` until a business is picked.
-        return _redirect("/choose", (("Set-Cookie", self._session_cookie(sub=subject)),))
+        choose = "/choose?next=" + quote(nxt, safe="") if nxt else "/choose"
+        return _redirect(choose, (("Set-Cookie", self._session_cookie(sub=subject)),))
 
     def _session_cookie(self, *, sub: str, tenant: "str | None" = None) -> str:
         """Build the `rgnr8_session` Set-Cookie value. Carries `sub` always and a
@@ -4944,8 +5018,10 @@ class WebApp:
             u = self._users.get_user(subject)
             if u is not None and getattr(u, "email", None):
                 email = u.email
+        nxt = _safe_next(req.query.get("next"), [tid for tid, _name in businesses])
         return _html(200, render_choose_html(
-            businesses=businesses, staff=is_staff, operator_url=op, email=email))
+            businesses=businesses, staff=is_staff, operator_url=op, email=email,
+            next_path=nxt))
 
     def _choose_enter(self, req: Request) -> Response:
         """Enter a chosen business: re-mint the session cookie with that tenant,
@@ -4965,7 +5041,9 @@ class WebApp:
         if self._session_secret is None:
             return _html(400, render_login_html(
                 sso=True, error="Choosing a business is handled by your identity provider."))
-        return _redirect("/app", (("Set-Cookie",
+        # Back to the page sign-in interrupted, if it belongs to this business.
+        nxt = _safe_next(req.query.get("next"), [tenant])
+        return _redirect(nxt or "/app", (("Set-Cookie",
             self._session_cookie(sub=subject, tenant=tenant)),))
 
     @staticmethod
@@ -4976,7 +5054,7 @@ class WebApp:
         return req.body.lstrip().startswith("{")
 
     def _login_page(self, status: int, *, error: str | None = None,
-                    notice: str | None = None) -> Response:
+                    notice: str | None = None, next_path: str | None = None) -> Response:
         """Render the sign-in page in the mode this deployment actually uses.
 
         Every failure path must come through here. Calling `render_login_html`
@@ -4992,15 +5070,15 @@ class WebApp:
             # Without an emailer the token comes back in an API response nobody
             # sees, so the link would promise mail that never arrives.
             reset_open=self._auth_service is not None and self._emailer is not None,
-            error=error, notice=notice,
+            error=error, notice=notice, next_path=next_path,
         ))
 
-    def _login_failure(self, req: Request) -> Response:
+    def _login_failure(self, req: Request, *, next_path: str | None = None) -> Response:
         """A single, non-committal login rejection — never reveals whether the email
         is unknown, the password wrong, or the account unverified."""
         if self._wants_json(req):
             return _json(401, {"error": "invalid email or password"})
-        return self._login_page(401, error="Invalid email or password.")
+        return self._login_page(401, error="Invalid email or password.", next_path=next_path)
 
     # --- end-user auth (invitation-gated signup) ----------------------------
     _INVITE_ONLY = ("RGNR8 is invitation-only. Ask the owner of your business "
