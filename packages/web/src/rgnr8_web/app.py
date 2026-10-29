@@ -187,6 +187,9 @@ from .cost_baseline import CostBaseline, as_recurring
 from .cost_baseline import from_quickbooks as baseline_from_quickbooks
 from .cost_baseline import window as cost_window
 from .deploy_check import LedgerBuild, ledger_skew
+from .modules import OPTIONAL_MODULES
+from .modules import capability as module_capability
+from .modules import enabled as enabled_modules
 from .qbo_errors import plain_qbo_error
 from .parallel_run import (
     PARALLEL_RUN_MESSAGE,
@@ -1195,6 +1198,11 @@ class WebApp:
                                  lambda t: self._team_page(subject, t))
 
         # /t/<tenant>/settings  -> per-account admin options (view/save)
+        # /t/<tenant>/settings/modules -> switch optional modules on or off
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "settings"
+                and parts[3] == "modules" and req.method == "POST"):
+            return self._require(subject, token_tenant, parts[1], P.MANAGE_SETTINGS,
+                                 lambda t: self._modules_save(subject, t, req.body))
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "settings":
             if req.method == "POST":
                 return self._require(subject, token_tenant, parts[1], P.MANAGE_SETTINGS,
@@ -5192,7 +5200,7 @@ class WebApp:
         )
         return _html(200, render_shell(tenant=tenant, display_name=t.name, role=role,
                                        permissions=perms, active="home", body_html=body, subject=subject,
-                                       available=self._nav_available()))
+                                       available=self._nav_available(t)))
 
     def _team_page(self, subject: str, t: _Tenant) -> Response:
         perms, role = self._perms_role(subject, t.tenant_id)
@@ -5207,7 +5215,7 @@ class WebApp:
                                   origin=self._public_base_url)
         return _html(200, render_shell(tenant=t.tenant_id, display_name=t.name, role=role,
                                        permissions=perms, active="team", body_html=body, subject=subject,
-                                       available=self._nav_available()))
+                                       available=self._nav_available(t)))
 
     def _settings_page(
         self, subject: str, t: _Tenant, query: "dict[str, str]",
@@ -5227,6 +5235,7 @@ class WebApp:
                 current = raw if isinstance(raw, dict) else {}
                 body = render_settings(
                     t.tenant_id, current,
+                    modules_on=enabled_modules(self._store.load(t.tenant_id).modules),
                     can_manage_settings=can_settings,
                     can_manage_retention=can_retention,
                     can_erase=can_erase,
@@ -5235,7 +5244,19 @@ class WebApp:
                 )
         return _html(200, render_shell(tenant=t.tenant_id, display_name=t.name, role=role,
                                        permissions=perms, active="settings", body_html=body,
-                                       subject=subject, available=self._nav_available()))
+                                       subject=subject, available=self._nav_available(t)))
+
+    def _modules_save(self, subject: str, t: _Tenant, body: str) -> Response:
+        """Which optional modules show in this business's sidebar. Only the
+        sidebar: a module switched off keeps its pages and its data."""
+        chosen = [m for m in parse_qs(body).get("module", []) if m in OPTIONAL_MODULES]
+        t.state = self._store.load(t.tenant_id)  # on top of what's stored now
+        t.state.modules = sorted(set(chosen))
+        self._store.save(t.tenant_id, t.state)
+        if self._audit is not None:
+            self._audit.record(subject, "settings.modules", self._session_clock(),
+                               tenant_id=t.tenant_id, detail=",".join(t.state.modules) or "none")
+        return _redirect(f"/t/{t.tenant_id}/settings?done=Modules+updated")
 
     def _settings_save(self, subject: str, t: _Tenant, body: str) -> Response:
         back = f"/t/{t.tenant_id}/settings"
@@ -5593,7 +5614,7 @@ class WebApp:
         )
         return _html(200, render_shell(tenant=t.tenant_id, display_name=t.name, role=role,
                                        permissions=perms, active="transactions", body_html=body, subject=subject,
-                                       available=self._nav_available()))
+                                       available=self._nav_available(t)))
 
     def _categorize(self, t: _Tenant, body: str) -> Response:
         """Categorize a line, or accept a for-review line into the books. Body:
@@ -5620,7 +5641,7 @@ class WebApp:
         return _json(404, {"error": f"unknown transaction {txn_id}"})
 
     # --- in-shell owner screens (cash / briefing / close / packages) --------
-    def _nav_available(self) -> frozenset[str]:
+    def _nav_available(self, t: "_Tenant | None" = None) -> frozenset[str]:
         """Which nav capabilities this deployment has actually wired.
 
         The audit's "experience fragmentation" finding is partly a navigation
@@ -5641,6 +5662,11 @@ class WebApp:
             caps.add("packages")
         if self._ask_svc is not None:
             caps.add("ask")
+        if t is not None:
+            # Read from the store: switched on through the other worker a moment
+            # ago still counts here.
+            caps.update(module_capability(m) for m in
+                        enabled_modules(self._store.load(t.tenant_id).modules))
         if self._webhooks is not None:
             caps.add("webhooks")
         if self._audit is not None:
@@ -5655,7 +5681,7 @@ class WebApp:
             body = posting_forms_to_notice(body, t.tenant_id)
         return _html(200, render_shell(tenant=t.tenant_id, display_name=t.name, role=role,
                                        permissions=perms, active=active, body_html=body,
-                                       subject=subject, available=self._nav_available(),
+                                       subject=subject, available=self._nav_available(t),
                                        deploy_notice=self._ledger_skew() or "",
                                        here=_HERE.get()))
 
@@ -6946,7 +6972,7 @@ class WebApp:
             )
         return _html(200, render_shell(tenant=t.tenant_id, display_name=t.name, role=role,
                                        permissions=perms, active="integrations", body_html=body,
-                                       subject=subject, available=self._nav_available()))
+                                       subject=subject, available=self._nav_available(t)))
 
     def _integration_add(self, subject: str, t: _Tenant, body: str) -> Response:
         back = f"/t/{t.tenant_id}/integrations"
@@ -7031,7 +7057,7 @@ class WebApp:
             body = render_audit_log(t.tenant_id, events, configured=True)
         return _html(200, render_shell(tenant=t.tenant_id, display_name=t.name, role=role,
                                        permissions=perms, active="audit", body_html=body, subject=subject,
-                                       available=self._nav_available()))
+                                       available=self._nav_available(t)))
 
     def _package_html(self, t: _Tenant, period: str) -> Response:
         if self._packages is None:

@@ -38,6 +38,9 @@ class TenantState:
     # The monthly running costs the owner chose to add from their QuickBooks
     # spending (see `cost_baseline`), as its dict; None until they add one.
     cost_baseline: dict[str, object] | None = None
+    # The optional modules this business has switched on (see `modules`);
+    # None for a business that never chose, which means all of them off.
+    modules: list[str] | None = None
 
     @property
     def min_cash_override(self) -> Money | None:
@@ -54,6 +57,7 @@ class TenantState:
             "payment_overrides": dict(self.payment_overrides),
             "decisions": list(self.decisions),
             "cost_baseline": self.cost_baseline,
+            "modules": self.modules,
         }
 
     @staticmethod
@@ -62,6 +66,7 @@ class TenantState:
         overrides_obj = d.get("payment_overrides")
         decisions_obj = d.get("decisions")
         baseline = d.get("cost_baseline")
+        modules = d.get("modules")
         payment_overrides: dict[str, int] = {}
         if isinstance(overrides_obj, dict):
             payment_overrides = {str(k): int(v) for k, v in overrides_obj.items()}
@@ -73,6 +78,7 @@ class TenantState:
             payment_overrides=payment_overrides,
             decisions=decisions,
             cost_baseline=dict(baseline) if isinstance(baseline, dict) else None,
+            modules=[str(m) for m in modules] if isinstance(modules, list) else None,
         )
 
 
