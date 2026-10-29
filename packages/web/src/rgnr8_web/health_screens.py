@@ -17,8 +17,14 @@ def render_health_unavailable(detail: str = "") -> str:
     return _card("Health unavailable", _banner("warn", "The ledger service isn't reachable right now.") + extra)
 
 
-def _metric(label: str, value: object, suffix: str = "") -> str:
-    shown = "—" if value in (None, "") else f"{_esc(value)}{suffix}"
+def _metric(label: str, value: object, suffix: str = "", why: str = "") -> str:
+    # A ratio that can't be worked out says so, and why, instead of a bare "—"
+    # that reads as a broken page or a zero.
+    if value in (None, "", "—"):
+        reason = f" · {_esc(why)}" if why else ""
+        shown = f'<span class="muted">Not enough data{reason}</span>'
+    else:
+        shown = f"{_esc(value)}{suffix}"
     return (
         '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--rg-line)">'
         f'<span class="muted">{_esc(label)}</span><span class="num">{shown}</span></div>'
@@ -29,8 +35,12 @@ def _group(title: str, health: object, rows: str) -> str:
     # Was synthetic italic in a serif. The self-hosted Inter ships upright only,
     # so the voice change is carried by colour and size rather than a browser's
     # slanted approximation of a face that doesn't exist.
+    # The ledger writes verdicts as clauses ("healthy — comfortably covers…");
+    # here each stands as a sentence of its own.
+    verdict = str(health or "")
+    verdict = verdict[:1].upper() + verdict[1:]
     read = (f'<p style="margin:0 0 10px;font:400 13.5px/1.45 var(--rg-sans);'
-            f'color:var(--rg-ink-2)">{_esc(health)}</p>') if health else ""
+            f'color:var(--rg-ink-2)">{_esc(verdict)}</p>') if verdict else ""
     return _card(title, read + rows)
 
 
@@ -42,27 +52,29 @@ def render_health(tenant: str, ratios: Mapping[str, object]) -> str:
     covenants = _seq(ratios.get("covenants"))
 
     as_of = _esc(ratios.get("as_of"))
-    header = f'<p class="muted">As of {as_of}. Figures come straight from your books.</p>'
+    header = (f'<p class="muted">As of {as_of}. Figures come straight from your books; revenue '
+              f"and net income are everything they hold through {as_of}.</p>")
 
     liquidity = _group(
         "Liquidity — can you cover the short term?", liq.get("health"),
-        _metric("Current ratio", liq.get("current_ratio"), "×")
-        + _metric("Quick ratio", liq.get("quick_ratio"), "×")
+        _metric("Current ratio", liq.get("current_ratio"), "×", "no current liabilities")
+        + _metric("Quick ratio", liq.get("quick_ratio"), "×", "no current liabilities")
         + _metric("Working capital", money(liq.get("working_capital_minor"))),
     )
     leverage = _group(
         "Leverage — how much do you owe, and can you service it?", lev.get("health"),
-        _metric("Debt to equity", lev.get("debt_to_equity"), "×")
-        + _metric("Debt to assets", lev.get("debt_to_assets"), "×")
-        + _metric("Interest coverage", lev.get("interest_coverage"), "×")
-        + _metric("Debt-service coverage (DSCR)", lev.get("dscr"), "×"),
+        _metric("Debt to equity", lev.get("debt_to_equity"), "×", "equity is zero or negative")
+        + _metric("Debt to assets", lev.get("debt_to_assets"), "×", "no assets recorded")
+        + _metric("Interest coverage", lev.get("interest_coverage"), "×", "no interest expense")
+        + _metric("Debt-service coverage (DSCR)", lev.get("dscr"), "×", "no loan payments due"),
     )
     profitability = _group(
         "Profitability — is the work paying off?", prof.get("health"),
-        _metric("Gross margin", prof.get("gross_margin_pct"), "%")
-        + _metric("Net margin", prof.get("net_margin_pct"), "%")
-        + _metric("Return on assets", prof.get("return_on_assets_pct"), "%")
-        + _metric("Return on equity", prof.get("return_on_equity_pct"), "%"),
+        _metric("Gross margin", prof.get("gross_margin_pct"), "%", "no revenue yet")
+        + _metric("Net margin", prof.get("net_margin_pct"), "%", "no revenue yet")
+        + _metric("Return on assets", prof.get("return_on_assets_pct"), "%", "no assets recorded")
+        + _metric("Return on equity", prof.get("return_on_equity_pct"), "%",
+                  "equity is zero or negative"),
     )
 
     covenant_html = ""
@@ -77,8 +89,9 @@ def render_health(tenant: str, ratios: Mapping[str, object]) -> str:
 
     basis = _card(
         "The numbers behind it",
-        _metric("Revenue", money(inputs.get("revenue_minor")))
-        + _metric("Net income", money(inputs.get("net_income_minor")))
+        _metric(f"Revenue, through {ratios.get('as_of') or 'today'}", money(inputs.get("revenue_minor")))
+        + _metric(f"Net income, through {ratios.get('as_of') or 'today'}",
+                  money(inputs.get("net_income_minor")))
         + _metric("Total assets", money(inputs.get("total_assets_minor")))
         + _metric("Total liabilities", money(inputs.get("total_liabilities_minor")))
         + _metric("Equity", money(inputs.get("equity_minor")))

@@ -36,8 +36,8 @@ class Tab:
 # section's own page.
 TABS: dict[str, tuple[Tab, ...]] = {
     "books": (
-        Tab("Trial balance", "books"),
-        Tab("Chart of accounts", "books/accounts"),
+        Tab("Accounts", "books"),
+        Tab("Trial balance", "books/trial-balance"),
         Tab("Statements", "books/statements"),
         Tab("General ledger", "books/gl"),
         Tab("Budget", "books/budget"),

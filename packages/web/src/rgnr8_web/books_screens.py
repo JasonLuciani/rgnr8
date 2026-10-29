@@ -12,6 +12,7 @@ never through a float.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 
 from .provenance_labels import Provenance, badge as prov_badge, legend as prov_legend
@@ -77,8 +78,17 @@ def unavailable(detail: str = "") -> str:
 
 # --- chart of accounts -------------------------------------------------------
 
+def code_order(code: object) -> tuple[object, ...]:
+    """Sort key for account codes as people read them: "9" before "10" before
+    "1000", and "1000-01" after "1000". The ledger hands them back sorted as
+    text ("10" before "9"), which is right for storage and wrong on screen."""
+    parts = re.split(r"(\d+)", str(code or ""))
+    return tuple((0, int(p), "") if p.isdigit() else (1, 0, p.lower()) for p in parts if p)
+
+
 def render_chart_of_accounts(tenant: str, data: Mapping[str, object]) -> str:
-    accounts = _seq(data.get("accounts"))
+    accounts = sorted((a for a in _seq(data.get("accounts")) if isinstance(a, Mapping)),
+                      key=lambda a: code_order(a.get("code")))
     rows = []
     for a in accounts:
         if not isinstance(a, Mapping):
@@ -116,10 +126,86 @@ def render_books_home(
     error: str = "",
 ) -> str:
     ccy = str(tb.get("currency", "USD"))
-    rows = []
+    out = ""
+    if message:
+        out += _banner("good", message)
+    if error:
+        out += _banner("warn", error)
+    # The books' integrity at a glance, on the page people land on: that the two
+    # sides agree, and plainly when nothing has been posted yet.
+    if not _seq(tb.get("rows")):
+        out += _banner("good", "Nothing posted yet. Record the first transaction below."
+                       if can_post else "Nothing posted yet.")
+    elif bool(tb.get("in_balance", True)):
+        out += _banner("good", "In balance — total debits equal total credits")
+    else:
+        out += _banner("warn", "OUT OF BALANCE — this should never happen; contact support")
+    out += render_accounts_by_type(tenant, accounts, tb, ccy)
+    if can_post:
+        out += _render_entry_form(tenant, accounts, dimensions or {})
+    return out
+
+
+# The order an owner reads a chart in: what you have, what you owe, what's
+# yours, what came in, what went out.
+_TYPE_ORDER = (
+    ("ASSET", "Assets", 1), ("LIABILITY", "Liabilities", -1), ("EQUITY", "Equity", -1),
+    ("REVENUE", "Income", -1), ("EXPENSE", "Expenses", 1),
+)
+
+
+def render_accounts_by_type(
+    tenant: str, accounts: Mapping[str, object], tb: Mapping[str, object], ccy: str,
+) -> str:
+    """The Ledger's opening view: every account under its type, with its balance
+    in the direction people read it (what you owe as a positive amount owed),
+    numbers in numeric order, and a total per type."""
+    balances: dict[str, int] = {}
     for r in _seq(tb.get("rows")):
-        if not isinstance(r, Mapping):
+        if isinstance(r, Mapping):
+            balances[str(r.get("code"))] = (_minor(r.get("debit_minor")) or 0) - (
+                _minor(r.get("credit_minor")) or 0)
+    listed = [a for a in _seq(accounts.get("accounts")) if isinstance(a, Mapping)]
+    sections = []
+    for kind, heading, sign in _TYPE_ORDER:
+        mine = sorted((a for a in listed if str(a.get("type")) == kind),
+                      key=lambda a: code_order(a.get("code")))
+        if not mine:
             continue
+        total = 0
+        body = []
+        for a in mine:
+            code = _esc(a.get("code"))
+            amount = sign * balances.get(str(a.get("code")), 0)
+            total += amount
+            body.append(
+                f'<tr><td><a href="/t/{_esc(tenant)}/books/accounts/{code}">{_esc(a.get("name"))}</a></td>'
+                f'<td class="muted">{code}</td>{_num(amount, ccy)}</tr>'
+            )
+        sections.append(
+            f'<tr class="rg-eyebrow"><td colspan="3">{_esc(heading)}</td></tr>' + "".join(body)
+            + f'<tr style="font-weight:700"><td colspan="2">Total {_esc(heading.lower())}</td>'
+            f"{_num(total, ccy)}</tr>"
+        )
+    if not sections:
+        table = ('<p class="empty">No accounts yet — this business\'s chart hasn\'t been '
+                 "set up.</p>")
+    else:
+        table = (
+            '<div class="table-scroll"><table><thead><tr><th>Account</th><th>No.</th>'
+            '<th class="num">Balance</th></tr></thead><tbody>' + "".join(sections)
+            + "</tbody></table></div>"
+        )
+    return _card("Accounts", table)
+
+
+def render_trial_balance(tenant: str, tb: Mapping[str, object]) -> str:
+    """Every account's debit or credit balance, and that the two sides agree."""
+    ccy = str(tb.get("currency", "USD"))
+    rows = []
+    ordered = sorted((r for r in _seq(tb.get("rows")) if isinstance(r, Mapping)),
+                     key=lambda r: code_order(r.get("code")))
+    for r in ordered:
         code = _esc(r.get("code"))
         rows.append(
             f'<tr><td><a href="/t/{_esc(tenant)}/books/accounts/{code}">{code}</a></td>'
@@ -128,7 +214,7 @@ def render_books_home(
         )
     empty = (
         '<tr><td colspan="4" class="empty">'
-        "Nothing posted yet. Record the first transaction below.</td></tr>"
+        "Nothing posted yet.</td></tr>"
     )
     in_balance = bool(tb.get("in_balance", True))
     balance_banner = (
@@ -146,15 +232,7 @@ def render_books_home(
         + _num(tb.get("total_credit_minor"), ccy)
         + "</tr></tbody></table></div>"
     )
-    out = ""
-    if message:
-        out += _banner("good", message)
-    if error:
-        out += _banner("warn", error)
-    out += _card("Trial balance", table)
-    if can_post:
-        out += _render_entry_form(tenant, accounts, dimensions or {})
-    return out
+    return _card("Trial balance", table)
 
 
 def _render_entry_form(

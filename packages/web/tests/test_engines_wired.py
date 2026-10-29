@@ -224,3 +224,17 @@ def test_nav_shows_scenarios_and_receivables_for_view_cash() -> None:
     assert 'href="/t/acme/receivables" aria-current="page">Collections</a>' in r.body
     # ...and both sit under their groups rather than in one flat row.
     assert "<h2>Insights</h2>" in r.body and "<h2>Money in</h2>" in r.body
+
+
+def test_scenario_changes_are_written_as_money_and_the_page_escapes_them() -> None:
+    # Issue 28: the page showed "-1000.00"; it now shows "−$1,000.00". The raw
+    # decimals stay in the JSON for callers that compute with them.
+    app = _app(_scenario_inputs())
+    spec = {"template": "customer_pays_late", "params": {"customer_id": "acme", "days": 90}}
+    d = json.loads(app.handle(Request("POST", "/api/acme/scenario", _hj("owner@acme.com"),
+                                      json.dumps(spec))).body)
+    assert d["trough_delta_display"].startswith("−$")
+    assert d["trough_delta_display"].replace("−", "-").replace("$", "").replace(",", "") \
+        == d["trough_delta"]
+    page = app.handle(Request("GET", "/t/acme/scenarios", _h("owner@acme.com"))).body
+    assert "esc(d.scenario)" in page and "'+d.scenario+'" not in page
