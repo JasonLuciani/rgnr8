@@ -55,6 +55,15 @@ import {
 } from "@rgnr8/close";
 import type { LedgerBackend } from "./backend.js";
 import { LEDGER_SCHEMA_VERSION } from "./migrations.js";
+import {
+  BookOfRecordError,
+  MIRROR_KEY_PREFIX,
+  PARALLEL_RUN_MESSAGE,
+  QUICKBOOKS_SOURCE,
+  guardBackend,
+  inParallelRun,
+  isPostingRoute,
+} from "./bookOfRecord.js";
 import { ingestTransactions, type IngestRequest } from "./ingest.js";
 import {
   ArApError,
@@ -324,6 +333,13 @@ const created = (body: unknown): ServiceResponse => ({ status: 201, body });
 const bad = (error: string): ServiceResponse => ({ status: 400, body: { error } });
 const notFound = (error: string): ServiceResponse => ({ status: 404, body: { error } });
 const conflict = (error: string): ServiceResponse => ({ status: 409, body: { error } });
+/** The parallel-run refusal; `code` lets the web app tell it from other 409s. */
+const bookOfRecordConflict = (): ServiceResponse => ({
+  status: 409, body: { error: PARALLEL_RUN_MESSAGE, code: "book_of_record" },
+});
+/** Only the mirror writes as QuickBooks; anyone else claiming it is refused. */
+const claimsQuickBooks = (source: string): boolean =>
+  source.trim().toLowerCase() === QUICKBOOKS_SOURCE;
 
 /**
  * Compare a presented bearer token to the configured one in constant time.
@@ -442,11 +458,16 @@ function entryJson(e: PostedEntry): Record<string, unknown> {
 export class LedgerService {
   private readonly currency: Currency;
 
+  private readonly backend: LedgerBackend;
+
   constructor(
-    private readonly backend: LedgerBackend,
+    backend: LedgerBackend,
     private readonly opts: ServiceOptions,
   ) {
     this.currency = opts.defaultCurrency ?? USD;
+    // Every store a handler touches refuses non-QuickBooks entries during a
+    // parallel run: the backstop behind the route check in `handle`.
+    this.backend = guardBackend(backend);
   }
 
   async handle(req: ServiceRequest): Promise<ServiceResponse> {
@@ -477,6 +498,12 @@ export class LedgerService {
       if (!timingSafeTokenEqual(presented, expected)) {
         return { status: 401, body: { error: "unauthorized" } };
       }
+    }
+
+    // Parallel run: QuickBooks is the book of record, so a posting route is
+    // refused here, before it saves a document it then couldn't post.
+    if (isPostingRoute(req.method, rest) && await inParallelRun(this.backend, tenant)) {
+      return bookOfRecordConflict();
     }
 
     try {
@@ -1658,6 +1685,7 @@ export class LedgerService {
         return await this.goLive(tenant, req.body);
       }
     } catch (err) {
+      if (err instanceof BookOfRecordError) return bookOfRecordConflict();
       if (err instanceof PeriodClosedError) return conflict(err.message);
       if (err instanceof ArApError) return bad(err.message);
       if (err instanceof ReconcileError) return bad(err.message);
@@ -1832,6 +1860,11 @@ export class LedgerService {
       .map((l) => `${String(l.accountId)}:${l.side}:${l.amount.minorUnits}`)
       .join("|");
     const key = str(data["idempotency_key"]).trim() || `je:${date}:${fingerprint}`;
+    // A QuickBooks source is the mirror's alone: Refresh trusts every entry
+    // marked that way as a copy, so an entry claiming it must be a mirror entry.
+    if (claimsQuickBooks(str(data["source"])) && !key.startsWith(MIRROR_KEY_PREFIX)) {
+      return bad("source \"quickbooks\" is reserved for the QuickBooks mirror");
+    }
     const command: PostCommand = {
       tenantId: tenant,
       idempotencyKey: asIdempotencyKey(key),
@@ -2370,6 +2403,11 @@ export class LedgerService {
     if (!data) return bad("invalid JSON body");
     const txns = data["transactions"];
     if (!Array.isArray(txns)) return bad("transactions must be an array");
+    // Accepting a line stamps its feed source on the entry, so a "quickbooks"
+    // feed would mint entries the mirror can't tell from its own.
+    if (claimsQuickBooks(str(data["source"]))) {
+      return bad("source \"quickbooks\" is reserved for the QuickBooks mirror");
+    }
     const report = await deliverFeed(
       this.inboxCtx(tenant), accountCode,
       txns as Parameters<typeof deliverFeed>[2],
@@ -2601,6 +2639,9 @@ export class LedgerService {
   private async ingest(tenant: TenantId, body: string): Promise<ServiceResponse> {
     const data = parseJson(body);
     if (!data) return bad("invalid JSON body");
+    if (claimsQuickBooks(str(data["source"]))) {
+      return bad("source \"quickbooks\" is reserved for the QuickBooks mirror");
+    }
     const chart = await this.backend.chart(tenant);
     const report = await ingestTransactions(
       data as unknown as IngestRequest,
@@ -2629,6 +2670,12 @@ export class LedgerService {
     if (!data) return bad("invalid JSON body");
     const dto = { ...(data as unknown as GoLiveDto), tenant_id: String(tenant) };
     const request = goLiveFromDto(dto);
+    // On Postgres the go-live writes through its own transaction's store, which
+    // the store guard doesn't wrap: refuse here what the guard would refuse, an
+    // opening entry from anywhere but QuickBooks while QuickBooks is the book.
+    if (request.sourceSystem !== QUICKBOOKS_SOURCE && await inParallelRun(this.backend, tenant)) {
+      return bookOfRecordConflict();
+    }
     const now = this.opts.now();
     // Persist the chart through the backend's chart store as part of go-live, so
     // the accounts are written BEFORE the opening entry posts. When the backend

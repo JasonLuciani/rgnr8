@@ -46,7 +46,6 @@ export {
 export {
   buildOpeningBalanceEntry,
   executeCutover,
-  CutoverRegistry,
   CutoverError,
   type SourceSystem,
   type OpeningBalance,
