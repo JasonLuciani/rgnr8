@@ -37,6 +37,8 @@ _FILES: tuple[tuple[str, str, str], ...] = (
     # (stem, extension, content type)
     ("inter-latin", "woff2", "font/woff2"),
     ("inter-latin-ext", "woff2", "font/woff2"),
+    # The RGNR8 mark, ivory on forest, for the browser tab.
+    ("favicon", "svg", "image/svg+xml"),
 )
 
 # A year. Safe only because the URL is content-addressed: different bytes can

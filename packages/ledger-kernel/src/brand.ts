@@ -52,14 +52,12 @@ export const RG_TOKENS_CSS = `:root{
   --rg-pos:${RG.positive}; --rg-watch:${RG.watch}; --rg-risk:${RG.risk};
   --rg-radius:12px; --rg-pill:999px;
   --rg-shadow:0 1px 2px rgba(14,36,30,.07),0 1px 3px rgba(14,36,30,.05);
-  --rg-serif:ui-serif,Georgia,"Times New Roman",serif;
-  --rg-sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --rg-sans:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
 }`;
 
 export const RG_BASE_CSS = `*{box-sizing:border-box}
 body{margin:0;background:var(--rg-surface);color:var(--rg-ink);
   font:400 15px/1.55 var(--rg-sans);-webkit-font-smoothing:antialiased}
-h1{font-family:var(--rg-serif)}
 .rg-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;
   background:var(--rg-forest);color:var(--rg-ivory);padding:14px 22px}
 .rg-lockup{display:inline-flex;align-items:center;gap:11px}

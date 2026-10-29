@@ -111,7 +111,7 @@ def _templates_card(
         state = (
             '<span class="muted small" >paused</span>'
             if not t.get("active")
-            else '<span style="color:var(--rg-sage);font-weight:700;font-size:12px">on</span>'
+            else '<span style="color:var(--rg-accent-deep);font-weight:700;font-size:12px">on</span>'
         )
         remove = ""
         if can_post:

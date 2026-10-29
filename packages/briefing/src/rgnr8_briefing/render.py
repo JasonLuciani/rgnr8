@@ -5,7 +5,7 @@ from __future__ import annotations
 from html import escape
 
 from rgnr8_forecast import format_money
-from rgnr8_forecast.brand import POSITIVE, RISK, WATCH
+from rgnr8_forecast.brand import FOREST, INK_2, IVORY, LINE, MUTED, POSITIVE, RISK, WATCH
 
 from .models import StatusLevel, WeeklyBriefing
 
@@ -108,25 +108,25 @@ def render_html(b: WeeklyBriefing) -> str:
 <title>RGNR8 weekly cash briefing</title>
 <style>
   body {{ font: 400 15px/1.55 system-ui,-apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-         color: #0E241E; margin: 0; background: #F2EFE6; -webkit-font-smoothing:antialiased; }}
+         color: {FOREST}; margin: 0; background: {IVORY}; -webkit-font-smoothing:antialiased; }}
   .card {{ max-width: 680px; margin: 24px auto; background: #fff; border-radius: 16px;
           box-shadow: 0 1px 2px rgba(14,36,30,.07),0 1px 3px rgba(14,36,30,.05); overflow: hidden;
-          border:1px solid #E2DFD3; }}
-  .band {{ background: {color}; color: #F2EFE6; padding: 18px 24px; }}
+          border:1px solid {LINE}; }}
+  .band {{ background: {color}; color: {IVORY}; padding: 18px 24px; }}
   .wm {{ font: 600 14px/1 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; letter-spacing:.22em;
          text-transform:uppercase; opacity:.95; margin-bottom:12px; }}
   .band .badge {{ font-weight: 700; letter-spacing: .07em; text-transform: uppercase; font-size: 12px; opacity: .95; }}
-  .band h1 {{ font-family:ui-serif,Georgia,"Times New Roman",serif; font-size: 22px; margin: 6px 0 2px; font-weight:700; letter-spacing:-.01em; }}
+  .band h1 {{ font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; font-size: 22px; margin: 6px 0 2px; font-weight:700; letter-spacing:-.01em; }}
   .band p {{ margin: 0; opacity: .94; font-size: 13px; }}
   .body {{ padding: 20px 24px; }}
   .action {{ background: #EAF0EA; border: 1px solid #CBD9CC; border-radius: 10px; padding: 12px 14px; margin: 0 0 18px; }}
-  h3 {{ font-size: 11px; text-transform: uppercase; letter-spacing: .09em; color: #6E7A70; margin: 20px 0 8px; font-weight:700; }}
+  h3 {{ font-size: 11px; text-transform: uppercase; letter-spacing: .09em; color: {MUTED}; margin: 20px 0 8px; font-weight:700; }}
   table {{ width: 100%; border-collapse: collapse; }}
-  td {{ padding: 7px 0; border-bottom: 1px solid #EFEDE3; font-size: 14px; }}
-  .lbl {{ color: #2C3B33; }} .val {{ text-align: right; font-variant-numeric: tabular-nums; font-weight: 700; }}
-  .sub {{ color: #9AA196; font-size: 12px; padding-left: 10px; }}
+  td {{ padding: 7px 0; border-bottom: 1px solid {LINE}; font-size: 14px; }}
+  .lbl {{ color: {INK_2}; }} .val {{ text-align: right; font-variant-numeric: tabular-nums; font-weight: 700; }}
+  .sub {{ color: {MUTED}; font-size: 12px; padding-left: 10px; }}
   .dot {{ display: inline-block; width: 10px; height: 10px; border-radius: 50%; }}
-  .foot {{ color: #9AA196; font-size: 12px; padding: 14px 24px; border-top: 1px solid #EFEDE3; }}
+  .foot {{ color: {MUTED}; font-size: 12px; padding: 14px 24px; border-top: 1px solid {LINE}; }}
 </style></head>
 <body><div class="card">
   <div class="band">

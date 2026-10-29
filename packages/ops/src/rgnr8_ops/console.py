@@ -126,7 +126,7 @@ def render_operator_console(
 {RG_TOKENS_CSS}
 {RG_BASE_CSS}
   .rg-rolechip{{background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.16);border-radius:999px;
-    padding:3px 10px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--rg-sage)}}
+    padding:3px 10px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--rg-accent-deep)}}
   .rg-who{{display:flex;align-items:center;gap:10px;color:#DDE6DD;font-size:13px}}
   .wrap{{max-width:1120px;margin:0 auto;padding:24px 20px 56px}}
   h1{{font-size:22px;margin:0 0 2px;font-weight:800;letter-spacing:-.01em}}
@@ -134,7 +134,7 @@ def render_operator_console(
   .sub{{color:var(--rg-muted);margin:0 0 14px;font-size:13px}}
   label{{display:block;font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--rg-muted);margin:12px 0 6px}}
   input,select,textarea{{width:100%;padding:11px 12px;border:1px solid var(--rg-line);border-radius:10px;font:inherit;background:#fff;color:var(--rg-ink)}}
-  .rg-live{{color:var(--rg-sage);font-size:10px;font-weight:800;letter-spacing:.06em}}
+  .rg-live{{color:var(--rg-accent-deep);font-size:10px;font-weight:800;letter-spacing:.06em}}
   textarea{{min-height:82px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}}
   .grid{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}}
   .btn{{padding:11px 16px;margin-top:14px}}
@@ -185,7 +185,7 @@ _DETAIL_STYLE = f"""<style>
 {RG_TOKENS_CSS}
 {RG_BASE_CSS}
   .rg-rolechip{{background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.16);border-radius:999px;
-    padding:3px 10px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--rg-sage)}}
+    padding:3px 10px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--rg-accent-deep)}}
   .rg-who{{display:flex;align-items:center;gap:10px;color:#DDE6DD;font-size:13px}}
   .wrap{{max-width:1120px;margin:0 auto;padding:24px 20px 56px}}
   h1{{font-size:22px;margin:0 0 2px;font-weight:800;letter-spacing:-.01em}}
@@ -199,7 +199,7 @@ _DETAIL_STYLE = f"""<style>
   th,td{{text-align:left;padding:8px 10px;border-bottom:1px solid var(--rg-line);font-size:14px}}
   th{{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--rg-muted)}}
   .num{{font-weight:700}} .muted{{color:var(--rg-muted);font-size:12px}}
-  .rg-live{{color:var(--rg-sage);font-size:11px;font-weight:800;letter-spacing:.06em}}
+  .rg-live{{color:var(--rg-accent-deep);font-size:11px;font-weight:800;letter-spacing:.06em}}
   .grid{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}}
   @media(max-width:760px){{.cards,.grid{{grid-template-columns:1fr}}}}
 </style>"""

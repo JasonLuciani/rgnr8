@@ -30,6 +30,7 @@ from html import escape
 from urllib.parse import quote
 
 from rgnr8_briefing import EmailTransport, TransportError
+from rgnr8_forecast.brand import FOREST, MUTED, SAGE
 
 # purpose -> (path that consumes the token, subject, what the mail says)
 _MESSAGES: dict[str, tuple[str, str, str, str]] = {
@@ -80,19 +81,21 @@ def _html_body(intro: str, link: str, expiry: str, cta: str) -> str:
     safe_link = escape(link, quote=True)
     return (
         '<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;'
-        'max-width:520px;margin:0 auto;padding:28px 24px;color:#1B1F1D">'
+        f'max-width:520px;margin:0 auto;padding:28px 24px;color:{FOREST}">'
         '<div style="font:800 20px/1 sans-serif;letter-spacing:.18em;text-transform:uppercase;'
-        'color:#123A2C;margin-bottom:24px">RGNR<span style="color:#7FA88B">8</span></div>'
+        f'color:{FOREST};margin-bottom:24px">RGNR<span style="color:{SAGE}">8</span>'
+        f'<span style="font-size:11px;font-weight:700;letter-spacing:.18em;color:{MUTED};'
+        'margin-left:10px;vertical-align:middle">FIN OS</span></div>'
         f'<p style="font-size:15px;line-height:1.6;margin:0 0 24px">{escape(intro)}</p>'
         f'<p style="margin:0 0 24px"><a href="{safe_link}" '
-        'style="display:inline-block;background:#123A2C;color:#fff;text-decoration:none;'
+        f'style="display:inline-block;background:{FOREST};color:#fff;text-decoration:none;'
         f'padding:12px 22px;border-radius:8px;font-weight:600">{escape(cta)}</a></p>'
-        '<p style="font-size:13px;color:#6B7772;line-height:1.6;margin:0 0 8px">'
+        f'<p style="font-size:13px;color:{MUTED};line-height:1.6;margin:0 0 8px">'
         f'{escape(expiry)}</p>'
-        '<p style="font-size:13px;color:#6B7772;line-height:1.6;margin:0 0 24px">'
+        f'<p style="font-size:13px;color:{MUTED};line-height:1.6;margin:0 0 24px">'
         "If the button doesn't work, paste this into your browser:<br>"
         f'<span style="word-break:break-all">{escape(link)}</span></p>'
-        '<p style="font-size:12px;color:#9AA5A0;margin:0">If you weren\'t expecting '
+        f'<p style="font-size:12px;color:{MUTED};margin:0">If you weren\'t expecting '
         "this, you can ignore it.</p></div>"
     )
 

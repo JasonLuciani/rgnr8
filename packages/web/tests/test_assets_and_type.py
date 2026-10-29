@@ -52,7 +52,9 @@ def test_the_shipped_files_are_actually_woff2() -> None:
     # A truncated or HTML-error-page download would still be bytes on disk and
     # would still serve with a 200; the browser would just silently fall back.
     assert ASSETS, "no assets loaded"
-    for name, asset in ASSETS.items():
+    fonts = {n: a for n, a in ASSETS.items() if a.content_type == "font/woff2"}
+    assert len(fonts) == 2
+    for name, asset in fonts.items():
         assert name.endswith(".woff2")
         assert asset.body[:4] == b"wOF2", f"{name} is not a woff2"
         # woff2 declares its own total length at offset 8; a partial download
@@ -140,14 +142,12 @@ def test_the_georgia_mixture_is_gone() -> None:
     # The audit's typography finding: headings in Georgia while the UI sat in
     # system-ui made one product look like two.
     live = _declarations(RG_TOKENS_CSS) + _declarations(RG_BASE_CSS)
-    # No *face* named here may be a serif. (`--rg-serif` is a token NAME, kept
-    # as an alias below — what matters is that nothing resolves to a serif.)
+    # No *face* named here may be a serif.
     for face in ("Georgia", "ui-serif", "Times New Roman", "Cambria", "Charter"):
         assert face not in live, f"{face} is still named in the brand CSS"
     assert "Inter" in RG_TOKENS_CSS
-    # `--rg-serif` survives only as an alias for consumers outside this repo's
-    # Python tree; it must never resolve to an actual serif again.
-    assert "--rg-serif:var(--rg-sans)" in RG_TOKENS_CSS
+    # The old `--rg-serif` alias is gone, along with its last users.
+    assert "--rg-serif" not in RG_TOKENS_CSS
 
 
 def test_no_screen_still_asks_for_a_serif_face() -> None:
@@ -183,3 +183,18 @@ def test_the_font_is_not_render_blocking() -> None:
     # Two subsets, so a page with no accented characters never fetches latin-ext.
     assert font_face_css().count("@font-face") == 2
     assert "unicode-range" in font_face_css()
+
+
+def test_every_page_carries_the_favicon_and_favicon_ico_finds_it() -> None:
+    # Issue 38: the tab showed a browser's blank page icon.
+    from rgnr8_web import Request, WebApp
+    from rgnr8_web.assets import asset_url
+
+    icon = ASSETS[asset_url("favicon").rsplit("/", 1)[1]]
+    assert icon.content_type == "image/svg+xml" and icon.body.startswith(b"<svg")
+    app = WebApp()
+    page = app.handle(Request("GET", "/login")).body
+    r = app.handle(Request("GET", "/favicon.ico"))
+    assert r.status == 302 and dict(r.extra_headers)["Location"] == asset_url("favicon")
+    assert app.handle(Request("GET", asset_url("favicon"))).status == 200
+    del page

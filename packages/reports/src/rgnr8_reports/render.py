@@ -89,7 +89,7 @@ def render_html(report: Report) -> str:
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         f"<title>{escape(report.title)}</title>"
         f"<style>{RG_TOKENS_CSS}\n{RG_BASE_CSS}\n"
-        "h2{font-family:var(--rg-serif);font-size:19px;margin:0 0 14px}"
+        "h2{font-family:var(--rg-sans);font-size:19px;margin:0 0 14px}"
         ".chart{margin-top:8px}</style></head><body>"
         f"{brand_bar('Reports')}"
         '<main class="rg-shell">'
