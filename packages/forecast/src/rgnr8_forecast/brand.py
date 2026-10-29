@@ -229,13 +229,6 @@ RG_TOKENS_CSS = f""":root{{
   /* Money is read in columns, so figures are tabular by default and only opt
      out in running prose. */
   --rg-nums:tabular-nums;
-  /* Deprecated alias. Nothing in this repo should set type in a serif any
-     more, but the TypeScript ledger-kernel keeps its own copy of these tokens
-     and the prototype + report renderers still name this one. Pointing it at
-     the sans stack makes those surfaces consistent today without changing
-     them blind; delete it once `ledger-kernel/src/brand.ts` is folded into
-     this single source of truth. */
-  --rg-serif:var(--rg-sans);
 }}"""
 
 RG_BASE_CSS = """*{box-sizing:border-box}

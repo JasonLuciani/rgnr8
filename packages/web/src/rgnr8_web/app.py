@@ -29,7 +29,6 @@ from rgnr8_briefing import (
     ask,
     build_briefing,
     render_text,
-    render_today_html,
     validate_briefing,
 )
 from rgnr8_categorize import (
@@ -145,7 +144,7 @@ from .inbox_screens import (
     render_inbox,
     render_rules,
 )
-from .assets import ASSET_PREFIX, ASSETS, CACHE_HEADER
+from .assets import ASSET_PREFIX, ASSETS, CACHE_HEADER, asset_url
 from .integration_screens import render_integrations, render_integrations_unavailable
 from .inventory_screens import render_inventory, render_inventory_unavailable
 from .invitations import InvitationError, InvitationService
@@ -1097,6 +1096,10 @@ class WebApp:
 
         if route == "/health":
             return _json(200, {"status": "ok"})
+
+        # Browsers ask for /favicon.ico whatever the page says; send them to the mark.
+        if route == "/favicon.ico":
+            return _redirect(asset_url("favicon"))
 
         if route == "/ready":
             return _json(200, self._readiness())
@@ -6660,10 +6663,6 @@ class WebApp:
         return disp.enqueue(event)
 
     # --- handlers ------------------------------------------------------------
-    def _today_html(self, t: _Tenant) -> Response:
-        html = render_today_html(self._forecast(t), t.name)
-        return Response(200, html, "text/html; charset=utf-8")
-
     def _today_json(self, t: _Tenant) -> Response:
         fc = self._forecast(t)
         b = self._briefing(t)

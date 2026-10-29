@@ -98,7 +98,7 @@ def render_budget(data: Mapping[str, object]) -> str:
         fav = bool(l.get("favorable"))
         pct = l.get("pct_of_budget")
         pct_cell = f'<td class="num">{pct:.0f}%</td>' if isinstance(pct, (int, float)) else '<td class="num muted">—</td>'
-        flag = '<span style="color:var(--rg-sage)">▲ favorable</span>' if fav else '<span style="color:var(--rg-risk,#b4462f)">▼ over</span>'
+        flag = '<span style="color:var(--rg-accent-deep)">▲ favorable</span>' if fav else '<span style="color:var(--rg-risk,#b4462f)">▼ over</span>'
         body_rows.append(
             f'<tr><td>{_esc(l.get("code"))}</td><td>{_esc(l.get("name"))}</td>'
             f'{_num_cell(l.get("budget_minor"), ccy)}{_num_cell(l.get("actual_minor"), ccy)}'

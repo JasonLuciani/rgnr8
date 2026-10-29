@@ -21,7 +21,7 @@ from html import escape
 from rgnr8_briefing.today import CHART_CSS
 from rgnr8_forecast.brand import RG_BASE_CSS, RG_TOKENS_CSS, finos_logo_html
 
-from .assets import font_face_css
+from .assets import asset_url, font_face_css
 from .audit import AuditEvent
 from .components import Action, metric, page_header, status_chip
 from .modules import OPTIONAL_MODULES
@@ -263,7 +263,9 @@ def _doc(title: str, body: str) -> str:
     return (
         "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-        f"<title>{escape(title)}</title>{_SHELL_CSS}</head><body>{body}{dispatcher()}</body></html>"
+        f"<title>{escape(title)}</title>"
+        f"<link rel='icon' type='image/svg+xml' href='{asset_url('favicon')}'>"
+        f"{_SHELL_CSS}</head><body>{body}{dispatcher()}</body></html>"
     )
 
 
@@ -575,7 +577,7 @@ def _choose_tile(*, href: str, title: str, subtitle: str, accent: bool) -> str:
     """One selectable destination on the 'choose your view' screen."""
     border = "var(--rg-sage)" if accent else "#e3e3e3"
     badge = ('<span style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;'
-             'color:var(--rg-sage);font-weight:700">Staff</span>') if accent else ""
+             'color:var(--rg-accent-deep);font-weight:700">Staff</span>') if accent else ""
     return (
         f'<a href="{escape(href)}" style="display:block;text-decoration:none;border:1px solid {border};'
         'border-radius:12px;padding:16px 18px;background:#fff">'

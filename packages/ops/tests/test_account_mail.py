@@ -130,3 +130,16 @@ def test_redacted_config_reports_mail_state_without_the_key() -> None:
                   RGNR8_PUBLIC_BASE_URL=BASE).redacted()
     assert r["sendgrid"] == "set" and r["account_mail"] == "on"
     assert "SG.super-secret" not in str(r)
+
+
+def test_account_email_wears_the_current_lockup_and_colours() -> None:
+    # Issue 35: the email still used the retired wordmark colours (#123A2C,
+    # #7FA88B) and greys that read at under 3:1.
+    from rgnr8_forecast.brand import FOREST, MUTED, SAGE
+    from rgnr8_ops.account_mail import _html_body
+
+    html = _html_body("You've been invited.", "https://acctg.example/x", "Expires in 7 days.", "Accept")
+    assert "FIN OS" in html
+    assert FOREST in html and SAGE in html and MUTED in html
+    for retired in ("#123A2C", "#7FA88B", "#6B7772", "#9AA5A0", "#1B1F1D"):
+        assert retired not in html, retired

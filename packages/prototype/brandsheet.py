@@ -25,7 +25,7 @@ html = f"""<!doctype html>
 <title>RGNR8 — brand</title><style>
 {B.THEME_CSS}
 .wrap{{max-width:900px;margin:0 auto;padding:30px 22px 64px}}
-.lead{{font-family:var(--rg-serif);font-size:30px;font-weight:700;letter-spacing:-.01em;margin:22px 0 2px}}
+.lead{{font-family:var(--rg-sans);font-size:30px;font-weight:700;letter-spacing:-.01em;margin:22px 0 2px}}
 .tag{{font-size:12px;font-weight:700;letter-spacing:.22em;text-transform:uppercase;color:var(--rg-sage);margin:0 0 22px}}
 .sub{{color:var(--rg-muted);margin:0 0 26px;max-width:62ch}}
 h2{{font-size:11px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:var(--rg-muted);margin:32px 0 12px}}
@@ -35,7 +35,7 @@ h2{{font-size:11px;font-weight:700;letter-spacing:.13em;text-transform:uppercase
 .mark{{display:flex;align-items:center;gap:22px;flex-wrap:wrap}}
 .markbox{{background:var(--rg-forest);border-radius:14px;padding:24px 28px;display:flex;align-items:center;gap:14px}}
 .markbox .rg-wordmark{{font-size:30px}}
-.big{{font-family:var(--rg-serif);font-size:46px;font-weight:700;letter-spacing:-.01em;font-variant-numeric:tabular-nums}}
+.big{{font-family:var(--rg-sans);font-size:46px;font-weight:700;letter-spacing:-.01em;font-variant-numeric:tabular-nums}}
 .card{{background:var(--rg-paper);border:1px solid var(--rg-line);border-radius:14px;padding:20px 22px;box-shadow:var(--rg-shadow)}}
 .badges span{{margin-right:8px}}
 .principle{{border-left:3px solid var(--rg-sage);padding:2px 0 2px 14px;margin:10px 0;color:var(--rg-ink-2)}}
