@@ -55,6 +55,7 @@ TABS: dict[str, tuple[Tab, ...]] = {
     "bills": (Tab("Bills", "bills"), Tab("Aging", "payables/aging"), Tab("1099s", "books/1099")),
     "inbox": (
         Tab("For review", "inbox"),
+        Tab("History", "inbox/history"),
         Tab("Rules", "inbox/rules"),
         Tab("Already posted", "inbox?status=POSTED"),
         Tab("Excluded", "inbox?status=EXCLUDED"),

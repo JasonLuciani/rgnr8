@@ -46,6 +46,7 @@ import { DEBT_DDL } from "./debt.js";
 import { FIXED_ASSET_DDL } from "./fixedassets.js";
 import { rlsDdl } from "./security.js";
 import { OPEN_ITEMS_DDL } from "./openItems.js";
+import { BANK_HISTORY_DDL } from "./bankHistory.js";
 import { CUTOVER_DDL } from "./cutover.js";
 
 /**
@@ -88,6 +89,7 @@ export function ledgerMigrations(opts: { enforceRls: boolean }): Migration[] {
     { version: 25, name: "settings_mirror_binding", sql: SETTINGS_MIRROR_DDL },
     { version: 26, name: "mirror_open_items", sql: OPEN_ITEMS_DDL },
     { version: 27, name: "cutover_record", sql: CUTOVER_DDL },
+    { version: 28, name: "mirror_bank_history", sql: BANK_HISTORY_DDL },
   ];
   // RLS policies key on every tenant table, so they migrate last.
   if (opts.enforceRls) {
@@ -98,6 +100,10 @@ export function ledgerMigrations(opts: { enforceRls: boolean }): Migration[] {
     // an applied migration's SQL.
     tables.push({ version: 101, name: "rls_policies_open_items", sql: rlsDdl(["mirror_open_item"]) });
     tables.push({ version: 102, name: "rls_policies_cutover", sql: rlsDdl(["rgnr8_cutover"]) });
+    tables.push({
+      version: 103, name: "rls_policies_bank_history",
+      sql: rlsDdl(["mirror_bank_line", "mirror_bank_history"]),
+    });
   }
   return tables;
 }

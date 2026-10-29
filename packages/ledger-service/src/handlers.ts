@@ -57,6 +57,9 @@ import type { LedgerBackend } from "./backend.js";
 import { LEDGER_SCHEMA_VERSION } from "./migrations.js";
 import { OpenItemsError, snapshotFromJson, snapshotJson } from "./openItems.js";
 import {
+  BankHistoryError, coverageJson, importFromJson, lineJson, summarize,
+} from "./bankHistory.js";
+import {
   CutoverError,
   backOutCutover,
   backoutBlocker,
@@ -563,6 +566,35 @@ export class LedgerService {
           const snapshot = snapshotFromJson(data);
           await store.replace(String(tenant), snapshot);
           return ok(snapshotJson(String(tenant), snapshot));
+        }
+      }
+
+      // --- QuickBooks bank and card history (a non-posting copy) -----------
+      // GET  .../mirror/bank-history?from&to&account&group=week|month&lines=0
+      //      coverage + per-period totals, and the lines unless lines=0
+      // POST .../mirror/bank-history  replace one date window with QuickBooks' lines
+      if (rest[0] === "mirror" && rest[1] === "bank-history" && rest.length === 2) {
+        const store = this.backend.bankHistory();
+        if (req.method === "GET") {
+          const q = {
+            from: req.query["from"] ?? "", to: req.query["to"] ?? "", account: req.query["account"] ?? "",
+          };
+          const group = req.query["group"] === "week" ? "week" : "month";
+          const lines = await store.lines(String(tenant), q);
+          const coverage = await store.coverage(String(tenant));
+          return ok({
+            tenant, ...coverageJson(coverage), count: lines.length, group,
+            periods: summarize(lines, group),
+            ...(req.query["lines"] === "0" ? {} : { lines: lines.map(lineJson) }),
+          });
+        }
+        if (req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const imp = importFromJson(data);
+          await store.replaceWindow(String(tenant), imp);
+          return ok({ tenant, start: imp.start, end: imp.end, imported: imp.lines.length,
+            ...coverageJson(await store.coverage(String(tenant))) });
         }
       }
 
@@ -1777,6 +1809,7 @@ export class LedgerService {
       if (err instanceof ConsolidationServiceError) return bad(err.message);
       if (err instanceof SettingsError) return bad(err.message);
       if (err instanceof OpenItemsError) return bad(err.message);
+      if (err instanceof BankHistoryError) return bad(err.message);
       if (err instanceof CutoverError) return conflict(err.message);
       if (err instanceof DebtError) return bad(err.message);
       if (err instanceof FixedAssetError) return bad(err.message);
