@@ -1302,6 +1302,10 @@ class WebApp:
                                  lambda t: self._health_page(subject, t, req.query))
 
         # --- Ask RGNR8 (conversational finance, read-only) ---
+        # Switched off (no AI provider), it isn't a product surface at all: no nav
+        # item, and no "coming soon" page behind a remembered link either.
+        if len(parts) >= 3 and parts[0] == "t" and parts[2] == "ask" and self._ask_svc is None:
+            return _json(404, {"error": "not found"})
         if (len(parts) == 4 and parts[0] == "t" and parts[2] == "ask"
                 and parts[3] == "clear" and req.method == "POST"):
             return self._require(subject, token_tenant, parts[1], P.ASK_CFO,

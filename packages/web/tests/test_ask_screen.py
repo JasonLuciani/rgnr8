@@ -104,12 +104,13 @@ def _req(app: WebApp, path: str, sub: str = "u-owner",
 
 # --- unconfigured ------------------------------------------------------------
 
-def test_ask_is_unavailable_without_an_llm() -> None:
+def test_without_an_llm_ask_does_not_exist() -> None:
+    # Switched off, it's neither in the nav nor a "coming soon" page behind a link.
     app, _t = _app(None)
-    r = _req(app, "/t/acme/ask")
-    assert r.status == 200
-    assert "isn't configured" in r.body
-    assert "computed by the ledger" in r.body
+    for method, path in (("GET", "/t/acme/ask"), ("POST", "/t/acme/ask"), ("POST", "/t/acme/ask/clear")):
+        assert _req(app, path, method=method).status == 404, path
+    home = _req(app, "/t/acme/").body
+    assert "Ask RGNR8" not in home and "/t/acme/ask" not in home
 
 
 def test_ask_is_unavailable_without_a_ledger() -> None:
