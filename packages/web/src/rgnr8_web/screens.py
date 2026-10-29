@@ -25,7 +25,7 @@ from rgnr8_ar.aging import BUCKET_ORDER, AgingBucket
 from rgnr8_briefing import Question, answer, build_briefing
 from rgnr8_briefing.answer import SUGGESTED
 from rgnr8_briefing.today import _cash_chart, _chart_points  # shared 13-week chart
-from rgnr8_forecast import ForecastResult, Money, Projection
+from rgnr8_forecast import Direction, ForecastResult, Projection
 from rgnr8_forecast.brand import format_money as _money  # the one shared money formatter
 from rgnr8_reports import ReportSpec
 
@@ -41,13 +41,6 @@ _STATUS = {
 }
 # Distinct glyph per state so status never rides on color alone.
 _STATUS_GLYPH = {"STABLE": "✓", "WATCH": "◆", "AT_RISK": "▲"}
-
-
-def _kpi_value(m: Money) -> str:
-    """A KPI money value, colored with the risk token when it's negative (a
-    floor breach / no cushion) so the alarming numbers actually stand out."""
-    v = escape(_money(m))
-    return f'<span class="neg">{v}</span>' if m.minor_units < 0 else v
 
 
 def _status_pill(status: str) -> str:
@@ -121,15 +114,31 @@ def render_attention_queue(items: "Sequence[AttentionItem]") -> str:
     )
 
 
-def _chart_summary(p: "Projection") -> str:
-    """The 13-week chart in one sentence, for anyone who can't see the chart
-    (and anyone who'd rather read than read a chart)."""
+def _chart_summary(p: "Projection", *, has_costs: bool = True) -> str:
+    """The 13-week outlook in words: where cash goes, and what that means
+    against the floor. It is the verdict at the top of the 13-week card and
+    the chart's text description at once, so the low point is said once, here,
+    rather than again in a headline and a line of facts."""
     low = p.trough
+    floor = _money(p.effective_floor)
+    if not has_costs and not p.breach.breached:
+        # "Stays above your floor" is true of an outlook in which nothing is
+        # spent, and says nothing about the business.
+        return (f"Cash starts at {_money(p.opening_available)} today, but no costs are in the "
+                "outlook yet, so it can't say how long that lasts.")
     line = (f"Cash starts at {_money(p.opening_available)} today, reaches its lowest point of "
             f"{_money(low.balance)} on {low.on_date:%b} {low.on_date.day}, and ends the 13 weeks "
             f"at {_money(p.ending_balance)}.")
-    if p.breach.breached:
-        line += f" That low point is below your {_money(p.effective_floor)} minimum-cash floor."
+    first = p.breach.first_date
+    if p.breach.breached and first is not None:
+        line += (f" It first falls below your {floor} floor in week {p.breach.weeks_until} "
+                 f"(around {first:%b} {first.day}), short by up to "
+                 f"{_money(p.breach.worst_shortfall)}.")
+    elif p.breach.breached:
+        line += f" That low point is below your {floor} minimum-cash floor."
+    else:
+        line += (f" It stays above your {floor} floor for all {len(p.weeks)} weeks, with "
+                 f"{_money(low.balance - p.effective_floor)} to spare at the low point.")
     return line
 
 
@@ -158,15 +167,8 @@ def render_cash_body(
         return _cash_empty_state(display_name, tenant)
     b = build_briefing(forecast)
     p = forecast.projection
-    # Floor, low point and cushion support the hero rather than compete with it:
-    # one quiet line under it, not three tiles as loud as the cash figure. A
-    # cushion below zero is the one part that should still stand out.
-    cushion = p.trough.balance - p.effective_floor
-    facts = (f'<p class="muted cash-facts">Minimum-cash floor {escape(_money(p.effective_floor))}'
-             f" · Projected low point {escape(_money(p.trough.balance))}"
-             f" on {p.trough.on_date:%b} {p.trough.on_date.day}"
-             f" · Cushion at low point {_kpi_value(cushion)}</p>")
-    summary = _chart_summary(p)
+    has_costs = any(f.direction is Direction.OUTFLOW for f in forecast.flows)
+    summary = _chart_summary(p, has_costs=has_costs)
     drivers = ""
     if b.drivers:
         top = b.drivers[0].amount.minor_units or 1
@@ -176,12 +178,13 @@ def render_cash_body(
                         f'<span class="num">{escape(_money(d.amount))}</span></div>'
                         f'<div class="track"><div class="fill" style="width:{pct}%"></div></div>'
                         f'<div class="s">{d.share_bps/100:.0f}% of outflows</div></div>')
-    # The trust label marks a whole card, in its header, never one figure. The
-    # hero card holds one figure, cash today, so it wears that figure's label;
-    # the floor, low point and cushion are projections, so they sit with the
-    # 13-week chart, and every projected card is labelled a forecast whenever
-    # there are books to tell it apart from. With no books wired every figure
-    # is a forecast and a label would say nothing.
+    # The trust label marks a whole card, in its header, never one figure, and
+    # a card can only wear one. "Cash today" holds the one figure that can come
+    # straight from the books, and nothing else. Everything that looks ahead
+    # (the status, the floor, the low point) is the 13-week card's, directly
+    # under it, labelled a forecast whenever there are books to tell the two
+    # apart. With no books wired every figure is a forecast and a label would
+    # say nothing.
     projected = Provenance.FORECAST if cash_provenance is not None else None
     if drivers:
         drivers = card("What's using your cash", drivers, provenance=projected)
@@ -196,21 +199,21 @@ def render_cash_body(
                   f'border-color:var(--rg-line)"><strong>Do this — </strong>{escape(b.primary_action)}</div>')
     needs = "" if attention is None else render_attention_queue(attention)
     _ = _chart_points  # (chart script omitted in-shell; SVG is static here)
-    hero = card("Cash today", (
-        '<div class="cash-hero">'
-        f'<div>{metric("", _money(p.opening_available), hero=True)}</div>'
-        f'<div class="cash-state">{status_chip(b.status.value)}'
-        f'<div class="line">{escape(b.headline)}</div></div>'
-        f"</div>{action}"), provenance=cash_provenance)
+    hero = card("Cash today", metric("", _money(p.opening_available), hero=True),
+                provenance=cash_provenance)
+    # The verdict leads the 13-week card: the status, then the one sentence
+    # that says where cash goes and what that means against the floor.
     chart = card("Next 13 weeks — projected cash", (
-        f'<p class="chart-summary" id="cash-chart-summary">{escape(summary)}</p>'
-        f'<div role="img" aria-describedby="cash-chart-summary">{_cash_chart(forecast)}</div>'
-        f"{facts}"), provenance=projected)
+        f'<div class="cash-verdict">{status_chip(b.status.value)}'
+        f'<p class="chart-summary" id="cash-chart-summary">{escape(summary)}</p></div>'
+        f"{action}"
+        f'<div role="img" aria-describedby="cash-chart-summary">{_cash_chart(forecast)}</div>'),
+        provenance=projected)
     return f"""{page_header("Cash outlook",
         sub=f"{display_name} · as of {p.as_of.isoformat()} · {b.period_label}")}
     {hero}
-    {needs}
     {chart}
+    {needs}
     {drivers}
     <p class="muted small" >Confidence {b.overall_confidence}/100 · every figure traces to the forecast</p>"""
 

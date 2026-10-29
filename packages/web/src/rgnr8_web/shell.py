@@ -223,7 +223,10 @@ _SHELL_CSS = f"""<style>
   .cash-state{{text-align:right;max-width:36ch}}
   .cash-state .line{{margin-top:8px;color:var(--rg-ink-2);font-size:14px}}
   @media(max-width:560px){{.cash-state{{text-align:left}}}}
-  .cash-facts{{margin:14px 0 0;font-size:13px;line-height:1.5}}
+  /* The 13-week card leads with its verdict: the status, then the sentence
+     that says where cash goes against the floor. */
+  .cash-verdict{{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;margin:0 0 12px}}
+  .cash-verdict .chart-summary{{margin:0;flex:1;min-width:min(100%,32ch);font-size:14px;line-height:1.45}}
   .chart-summary{{margin:0 0 10px;font-size:13px;color:var(--rg-ink-2)}}
   /* The 13-week cash chart is borrowed from the briefing package; it brings its
      own rules with it now. Without them every element fell back to SVG's

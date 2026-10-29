@@ -9,6 +9,7 @@ with the floor/low point/cushion as a quiet line, not tiles (18).
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import Any
 
@@ -193,7 +194,12 @@ def test_the_chart_has_a_summary_in_words_and_the_tiles_are_one_line() -> None:
     assert 'id="cash-chart-summary"' in page and 'aria-describedby="cash-chart-summary"' in page
     assert "Cash starts at $20,000.00 today, reaches its lowest point of" in page
     assert '<div class="tiles">' not in page
-    assert "Minimum-cash floor $10,000.00 · Projected low point" in page
+    # The floor and the room to spare are in that same sentence, so the low
+    # point is said once (it used to be repeated in a line of facts and in the
+    # cash card's headline).
+    assert re.search(r"It first falls below your \$10,000\.00 floor in week 1 "
+                     r"\(around Aug 7\), short by up to \$124,200\.00\.", page)
+    assert page.count("lowest point") == 1 and "Projected low point" not in page
 
 
 def test_the_page_only_says_there_are_no_costs_when_there_are_none() -> None:
@@ -205,3 +211,27 @@ def test_the_page_only_says_there_are_no_costs_when_there_are_none() -> None:
     t.inputs = ForecastInputs(opening=t.inputs.opening)
     page = _get(app, "/t/acme/costs").body
     assert "Your outlook has no costs in it" in page and "already has some costs" not in page
+
+
+def test_the_outlook_sentence_says_what_the_floor_means_in_each_case() -> None:
+    from types import SimpleNamespace
+
+    from rgnr8_web.screens import _chart_summary
+
+    def proj(low: str, *, breached: bool = False) -> Any:
+        return SimpleNamespace(
+            opening_available=Money.from_decimal("20000.00"), ending_balance=Money.from_decimal("18000.00"),
+            effective_floor=Money.from_decimal("10000.00"), weeks=[None] * 13,
+            trough=SimpleNamespace(balance=Money.from_decimal(low), on_date=date(2026, 9, 1)),
+            breach=SimpleNamespace(breached=breached, first_date=None, weeks_until=None,
+                                   worst_shortfall=None))
+
+    held = _chart_summary(proj("14640.00"))
+    assert held == ("Cash starts at $20,000.00 today, reaches its lowest point of $14,640.00 on "
+                    "Sep 1, and ends the 13 weeks at $18,000.00. It stays above your $10,000.00 "
+                    "floor for all 13 weeks, with $4,640.00 to spare at the low point.")
+    # With nothing spent, "stays above the floor" would be true and meaningless.
+    assert "no costs are in the outlook" in _chart_summary(proj("20000.00"), has_costs=False)
+    assert "lowest point" not in _chart_summary(proj("20000.00"), has_costs=False)
+    assert "below your $10,000.00 minimum-cash floor" in _chart_summary(
+        proj("5000.00", breached=True))

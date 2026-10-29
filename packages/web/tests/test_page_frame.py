@@ -264,6 +264,17 @@ def _check_cards(html: str, *, where: str, ledger_backed: bool = False) -> None:
                       if any(r in (p.attrs.get("style") or "").replace(" ", "") for r in _RIGHT)]
             assert not pushed, (f"{where}: card {name!r} pushes {a.words().strip()!r} "
                                 "to the right; a card's actions sit bottom-left")
+        # A card labelled as recorded fact can't also carry a verdict about
+        # the future: a status chip outside a table (where one describes a
+        # record, "Open", "Paid") is the outlook's call, and belongs on a card
+        # labelled Forecast.
+        level = next((b.cls[1] for b in (head.kids if head is not None else []) if _is_badge(b)),
+                     "")
+        if level in ("rg-prov-posted", "rg-prov-reconciled", "rg-prov-sealed"):
+            verdicts = [v.words().strip() for v in c.walk() if "chip-status" in v.cls
+                        and not any(p.tag == "table" for p in v.ancestors(stop=c))]
+            assert not verdicts, (f"{where}: card {name!r} is labelled {level[8:]} but carries "
+                                  f"the outlook's verdict {verdicts}")
         if ledger_backed and _MONEY.search(c.words()):
             assert head is not None and any(_is_badge(b) for b in head.kids), (
                 f"{where}: card {name!r} shows figures from the books but its header "
@@ -420,8 +431,48 @@ def test_the_home_cash_card_is_labelled_in_its_header_and_the_projection_is_a_fo
     assert hero.index("rg-prov") < hero.index('class="metric hero"')
     chart = main[main.index("<h2>Next 13 weeks — projected cash</h2>"):]
     assert chart.index("rg-prov-forecast") < chart.index("cash-chart-summary")
-    # The floor and the low point are projections: they moved under the chart.
-    assert chart.index("<svg") < chart.index("Minimum-cash floor")
+
+
+def _cards_by_title(main: str) -> dict[str, _El]:
+    root = _Tree(main).root
+    out = {}
+    for el in root.walk():
+        head = _header(el) if _is_card(el) else None
+        if head is not None:
+            out[" ".join(next(k for k in head.walk() if k.tag == "h2").words().split())] = el
+    return out
+
+
+@pytest.mark.parametrize("books", [True, False], ids=["books-wired", "no-books"])
+def test_cash_today_holds_only_the_cash_figure_and_the_verdict_leads_the_outlook(
+        books: bool) -> None:
+    # The Posted card used to carry the status chip and the floor verdict too,
+    # which are forecasts; and the low point was stated twice.
+    app = _app()
+    if not books:
+        app = WebApp()
+        app.add_tenant("acme", "Acme Co", _inputs(),
+                       ForecastConfig(minimum_cash=Money.from_decimal("1000.00")), token="tok")
+    main = _page(app, "/t/acme")
+    _check_cards(main, where="home")
+    cards = _cards_by_title(main)
+    hero, outlook = cards["Cash today"], cards["Next 13 weeks — projected cash"]
+    assert hero.words().split() == ["Cash", "today"] + (["Posted"] if books else []) + ["$3,000.00"]
+    assert not any("chip-status" in el.cls for el in hero.walk())
+    # Without books there is nothing to tell apart, so no label on either card.
+    assert ("rg-prov" in main) is books
+    # The 13-week card sits directly under it, and opens with the status and
+    # the one sentence that states the low point and the floor.
+    order = list(cards)
+    assert order.index("Next 13 weeks — projected cash") == order.index("Cash today") + 1
+    lead = next(el for el in outlook.walk() if "cash-verdict" in el.cls)
+    assert "chip-status" in lead.kids[0].cls
+    assert lead.kids[1].attrs.get("id") == "cash-chart-summary"
+    assert lead.kids[1].words().startswith("Cash starts at $3,000.00 today")
+    # (This tenant has no costs, so the sentence says so rather than claiming
+    # the floor holds; test_monday_answer covers an outlook with costs.)
+    assert main.count("lowest point") <= 1 and "Low point is" not in main
+    assert "Minimum-cash floor" not in main
 
 
 def test_every_label_on_a_page_is_explained_at_its_foot() -> None:
