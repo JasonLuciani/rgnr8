@@ -217,6 +217,10 @@ class LedgerClient:
     def health(self) -> bool:
         return self._call("GET", "/health").ok
 
+    def ready(self) -> LedgerResponse:
+        """The ledger's readiness, with the build and schema level it serves."""
+        return self._call("GET", "/ready")
+
     def accounts(self, tenant: str) -> LedgerResponse:
         return self._call("GET", f"/t/{tenant}/accounts")
 

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from rgnr8_forecast import CashPosition, ForecastConfig, ForecastInputs, Money
+from rgnr8_web import webhooks_out
 from rgnr8_web import (
     PENDING,
     CloseBoard,
@@ -22,6 +25,13 @@ from rgnr8_web import (
 
 SECRET = "integ-secret"
 NOW = 1_760_000_000
+
+
+@pytest.fixture(autouse=True)
+def _no_real_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The route's SSRF guard resolves the endpoint's host. Answer for it here, so
+    # these tests pass offline and never depend on what example.com resolves to.
+    monkeypatch.setattr(webhooks_out, "_default_resolver", lambda host: ["93.184.216.34"])
 
 
 def _app() -> tuple[WebApp, InMemoryWebhookEndpointStore, InMemoryWebhookOutbox]:

@@ -83,6 +83,8 @@ async function main(): Promise<void> {
   const service = new LedgerService(backend, {
     ...(token ? { authToken: token } : {}),
     now: () => new Date().toISOString(),
+    // Render sets RENDER_GIT_COMMIT on every service it builds from this repo.
+    buildVersion: process.env["RENDER_GIT_COMMIT"] ?? "",
   });
 
   createLedgerServer(service).listen(port, () => {

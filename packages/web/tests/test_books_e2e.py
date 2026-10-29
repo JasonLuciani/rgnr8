@@ -40,6 +40,7 @@ from rgnr8_web import (
     WebApp,
     sign_jwt,
 )
+from rgnr8_web.deploy_check import EXPECTED_LEDGER_SCHEMA
 
 SECRET = "e2e-secret"
 NOW = 1_760_000_000
@@ -1233,3 +1234,13 @@ def test_the_quickbooks_pin_round_trips_through_the_real_service(ledger_service:
     stored = app._ledger.settings("pinco").body["settings"]
     assert stored["book_of_record"] == "quickbooks" and stored["cutover_date"] == "2026-09-30"
     assert stored["inventory_costing_method"] == "MOVING_AVERAGE"   # other settings untouched
+
+
+def test_the_real_ledger_and_this_app_agree_on_the_schema(ledger_service: str) -> None:
+    # The ledger names the schema level it serves, and it is the one this app
+    # was written against: what a failed ledger deploy breaks, checked for real.
+    app =_app(ledger_service, ["acme"])
+    ready = json.loads(app.handle(Request("GET", "/ready")).body)
+    assert ready["ledger"]["reachable"] is True
+    assert ready["ledger"]["schema"] == EXPECTED_LEDGER_SCHEMA
+    assert ready["ledger_skew"] is None

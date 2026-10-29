@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { InMemoryBackend, LedgerService, type ServiceResponse } from "../src/index.js";
+import { LEDGER_SCHEMA_VERSION, ledgerMigrations } from "../src/migrations.js";
 
 const NOW = "2026-08-31T00:00:00Z";
 const TOKEN = "svc-secret";
@@ -9,6 +10,21 @@ const TOKEN = "svc-secret";
 function svc(): LedgerService {
   return new LedgerService(new InMemoryBackend(), { authToken: TOKEN, now: () => NOW });
 }
+
+test("/ready names the build and the schema level it carries", async () => {
+  // The web app compares these to its own; a failed ledger deploy leaves an
+  // older build serving, and this is how that becomes visible.
+  const s = new LedgerService(new InMemoryBackend(), {
+    authToken: TOKEN, now: () => NOW, buildVersion: "c7c3bf4",
+  });
+  const ready = await s.handle({ method: "GET", path: "/ready", query: {}, body: "", headers: {} });
+  const body = ready.body as Record<string, unknown>;
+  assert.equal(body["version"], "c7c3bf4");
+  assert.equal(body["schema"], LEDGER_SCHEMA_VERSION);
+  assert.equal(LEDGER_SCHEMA_VERSION, Math.max(
+    ...ledgerMigrations({ enforceRls: true }).filter((m) => m.version < 100).map((m) => m.version),
+  ));
+});
 
 /** The per-tenant token a valid caller presents: HMAC(secret, tenant) from the path. */
 function tenantTok(secret: string, path: string): string {
@@ -64,6 +80,7 @@ test("health and readiness need no auth; everything else does", async () => {
   const ready = await s.handle({ method: "GET", path: "/ready", query: {}, body: "", headers: {} });
   assert.equal(ready.status, 200);
   assert.equal((ready.body as Record<string, unknown>)["status"], "ready");
+  assert.equal((ready.body as Record<string, unknown>)["version"], "dev");
   const unauthed = await s.handle({
     method: "GET", path: "/t/acme/accounts", query: {}, body: "", headers: {},
   });

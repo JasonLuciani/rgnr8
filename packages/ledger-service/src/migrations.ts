@@ -92,6 +92,17 @@ export function ledgerMigrations(opts: { enforceRls: boolean }): Migration[] {
   return tables;
 }
 
+/**
+ * The schema level this build carries: its highest table migration (RLS's 100 is
+ * a policy layer, present or not per database, so it isn't a level). A ledger
+ * that is serving has applied all of these — boot refuses otherwise — so this
+ * is what `/ready` reports, and what the web app checks to spot an older ledger
+ * still running after a failed deploy.
+ */
+export const LEDGER_SCHEMA_VERSION: number = Math.max(
+  ...ledgerMigrations({ enforceRls: false }).map((m) => m.version),
+);
+
 /** Apply the governed schema to a database. `appliedAt` is injected. */
 export function migrateLedgerSchema(
   db: SqlExecutor,

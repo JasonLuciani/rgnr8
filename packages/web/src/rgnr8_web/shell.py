@@ -653,6 +653,7 @@ def render_shell(
     subject: str = "",
     hide_provisional: bool = False,
     available: "frozenset[str] | None" = None,
+    deploy_notice: str = "",
 ) -> str:
     """Wrap a screen body in the role-aware app shell (top bar + grouped sidebar).
 
@@ -680,6 +681,10 @@ def render_shell(
     # The Cash home is active == "cash"; the nav suffix for it is "".
     active_suffix = "" if active == "cash" else active
     body = (_provisional_banner() + body_html) if is_provisional(active_suffix) else body_html
+    # A ledger on the wrong build can accept a write and drop part of it, so
+    # this tops every screen until the two services match again.
+    if deploy_notice:
+        body = f'<div class="banner warn" role="alert">{escape(deploy_notice)}</div>' + body
     nav = _nav_html(tenant, permissions, active,
                     hide_provisional=hide_provisional, available=available)
     layout = (

@@ -54,6 +54,7 @@ import {
   type FinancialPackageInput,
 } from "@rgnr8/close";
 import type { LedgerBackend } from "./backend.js";
+import { LEDGER_SCHEMA_VERSION } from "./migrations.js";
 import { ingestTransactions, type IngestRequest } from "./ingest.js";
 import {
   ArApError,
@@ -314,6 +315,8 @@ export interface ServiceOptions {
   readonly defaultCurrency?: Currency;
   /** Optional content scanner for uploads (default allow-all; inject a real AV in prod). */
   readonly scanner?: ContentScanner;
+  /** The commit this build came from, reported on /ready ("dev" when unknown). */
+  readonly buildVersion?: string;
 }
 
 const ok = (body: unknown): ServiceResponse => ({ status: 200, body });
@@ -452,9 +455,12 @@ export class LedgerService {
     if (req.path === "/health") return ok({ status: "ok" });
     if (req.path === "/ready") {
       const ready = await this.backend.ping();
+      // Version and schema ride on both answers: they say which build is
+      // serving, which is what a deploy check needs most when it went wrong.
+      const build = { version: this.opts.buildVersion || "dev", schema: LEDGER_SCHEMA_VERSION };
       return ready
-        ? ok({ status: "ready" })
-        : { status: 503, body: { status: "unavailable", error: "backend not reachable" } };
+        ? ok({ status: "ready", ...build })
+        : { status: 503, body: { status: "unavailable", error: "backend not reachable", ...build } };
     }
 
     if (parts[0] !== "t" || parts.length < 2) return notFound("not found");

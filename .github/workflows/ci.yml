@@ -129,6 +129,23 @@ jobs:
             sleep 3
           done
           echo "web never became ready"; exit 1
+      - name: Web and ledger report the same build (no version skew)
+        # The pair just built from one commit must agree. On Render, the same
+        # check on /ready is what shows a ledger whose deploy failed.
+        # Polls past the web app's one-minute cache of the ledger's answer, so a
+        # ledger still booting when web first asked doesn't fail the check.
+        run: |
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:8080/ready >/tmp/ready.json
+            if python3 -c "import json,sys;
+          r=json.load(open('/tmp/ready.json'));
+          sys.exit(0 if (r.get('ledger') or {}).get('reachable') else 1)"; then break; fi
+            sleep 3
+          done
+          cat /tmp/ready.json
+          python3 -c "import json,sys;
+          r=json.load(open('/tmp/ready.json'));
+          sys.exit(0 if (r.get('ledger') or {}).get('reachable') and r.get('ledger_skew') is None else 1)"
       - name: Web can reach the ledger over the internal network
         run: >-
           docker compose -f deploy/docker-compose.yml exec -T web
