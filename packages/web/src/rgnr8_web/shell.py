@@ -211,6 +211,8 @@ _SHELL_CSS = f"""<style>
   .cash-state{{text-align:right;max-width:36ch}}
   .cash-state .line{{margin-top:8px;color:var(--rg-ink-2);font-size:14px}}
   @media(max-width:560px){{.cash-state{{text-align:left}}}}
+  .cash-facts{{margin:14px 0 0;font-size:13px;line-height:1.5}}
+  .chart-summary{{margin:0 0 10px;font-size:13px;color:var(--rg-ink-2)}}
   /* The 13-week cash chart is borrowed from the briefing package; it brings its
      own rules with it now. Without them every element fell back to SVG's
      default fill:black, and the chart rendered as a solid black rectangle. */

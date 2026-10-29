@@ -35,6 +35,9 @@ class TenantState:
     min_cash_override_dto: dict[str, object] | None = None
     payment_overrides: dict[str, int] = field(default_factory=dict)
     decisions: list[dict[str, object]] = field(default_factory=list)
+    # The monthly running costs the owner chose to add from their QuickBooks
+    # spending (see `cost_baseline`), as its dict; None until they add one.
+    cost_baseline: dict[str, object] | None = None
 
     @property
     def min_cash_override(self) -> Money | None:
@@ -50,6 +53,7 @@ class TenantState:
             "min_cash_override": self.min_cash_override_dto,
             "payment_overrides": dict(self.payment_overrides),
             "decisions": list(self.decisions),
+            "cost_baseline": self.cost_baseline,
         }
 
     @staticmethod
@@ -57,6 +61,7 @@ class TenantState:
         raw_min = d.get("min_cash_override")
         overrides_obj = d.get("payment_overrides")
         decisions_obj = d.get("decisions")
+        baseline = d.get("cost_baseline")
         payment_overrides: dict[str, int] = {}
         if isinstance(overrides_obj, dict):
             payment_overrides = {str(k): int(v) for k, v in overrides_obj.items()}
@@ -67,6 +72,7 @@ class TenantState:
             min_cash_override_dto=dict(raw_min) if isinstance(raw_min, dict) else None,
             payment_overrides=payment_overrides,
             decisions=decisions,
+            cost_baseline=dict(baseline) if isinstance(baseline, dict) else None,
         )
 
 

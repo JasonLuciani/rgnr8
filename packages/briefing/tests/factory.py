@@ -30,7 +30,7 @@ def usd(s: str) -> Money:
 
 def healthy_forecast() -> ForecastResult:
     inputs = ForecastInputs(
-        opening=CashPosition(as_of=AS_OF, available=usd("200000.00")),
+        opening=CashPosition(as_of=AS_OF, available=usd("200000.00"), verified=True),
         invoices=(Invoice("INV-1", "acme", date(2026, 8, 1), date(2026, 8, 20), usd("15000.00")),),
         customer_histories=(CustomerHistory("acme", override_days_late=6),),
         recurring=(
@@ -43,7 +43,7 @@ def healthy_forecast() -> ForecastResult:
 
 def breach_forecast() -> ForecastResult:
     inputs = ForecastInputs(
-        opening=CashPosition(as_of=AS_OF, available=usd("20000.00")),
+        opening=CashPosition(as_of=AS_OF, available=usd("20000.00"), verified=True),
         payroll=(
             PayrollSchedule("Team", Recurrence(Frequency.BIWEEKLY, anchor=date(2026, 8, 7)),
                             usd("16000.00"), usd("4200.00")),

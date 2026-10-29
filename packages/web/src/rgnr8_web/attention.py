@@ -29,6 +29,7 @@ Two rules decide the ranking, and both are product judgements worth stating:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -118,6 +119,39 @@ def _sentence(text: str) -> str:
     return text[:1].upper() + text[1:]
 
 
+_NO_HISTORY = re.compile(r"^(\d+) customer\(s\) have no payment history")
+
+
+def _data_quality_card(note: str) -> tuple[str, str, str, str]:
+    """(headline, detail, page, action) for one of the forecast's data notes.
+
+    The known notes get the card that fixes them; anything else is shown as
+    itself, with the briefing as the place to read more.
+    """
+    if note.startswith("no costs in the outlook"):
+        return ("No costs in your outlook yet",
+                "Without them it can't say how long your cash lasts. Add the average of "
+                "what you actually spent, straight from QuickBooks.",
+                "costs", "Add your running costs")
+    if note.startswith("opening cash is not yet verified"):
+        return ("Cash today hasn't been checked against the bank",
+                "Reconcile your bank account so the starting figure is one you can trust.",
+                "books/reconcile", "Reconcile")
+    if note.startswith("no receivables provided"):
+        return ("No open invoices in the outlook",
+                "Money you're owed isn't counted coming in, so the outlook may look worse "
+                "than it is.",
+                "invoices", "See invoices")
+    m = _NO_HISTORY.match(note)
+    if m:
+        n = int(m.group(1))
+        return (f"Payment timing is a guess for {n} customer{'s' if n != 1 else ''}",
+                "With no payment history, the outlook assumes the usual timing. Set "
+                "what you know about how they pay.",
+                "receivables", "See collections")
+    return (_sentence(note), "From this week's briefing.", "briefing", "Open the briefing")
+
+
 def gather(s: Signals) -> tuple[Item, ...]:
     """The ranked queue for this tenant, most urgent first.
 
@@ -169,13 +203,21 @@ def gather(s: Signals) -> tuple[Item, ...]:
             kind="trust",
         ))
 
+    # Each note becomes its own card that names its fix. They used to share one
+    # title, "Worth a second look at the numbers", all linking to the briefing,
+    # so the queue showed the same card two or three times over.
+    seen: set[str] = set()
     for i, note in enumerate(s.data_quality[:3]):
+        headline, detail, suffix, action = _data_quality_card(note)
+        if headline in seen:
+            continue
+        seen.add(headline)
         items.append(Item(
             key=f"data-quality-{i}",
-            headline="Worth a second look at the numbers",
-            detail=_sentence(note),
-            href=_t(s, "briefing"),
-            action="Open the briefing",
+            headline=headline,
+            detail=detail,
+            href=_t(s, suffix),
+            action=action,
             urgency=_TRUST + 10 - i,
             kind="trust",
         ))
