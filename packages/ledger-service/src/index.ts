@@ -430,4 +430,12 @@ export {
   type OpenItemsSnapshot,
   type OpenItemsStore,
 } from "./openItems.js";
+export {
+  InMemoryBankHistoryStore,
+  PgBankHistoryStore,
+  BankHistoryError,
+  BANK_HISTORY_DDL,
+  type HistoryLine,
+  type BankHistoryStore,
+} from "./bankHistory.js";
 export { createLedgerServer, toServiceRequest } from "./server.js";

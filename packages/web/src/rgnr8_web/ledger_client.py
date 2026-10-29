@@ -1003,6 +1003,21 @@ class LedgerClient:
         """Replace that snapshot: {as_of, invoices: [...], bills: [...]}."""
         return self._call("POST", f"/t/{tenant}/mirror/open-items", dict(snapshot))
 
+    def bank_history(self, tenant: str, *, frm: str = "", to: str = "", account: str = "",
+                     group: str = "month", lines: bool = True) -> LedgerResponse:
+        """QuickBooks' bank and card lines as last imported (non-posting): the
+        coverage, per-period money in and out, and the lines unless `lines` is off."""
+        params = {k: v for k, v in (("from", frm), ("to", to), ("account", account),
+                                    ("group", group)) if v}
+        if not lines:
+            params["lines"] = "0"
+        qs = f"?{urllib.parse.urlencode(params)}" if params else ""
+        return self._call("GET", f"/t/{tenant}/mirror/bank-history{qs}")
+
+    def save_bank_history(self, tenant: str, window: Mapping[str, object]) -> LedgerResponse:
+        """Replace one date window of that history: {start, end, lines, tie_out}."""
+        return self._call("POST", f"/t/{tenant}/mirror/bank-history", dict(window))
+
     def entity_groups(self, tenant: str) -> LedgerResponse:
         return self._call("GET", f"/t/{tenant}/consolidation/groups")
 

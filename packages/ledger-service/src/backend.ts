@@ -58,6 +58,7 @@ import {
 import { InMemoryCrmStore, PgCrmStore, type CrmStore } from "./crm.js";
 import { InMemorySettingsStore, PgSettingsStore, type SettingsStore } from "./settings.js";
 import { InMemoryOpenItemsStore, PgOpenItemsStore, type OpenItemsStore } from "./openItems.js";
+import { InMemoryBankHistoryStore, PgBankHistoryStore, type BankHistoryStore } from "./bankHistory.js";
 import { InMemoryCutoverStore, PgCutoverStore, type CutoverStore } from "./cutover.js";
 import { InMemoryDebtStore, PgDebtStore, type DebtStore } from "./debt.js";
 import { InMemoryFixedAssetStore, PgFixedAssetStore, type FixedAssetStore } from "./fixedassets.js";
@@ -142,6 +143,8 @@ export interface LedgerBackend {
   settings(): SettingsStore;
   /** QuickBooks' open invoices and bills, a non-posting copy kept during a parallel run. */
   openItems(): OpenItemsStore;
+  /** Every QuickBooks bank and card transaction, a non-posting copy kept beside the mirror. */
+  bankHistory(): BankHistoryStore;
   /** The record of a QuickBooks-to-RGNR8 cutover, kept so it can be backed out. */
   cutovers(): CutoverStore;
   /** Loans, lines of credit and their payments — the debt layer over the ledger. */
@@ -188,6 +191,7 @@ export class InMemoryBackend implements LedgerBackend {
   private readonly consolidationStore = new InMemoryConsolidationStore();
   private readonly settingsStore = new InMemorySettingsStore();
   private readonly openItemsStore = new InMemoryOpenItemsStore();
+  private readonly bankHistoryStore = new InMemoryBankHistoryStore();
   private readonly cutoverStore = new InMemoryCutoverStore();
   private readonly debtStore = new InMemoryDebtStore();
   private readonly fixedAssetStore = new InMemoryFixedAssetStore();
@@ -325,6 +329,10 @@ export class InMemoryBackend implements LedgerBackend {
     return this.openItemsStore;
   }
 
+  bankHistory(): BankHistoryStore {
+    return this.bankHistoryStore;
+  }
+
   cutovers(): CutoverStore {
     return this.cutoverStore;
   }
@@ -365,6 +373,7 @@ export class InMemoryBackend implements LedgerBackend {
     await this.consolidationStore.migrate();
     await this.settingsStore.migrate();
     await this.openItemsStore.migrate();
+    await this.bankHistoryStore.migrate();
     await this.cutoverStore.migrate();
     await this.debtStore.migrate();
     await this.fixedAssetStore.migrate();
@@ -403,6 +412,7 @@ export class PostgresBackend implements LedgerBackend {
   private readonly consolidationStore: PgConsolidationStore;
   private readonly settingsStore: PgSettingsStore;
   private readonly openItemsStore: PgOpenItemsStore;
+  private readonly bankHistoryStore: PgBankHistoryStore;
   private readonly cutoverStore: PgCutoverStore;
   private readonly debtStore: PgDebtStore;
   private readonly fixedAssetStore: PgFixedAssetStore;
@@ -444,6 +454,7 @@ export class PostgresBackend implements LedgerBackend {
     this.consolidationStore = new PgConsolidationStore(pool);
     this.settingsStore = new PgSettingsStore(pool);
     this.openItemsStore = new PgOpenItemsStore(pool);
+    this.bankHistoryStore = new PgBankHistoryStore(pool);
     this.cutoverStore = new PgCutoverStore(pool);
     this.debtStore = new PgDebtStore(pool);
     this.fixedAssetStore = new PgFixedAssetStore(pool);
@@ -569,6 +580,10 @@ export class PostgresBackend implements LedgerBackend {
 
   openItems(): OpenItemsStore {
     return this.openItemsStore;
+  }
+
+  bankHistory(): BankHistoryStore {
+    return this.bankHistoryStore;
   }
 
   cutovers(): CutoverStore {

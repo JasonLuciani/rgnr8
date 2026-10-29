@@ -98,6 +98,8 @@ from .apikeys import ApiKeyService
 from .arap_screens import render_aging as render_arap_aging
 from .arap_screens import render_documents, render_open_items, tie_out_line
 from .open_items import read_open_items, snapshot_from_quickbooks
+from .bank_history import bring_over_history, refresh_recent
+from .bank_history_screens import render_bank_history
 from .attachment_screens import render_attachments, render_attachments_unavailable
 from .audit import AuditSink
 from .auth import Authenticator, JwtError, StaticTokenAuthenticator, sign_jwt, verify_jwt
@@ -1787,6 +1789,16 @@ class WebApp:
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "inbox":
             return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
                                  lambda t: self._inbox_page(subject, t, req.query))
+        # /t/<tenant>/inbox/history -> QuickBooks' bank and card transactions (read-only copy)
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "inbox"
+                and parts[3] == "history" and req.method == "GET"):
+            return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
+                                 lambda t: self._bank_history_page(subject, t, req.query))
+        # /t/<tenant>/inbox/history/import -> bring that history over from QuickBooks
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "inbox"
+                and parts[3] == "history" and parts[4] == "import" and req.method == "POST"):
+            return self._require(subject, token_tenant, parts[1], P.MANAGE_CONNECTORS,
+                                 lambda t: self._bank_history_import(subject, t))
         # /t/<tenant>/inbox/rules -> the categorization rules
         if (len(parts) == 4 and parts[0] == "t" and parts[2] == "inbox"
                 and parts[3] == "rules"):
@@ -3084,6 +3096,64 @@ class WebApp:
             ],
         })
 
+    def _bank_history_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        """QuickBooks' bank and card transactions as RGNR8 keeps them (non-posting)."""
+        if self._ledger is None:
+            return self._shell(subject, t, "inbox", render_feed_unavailable(
+                "No ledger service is configured for this deployment."))
+        summary = self._ledger.bank_history(t.tenant_id, lines=False)
+        if not summary.ok:
+            return self._shell(subject, t, "inbox", render_feed_unavailable(summary.error()))
+        account = query.get("account", "").strip()
+        frm, to = query.get("from", "").strip(), query.get("to", "").strip()
+        listed = None
+        if summary.body.get("covered_from"):
+            res = self._ledger.bank_history(t.tenant_id, frm=frm, to=to, account=account)
+            listed = res.body if res.ok else {"lines": [], "count": 0}
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_import = self._qbo is not None and (
+            self._policy is None or Permission.MANAGE_CONNECTORS in perms)
+        body = render_bank_history(
+            t.tenant_id, summary.body, listed, account=account, frm=frm, to=to,
+            can_import=can_import, message=query.get("done", ""), error=query.get("err", ""))
+        return self._shell(subject, t, "inbox", body)
+
+    def _bank_history_import(self, subject: str, t: _Tenant) -> Response:
+        """Bring QuickBooks' bank and card history over, newest first, under a time
+        budget; pressing it again carries on. Posts nothing, so it is allowed
+        during the parallel run (and after cutover, for the years before it)."""
+        back = f"/t/{t.tenant_id}/inbox/history"
+        if self._ledger is None:
+            return _redirect(f"{back}?err={_qs_escape('No ledger service configured')}")
+        if self._qbo is None:
+            return _redirect(f"{back}?err={_qs_escape('QuickBooks connect is not configured')}")
+        client = self._qbo.api_client(t.tenant_id)
+        if client is None:
+            return _redirect(f"/t/{t.tenant_id}/connect")
+        today = date.fromtimestamp(self._session_clock())
+        result = bring_over_history(
+            client, self._ledger, t.tenant_id, today,
+            imported_at=datetime.fromtimestamp(self._session_clock(), timezone.utc).isoformat())
+        if self._audit is not None:
+            self._audit.record(subject, "qbo.bank_history", self._session_clock(),
+                               tenant_id=t.tenant_id, detail=result.describe())
+        key = "done" if result.ok else "err"
+        return _redirect(f"{back}?{key}={_qs_escape(result.describe())}")
+
+    def _refresh_bank_history(self, t: _Tenant, client: object, today: date) -> str:
+        """Keep the recent weeks of bank history current, as part of a Refresh;
+        "" when that went quietly, else what to tell the owner. Never fails the
+        Refresh: the books are level with QuickBooks either way."""
+        if self._ledger is None:
+            return ""
+        try:
+            result = refresh_recent(
+                client, self._ledger, t.tenant_id, today,
+                imported_at=datetime.fromtimestamp(self._session_clock(), timezone.utc).isoformat())
+        except Exception as exc:  # noqa: BLE001 - a Refresh must still finish
+            return f"bank history wasn't updated: {plain_qbo_error(exc)}"
+        return "" if result.ok and not result.differences else result.describe()
+
     def _inbox_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
         """The review queue, or one of the actioned lists when ?status= is given."""
         if self._ledger is None:
@@ -3102,11 +3172,20 @@ class WebApp:
 
         accounts = self._ledger.accounts(t.tenant_id)
         dims = self._ledger.dimensions(t.tenant_id)
+        message = query.get("done", "")
+        if not message and not res.body.get("pending"):
+            # An empty queue during a parallel run is normal (bank lines arrive with
+            # feeds); the transactions themselves are one tab over.
+            hist = self._ledger.bank_history(t.tenant_id, lines=False)
+            count = hist.body.get("count") if hist.ok else 0
+            if isinstance(count, int) and count:
+                message = (f"Nothing to review. Your {count:,} bank and card transactions from "
+                           "QuickBooks are under History.")
         body = render_inbox(
             t.tenant_id, res.body, accounts.body if accounts.ok else {},
             dimensions=dims.body if dims.ok else {},
             can_post=can_post,
-            message=query.get("done", ""), error=query.get("err", ""),
+            message=message, error=query.get("err", ""),
             id_codes=self._id_codes(t),
         )
         return self._shell(subject, t, "inbox", body)
@@ -7126,6 +7205,9 @@ class WebApp:
                 detail += ": " + "; ".join(mirror.mismatches[:3])
             if mirror.ok:
                 problem = self._store_open_items(t, client, as_of)
+                if problem:
+                    detail += f" ({problem})"
+                problem = self._refresh_bank_history(t, client, as_of)
                 if problem:
                     detail += f" ({problem})"
             if self._audit is not None:
