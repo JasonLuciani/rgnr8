@@ -1293,3 +1293,85 @@ def test_quickbooks_open_items_reach_the_invoices_screen_through_the_real_servic
     assert app._ledger.entries("oico").body["entries"] == []  # nothing posted
     page = _req(app, "oico", "/t/oico/invoices").body
     assert "Open in QuickBooks as of 2026-10-29" in page and "Northwind" in page
+
+
+def test_cutover_and_backout_end_to_end_against_the_real_service(ledger_service: str) -> None:
+    """The whole cutover through the web app and the real ledger: a parallel-run
+    account, the report, the sign-off, RGNR8 taking over (posting opens up and
+    the open invoices are real documents), and the way back."""
+    from types import SimpleNamespace
+
+    app = _app(ledger_service, ["cuco"])
+    golive = app._ledger.go_live("cuco", {
+        "contract": "go-live/1", "tenant_id": "cuco", "source_system": "quickbooks",
+        "cutover_date": "2026-08-31", "currency": "USD", "coa_category": "PROFESSIONAL_SERVICES",
+        "opening_balance_equity_code": "3010",
+        "source_accounts": [
+            {"code": "1000", "name": "Checking", "balance_minor": "500000", "subtype": "BANK"},
+            {"code": "1200", "name": "A/R", "balance_minor": "38995", "subtype": "ACCOUNTS_RECEIVABLE"},
+            {"code": "3900", "name": "Retained Earnings", "balance_minor": "-538995",
+             "subtype": "RETAINED_EARNINGS"},
+        ],
+    })
+    assert golive.ok, golive.body
+    assert app._qbo_pin(SimpleNamespace(tenant_id="cuco"), "9341", "2026-08-31") == ""
+    lines: list[dict[str, object]] = [{"code": "1000", "side": "DEBIT", "amount_minor": "100"},
+                                      {"code": "4000", "side": "CREDIT", "amount_minor": "100"}]
+    assert app._ledger.post_entry("cuco", "2026-10-01", lines, source="quickbooks",
+                                  idempotency_key="qbo-mirror:2026-10-01:e2e").status == 201
+    assert app._ledger.save_open_items("cuco", {"as_of": "2026-10-28", "bills": [], "invoices": [
+        {"qbo_id": "130", "number": "1037", "party": "Northwind", "date": "2026-09-01",
+         "due_date": "2026-10-01", "open_minor": "38995"}]}).ok
+
+    report = _req(app, "cuco", "/t/cuco/connect/cutover?date=2026-09-30").body
+    assert "Every check passes." in report and "Cut over to RGNR8" in report
+    report_hash = re.search(r'name="report_hash" value="([0-9a-f]{64})"', report).group(1)
+
+    done = _req(app, "cuco", "/t/cuco/connect/cutover", "POST",
+                f"cutover_date=2026-09-30&report_hash={report_hash}&signed_by=J.+Accountant&reviewed=on")
+    assert done.status in (302, 303) and "ok=" in dict(done.extra_headers)["Location"]
+    # RGNR8 is the book now: invoice 1037 is a real document and posting is open.
+    invoices = _req(app, "cuco", "/t/cuco/invoices").body
+    assert "Open in QuickBooks as of" not in invoices  # not the QuickBooks copy...
+    assert 'action="/t/cuco/invoices/1037/payments"' in invoices  # ...a real invoice to collect
+    assert app._ledger.post_entry("cuco", "2026-10-29", lines, source="owner").status == 201
+    status = _req(app, "cuco", "/t/cuco/connect/cutover").body
+    assert "RGNR8 is your book of record" in status and "J. Accountant" in status
+    assert "can no longer be backed out" in status  # the owner's entry just now
+    # A credit on 1037 has no income line of its own to reverse, so the form asks where it goes.
+    invoices = _req(app, "cuco", "/t/cuco/invoices").body
+    assert 'name="account_code" aria-label="Account" required' in invoices
+    blind = _req(app, "cuco", "/t/cuco/invoices/1037/credits", "POST", "amount=40.00&date=2026-10-29")
+    assert "say%20which%20account" in dict(blind.extra_headers)["Location"]
+    named = _req(app, "cuco", "/t/cuco/invoices/1037/credits", "POST", "amount=40.00&account_code=4000&date=2026-10-29")
+    assert "ok=" in dict(named.extra_headers)["Location"], dict(named.extra_headers)["Location"]
+
+
+def test_backing_out_a_cutover_through_the_web_app(ledger_service: str) -> None:
+    from types import SimpleNamespace
+
+    app = _app(ledger_service, ["boco"])
+    assert app._ledger.go_live("boco", {
+        "contract": "go-live/1", "tenant_id": "boco", "source_system": "quickbooks",
+        "cutover_date": "2026-08-31", "currency": "USD", "coa_category": "PROFESSIONAL_SERVICES",
+        "opening_balance_equity_code": "3010",
+        "source_accounts": [
+            {"code": "1000", "name": "Checking", "balance_minor": "500000", "subtype": "BANK"},
+            {"code": "3900", "name": "Retained Earnings", "balance_minor": "-500000",
+             "subtype": "RETAINED_EARNINGS"},
+        ],
+    }).ok
+    assert app._qbo_pin(SimpleNamespace(tenant_id="boco"), "9341", "2026-08-31") == ""
+    assert app._ledger.post_entry("boco", "2026-10-01", [
+        {"code": "1000", "side": "DEBIT", "amount_minor": "100"},
+        {"code": "4000", "side": "CREDIT", "amount_minor": "100"}], source="quickbooks",
+        idempotency_key="qbo-mirror:2026-10-01:bo").status == 201
+    assert app._ledger.save_open_items("boco", {"as_of": "2026-10-28", "invoices": [], "bills": []}).ok
+    report = _req(app, "boco", "/t/boco/connect/cutover?date=2026-09-30").body
+    report_hash = re.search(r'name="report_hash" value="([0-9a-f]{64})"', report).group(1)
+    _req(app, "boco", "/t/boco/connect/cutover", "POST",
+         f"cutover_date=2026-09-30&report_hash={report_hash}&signed_by=J.+Accountant&reviewed=on")
+    back = _req(app, "boco", "/t/boco/connect/cutover/backout", "POST")
+    assert back.status in (302, 303) and "Backed%20out" in dict(back.extra_headers)["Location"]
+    settings = app._ledger.settings("boco").body["settings"]
+    assert settings["book_of_record"] == "quickbooks"

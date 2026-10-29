@@ -45,6 +45,21 @@ export class BookOfRecordError extends Error {
   }
 }
 
+/** QuickBooks copies refused because the account has cut over to RGNR8. Maps to 409. */
+export class AfterCutoverError extends Error {
+  readonly code = "cut_over";
+  constructor() {
+    super("RGNR8 has been the book of record since the cutover: nothing more is copied from "
+      + "QuickBooks. To go back, back out the cutover.");
+  }
+}
+
+/** Whether a cutover has begun and not been backed out. */
+export async function cutOver(backend: LedgerBackend, tenant: TenantId): Promise<boolean> {
+  const record = await backend.cutovers().get(String(tenant));
+  return record !== undefined && record.state !== "backed_out";
+}
+
 /** True for the two entries a parallel run is made of: the opening and the catch-ups. */
 export function isQuickBooksCopy(entry: Pick<DraftEntry, "idempotencyKey" | "provenance">): boolean {
   const key = String(entry.idempotencyKey);
@@ -103,7 +118,11 @@ function guardStore(store: LedgerStore, backend: LedgerBackend): LedgerStore {
     get(target, prop, receiver) {
       if (prop === "append") {
         return async (draft: DraftEntry): Promise<PostedEntry> => {
-          if (!isQuickBooksCopy(draft) && await inParallelRun(backend, draft.tenantId)) {
+          if (isQuickBooksCopy(draft)) {
+            // After cutover a Refresh would copy QuickBooks activity into books
+            // RGNR8 now keeps: a payment taken in QuickBooks, collected again here.
+            if (await cutOver(backend, draft.tenantId)) throw new AfterCutoverError();
+          } else if (await inParallelRun(backend, draft.tenantId)) {
             throw new BookOfRecordError();
           }
           return target.append(draft);

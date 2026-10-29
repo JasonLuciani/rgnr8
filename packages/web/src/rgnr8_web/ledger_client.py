@@ -370,7 +370,7 @@ class LedgerClient:
 
     def issue_credit(
         self, tenant: str, kind: str, doc_id: str, date: str,
-        *, amount_minor: str = "", memo: str = "",
+        *, amount_minor: str = "", memo: str = "", account_code: str = "",
     ) -> LedgerResponse:
         """Reduce what is owed on an open invoice or bill."""
         payload: dict[str, object] = {"date": date}
@@ -378,11 +378,13 @@ class LedgerClient:
             payload["amount_minor"] = amount_minor
         if memo:
             payload["memo"] = memo
+        if account_code:
+            payload["account_code"] = account_code
         return self._call("POST", f"/t/{tenant}/{kind}/{doc_id}/credits", payload)
 
     def issue_refund(
         self, tenant: str, doc_id: str, date: str,
-        *, amount_minor: str = "", memo: str = "", bank_code: str = "",
+        *, amount_minor: str = "", memo: str = "", bank_code: str = "", account_code: str = "",
     ) -> LedgerResponse:
         """Send money back on an invoice that was already collected."""
         payload: dict[str, object] = {"date": date}
@@ -392,15 +394,19 @@ class LedgerClient:
             payload["memo"] = memo
         if bank_code:
             payload["bank_code"] = bank_code
+        if account_code:
+            payload["account_code"] = account_code
         return self._call("POST", f"/t/{tenant}/invoices/{doc_id}/refunds", payload)
 
     def record_payment(
         self, tenant: str, kind: str, doc_id: str, date: str, amount_minor: str,
-        *, memo: str = "",
+        *, memo: str = "", bank_code: str = "",
     ) -> LedgerResponse:
         payload: dict[str, object] = {"date": date, "amount_minor": amount_minor}
         if memo:
             payload["memo"] = memo
+        if bank_code:
+            payload["bank_code"] = bank_code
         return self._call("POST", f"/t/{tenant}/{kind}/{doc_id}/payments", payload)
 
     # --- recurring transactions ----------------------------------------------
@@ -958,6 +964,26 @@ class LedgerClient:
 
     def save_settings(self, tenant: str, patch: Mapping[str, object]) -> LedgerResponse:
         return self._call("POST", f"/t/{tenant}/settings", dict(patch))
+
+    def cutover_status(self, tenant: str) -> LedgerResponse:
+        """The cutover record (if any) and why a backout couldn't happen now."""
+        return self._call("GET", f"/t/{tenant}/cutover")
+
+    def cutover_plan(self, tenant: str, cutover_date: str) -> LedgerResponse:
+        """What a cutover on that month-end would do; writes nothing."""
+        return self._call("POST", f"/t/{tenant}/cutover/plan", {"cutover_date": cutover_date})
+
+    def cutover_execute(
+        self, tenant: str, *, cutover_date: str, signed_by: str, report_hash: str,
+        accept_differences: bool,
+    ) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/cutover/execute", {
+            "cutover_date": cutover_date, "signed_by": signed_by,
+            "report_hash": report_hash, "accept_differences": accept_differences,
+        })
+
+    def cutover_backout(self, tenant: str) -> LedgerResponse:
+        return self._call("POST", f"/t/{tenant}/cutover/backout")
 
     def open_items(self, tenant: str) -> LedgerResponse:
         """QuickBooks' open invoices and bills as last refreshed (non-posting)."""

@@ -158,7 +158,7 @@ function idFor(chart: ChartOfAccounts, code: string, role: string): AccountId {
  * it is one of them, else the lowest code (deterministic, and the one an
  * accountant would call "the" A/R account); with none, the default code.
  */
-function controlCode(chart: ChartOfAccounts, subtype: AccountSubtype, fallback: string): string {
+export function controlCode(chart: ChartOfAccounts, subtype: AccountSubtype, fallback: string): string {
   const matches = chart.listActive().filter((a) => a.subtype === subtype);
   if (matches.length === 0) return fallback;
   if (matches.some((a) => a.code === fallback)) return fallback;
@@ -591,6 +591,21 @@ function primaryAccountOf(doc: DocRecord, override: string | undefined): string 
 }
 
 /**
+ * A credit or refund reverses the document's income or expense. A document that
+ * came over from QuickBooks at cutover has no income line of its own (its one
+ * line is the A/R or A/P balance it stands for), and reversing that would net
+ * to nothing: the credit would never reach the P&L and A/R would drift from its
+ * documents. Such a credit has to say which account it goes to.
+ */
+function assertNotControl(chart: ChartOfAccounts, code: string, doc: DocRecord): void {
+  const subtype = chart.getByCode(code)?.subtype;
+  if (subtype === AccountSubtype.ACCOUNTS_RECEIVABLE || subtype === AccountSubtype.ACCOUNTS_PAYABLE) {
+    throw new ArApError(`${doc.kind} ${doc.id} came over from QuickBooks without its income or `
+      + "expense lines; say which account this credit or refund goes to (account_code)");
+  }
+}
+
+/**
  * The lines a credit or refund reverses, split so that the sales tax a taxed
  * invoice collected comes back off Sales Tax Payable — not off revenue.
  *
@@ -679,6 +694,7 @@ export async function issueCredit(
 
   const ctrl = controls(ctx.chart, req.accounts);
   const accountCode = primaryAccountOf(doc, req.account_code);
+  assertNotControl(ctx.chart, accountCode, doc);
   const creditId = String(req.id ?? "").trim() || `CM-${docId}-${date}`;
   const memo = String(req.memo ?? "").trim() || `Credit against ${docId}`;
 
@@ -757,6 +773,7 @@ export async function issueRefund(
   assertBankChosen(ctx.chart, String(req.bank_code ?? "").trim() || req.accounts?.bankCode);
   const bankCode = String(req.bank_code ?? "").trim() || ctrl.bankCode;
   const accountCode = primaryAccountOf(doc, req.account_code);
+  assertNotControl(ctx.chart, accountCode, doc);
   const memo = String(req.memo ?? "").trim() || `Refund of ${docId}`;
   const refundId = String(req.id ?? "").trim() || `RF-${docId}-${date}`;
 

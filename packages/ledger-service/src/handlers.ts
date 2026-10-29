@@ -57,8 +57,20 @@ import type { LedgerBackend } from "./backend.js";
 import { LEDGER_SCHEMA_VERSION } from "./migrations.js";
 import { OpenItemsError, snapshotFromJson, snapshotJson } from "./openItems.js";
 import {
+  CutoverError,
+  backOutCutover,
+  backoutBlocker,
+  executeCutover,
+  planCutover,
+  planJson,
+  recordJson,
+  type CutoverContext,
+} from "./cutover.js";
+import {
+  AfterCutoverError,
   BookOfRecordError,
   MIRROR_KEY_PREFIX,
+  cutOver,
   PARALLEL_RUN_MESSAGE,
   QUICKBOOKS_SOURCE,
   guardBackend,
@@ -508,6 +520,39 @@ export class LedgerService {
     }
 
     try {
+      // --- cutover: QuickBooks -> RGNR8, with a way back --------------------
+      if (rest[0] === "cutover") {
+        const ctx: CutoverContext = {
+          backend: this.backend, tenant, currency: this.currency, now: this.opts.now,
+        };
+        if (rest.length === 1 && req.method === "GET") {
+          const blocker = await backoutBlocker(ctx);
+          return ok({
+            tenant,
+            record: recordJson(await this.backend.cutovers().get(String(tenant))),
+            backout_blocker: blocker,
+          });
+        }
+        if (rest.length === 2 && req.method === "POST") {
+          const data = parseJson(req.body) ?? {};
+          if (rest[1] === "plan") {
+            return ok({ tenant, plan: planJson(await planCutover(ctx, str(data["cutover_date"]).trim())) });
+          }
+          if (rest[1] === "execute") {
+            const { record, plan } = await executeCutover(ctx, {
+              cutoverDate: str(data["cutover_date"]).trim(),
+              signedBy: str(data["signed_by"]),
+              reportHash: str(data["report_hash"]).trim(),
+              acceptDifferences: data["accept_differences"] === true,
+            });
+            return ok({ tenant, record: recordJson(record), plan: planJson(plan) });
+          }
+          if (rest[1] === "backout") {
+            return ok({ tenant, record: recordJson(await backOutCutover(ctx)) });
+          }
+        }
+      }
+
       // --- QuickBooks open items (a non-posting copy) ----------------------
       if (rest[0] === "mirror" && rest[1] === "open-items" && rest.length === 2) {
         const store = this.backend.openItems();
@@ -532,6 +577,13 @@ export class LedgerService {
           if (!data) return bad("invalid JSON body");
           const current = await store.get(String(tenant));
           const next = mergeSettings(current, data);
+          // After a cutover only a backout hands the book back to QuickBooks
+          // (it removes what the cutover made); flipping the setting alone would
+          // leave RGNR8's documents behind a QuickBooks mirror.
+          if (next.bookOfRecord === "quickbooks" && current.bookOfRecord !== "quickbooks"
+              && await cutOver(this.backend, tenant)) {
+            return conflict("this account has cut over to RGNR8; back out the cutover to return to QuickBooks");
+          }
           // Switching the inventory costing method mid-stream would strand the
           // existing on-hand value (moving average keeps no lots; FIFO keeps no
           // blended figure), so it is only allowed when nothing is on the shelf.
@@ -1700,6 +1752,9 @@ export class LedgerService {
       }
     } catch (err) {
       if (err instanceof BookOfRecordError) return bookOfRecordConflict();
+      if (err instanceof AfterCutoverError) {
+        return { status: 409, body: { error: err.message, code: err.code } };
+      }
       if (err instanceof PeriodClosedError) return conflict(err.message);
       if (err instanceof ArApError) return bad(err.message);
       if (err instanceof ReconcileError) return bad(err.message);
@@ -1722,6 +1777,7 @@ export class LedgerService {
       if (err instanceof ConsolidationServiceError) return bad(err.message);
       if (err instanceof SettingsError) return bad(err.message);
       if (err instanceof OpenItemsError) return bad(err.message);
+      if (err instanceof CutoverError) return conflict(err.message);
       if (err instanceof DebtError) return bad(err.message);
       if (err instanceof FixedAssetError) return bad(err.message);
       if (err instanceof RatiosError) return bad(err.message);

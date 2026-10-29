@@ -77,6 +77,9 @@ export interface DocumentStore {
   getParty(tenant: string, kind: PartyKind, id: string): Promise<PartyRecord | undefined>;
   listParties(tenant: string, kind: PartyKind): Promise<PartyRecord[]>;
   saveDoc(tenant: string, doc: DocRecord): Promise<void>;
+  /** Remove a document and its lines. Only a cutover backout uses it, and only on
+   *  documents nothing has been posted against. */
+  deleteDoc(tenant: string, kind: DocKind, id: string): Promise<void>;
   getDoc(tenant: string, kind: DocKind, id: string): Promise<DocRecord | undefined>;
   listDocs(tenant: string, kind: DocKind): Promise<DocRecord[]>;
   setOpen(
@@ -120,6 +123,11 @@ export class InMemoryDocumentStore implements DocumentStore {
     for (const [k, v] of this.parties) if (k.startsWith(prefix)) out.push(v);
     out.sort((a, b) => a.name.localeCompare(b.name));
     return Promise.resolve(out);
+  }
+
+  deleteDoc(tenant: string, kind: DocKind, id: string): Promise<void> {
+    this.docs.delete(this.pk(tenant, kind, id));
+    return Promise.resolve();
   }
 
   saveDoc(tenant: string, doc: DocRecord): Promise<void> {
@@ -311,6 +319,13 @@ export class PgDocumentStore implements DocumentStore {
         [tenant, kind],
       );
       return res.rows.map((r) => this.partyFromRow(r)).sort((a, b) => a.name.localeCompare(b.name));
+    });
+  }
+
+  async deleteDoc(tenant: string, kind: DocKind, id: string): Promise<void> {
+    await this.tx(tenant, async (db) => {
+      await db.query("DELETE FROM doc_line WHERE tenant_id=$1 AND kind=$2 AND doc_id=$3", [tenant, kind, id]);
+      await db.query("DELETE FROM doc WHERE tenant_id=$1 AND kind=$2 AND id=$3", [tenant, kind, id]);
     });
   }
 

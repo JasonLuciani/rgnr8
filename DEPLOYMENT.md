@@ -92,6 +92,24 @@ Everything above runs on fixtures. To connect a real QuickBooks company:
 3. **Migration (Stage 2):** `client.fetchExportViaGeneralLedger(start, end)` → `runMigrationOnboarding` (imports the GL into the RGNR8 ledger, verifies against QBO's reported trial balance, derives opening cash from the posted ledger). Provision the resulting DTO the same way.
 4. Run the forecast over the client's history and feed predicted-vs-actual into `run_backtest` to calibrate the confidence tiers.
 
+## 8. Cut over from QuickBooks to RGNR8 (end of a parallel run)
+
+While QuickBooks is the book of record, RGNR8 mirrors it and posts nothing of its own. Moving the book of record is done in the app, at **Connections → Plan the cutover**; the ledger enforces every step.
+
+1. **Pick the month-end.** Cutover happens at the end of a month that has already ended. A mid-month cutover would lock the rest of that month, so the ledger refuses it.
+2. **Refresh after that month-end.** The books must be brought level with QuickBooks through the cutover date, and QuickBooks' open invoices and bills copied after it. The report says which is missing.
+3. **Read the report with your accountant.** It shows every check, the tie-out of QuickBooks' open invoices to Accounts Receivable and open bills to Accounts Payable, the invoices and bills that will be created, and a fingerprint of the report.
+4. **Sign off and cut over.** The form needs the name of the person who signed the report. The ledger refuses unless the plan still has the fingerprint they signed, and refuses a difference in the tie-out unless the signer accepts it. Cutover then:
+   - creates the open invoices and bills as documents **without posting them** (their amounts are already in A/R and A/P);
+   - locks every month through the cutover month;
+   - makes RGNR8 the book of record (posting opens up; the "Add this in QuickBooks" notices go);
+   - stops copying from QuickBooks: Refresh is gone from Connections and the ledger refuses any QuickBooks copy, so a payment taken in QuickBooks afterwards is never collected twice.
+
+   Only the owner or controller can cut over or back out. Balances in more than one A/R (or A/P) account block the plan: combine them in QuickBooks first. If a cutover stops halfway (a restart, a lost connection), the plan says so; back it out, then run it again. A credit or refund on an invoice or bill that came over at cutover has to name its income or expense account, since the document carries only its balance.
+5. **The way back.** Until RGNR8 records anything of its own (any entry, or a payment against one of the new documents), the cutover page offers **Back out the cutover**: QuickBooks becomes the book of record again and the documents cutover created are removed. Refresh afterwards. Once RGNR8 has recorded its first entry, the way back closes; corrections from then on are ordinary reversing entries.
+
+The signer, the date, the report fingerprint and any backout are kept in the ledger (`rgnr8_cutover`) and the web audit log (`cutover.executed`, `cutover.backed_out`).
+
 ## Rollback
 
 Schema changes are forward-only; roll back application code by redeploying the prior build. The ledger is append-only (corrections are reversals, never edits), and published financial packages are immutable — so a bad deploy never corrupts booked history. Disable delivery by pausing subscriptions (`SubscriptionManager.pause`) rather than deleting them, preserving cursors.

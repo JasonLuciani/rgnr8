@@ -393,8 +393,9 @@ def test_last_refresh_table_puts_amounts_under_amount() -> None:
 class MirrorLedger:
     """A ledger transport with settings, a journal and a chart, recording writes."""
 
-    def __init__(self, *, settings=None, entries=None, accounts=None) -> None:
+    def __init__(self, *, settings=None, entries=None, accounts=None, cutover=None) -> None:
         self.settings = dict(settings or {})
+        self.cutover = cutover
         self.entries = list(entries or [])
         self.accounts = list(accounts or [])
         self.calls: list[tuple[str, str, str]] = []
@@ -410,6 +411,8 @@ class MirrorLedger:
             return LedgerResponse(200, {"entries": self.entries})
         if path.endswith("/accounts") and method == "GET":
             return LedgerResponse(200, {"accounts": self.accounts})
+        if path.endswith("/cutover") and method == "GET":
+            return LedgerResponse(200, {"record": self.cutover, "backout_blocker": ""})
         return LedgerResponse(200, {})
 
     def posts(self, suffix: str) -> "list[dict]":
@@ -646,3 +649,37 @@ def test_quickbooks_errors_are_said_plainly() -> None:
         "QuickBooks turned the request down: Invalid date")
     assert "error 503" in plain_qbo_error(QboApiError("x", status=503, body="<html>"))
     assert "Wait a minute" in plain_qbo_error(QboApiError("x", status=429, body=""))
+
+
+def test_after_cutover_nothing_more_is_copied_from_quickbooks() -> None:
+    from rgnr8_web import LedgerClient
+    ledger = MirrorLedger(settings={"book_of_record": "rgnr8", "mirror_realm_id": "R42"},
+                          entries=[OPENING], accounts=CHART,
+                          cutover={"state": "live", "cutover_date": "2026-10-31"})
+    app = _connected_app(ledger=LedgerClient(ledger))      # connected to R42, the mirrored company
+    page = app.handle(Request("GET", "/t/acme/connect", _h("owner@acme.com"))).body
+    assert "RGNR8 is your book of record" in page and "Plan the cutover" not in page
+    assert "Refresh from QuickBooks</button>" not in page
+    assert "Your books mirror QuickBooks" not in page  # the parallel-run instructions are over
+    before = app._tenants["acme"].inputs if hasattr(app, "_tenants") else None
+    for route in ("sync", "migrate"):
+        r = app.handle(Request("POST", f"/t/acme/connect/qbo/{route}", _h("owner@acme.com")))
+        assert dict(r.extra_headers)["Location"] == "/t/acme/connect", route
+        assert "back out the cutover" in _follow(app, r).body, route
+    # QuickBooks payments taken since would otherwise be collected twice.
+    assert not ledger.posts("/entries") and not ledger.posts("/settings") and not ledger.posts("/go-live")
+    if before is not None:
+        assert app._tenants["acme"].inputs is before
+
+
+def test_a_bookkeeper_can_refresh_but_only_the_owner_or_controller_can_cut_over() -> None:
+    from rgnr8_web import LedgerClient
+    ledger = MirrorLedger(settings={"book_of_record": "quickbooks", "mirror_realm_id": "R42"},
+                          entries=[OPENING], accounts=CHART)
+    app = _connected_app(ledger=LedgerClient(ledger))
+    app._users.upsert_user(User("books@acme.com", "books@acme.com", "books"))
+    app._users.set_membership("books@acme.com", "acme", Role.BOOKKEEPER)
+    for method, path in (("GET", "/t/acme/connect/cutover"), ("POST", "/t/acme/connect/cutover"),
+                         ("POST", "/t/acme/connect/cutover/backout")):
+        assert app.handle(Request(method, path, _h("books@acme.com"))).status == 403, path
+    assert app.handle(Request("GET", "/t/acme/connect/cutover", _h("owner@acme.com"))).status == 200
