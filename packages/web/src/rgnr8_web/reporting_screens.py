@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from .books_screens import _card, _esc, _minor, _num, _seq
+from .books_screens import _card, _esc, _minor, _num, _seq, account_label, account_number
 from .provenance_labels import Provenance, most_cautious
 
 
@@ -26,7 +26,8 @@ def _banner(kind: str, text: str) -> str:
 
 
 def render_general_ledger(
-    tenant: str, data: Mapping[str, object], *, frm: str = "", to: str = ""
+    tenant: str, data: Mapping[str, object], *, frm: str = "", to: str = "",
+    id_codes: frozenset[str] = frozenset(),
 ) -> str:
     """Every posting, grouped by account, with a running balance."""
     blocks = []
@@ -55,7 +56,8 @@ def render_general_ledger(
             + _num(a.get("total_debit_minor")) + _num(a.get("total_credit_minor"))
             + _num(a.get("closing_minor")) + "</tr></tbody></table></div>"
         )
-        blocks.append(_card(f"{a.get('code')} — {a.get('name')}", table, provenance=Provenance.POSTED))
+        blocks.append(_card(account_label(a.get("code"), a.get("name"), id_codes), table,
+                            provenance=Provenance.POSTED))
 
     if not blocks:
         blocks.append(_card(
@@ -105,6 +107,7 @@ def render_budget(
     can_post: bool,
     message: str = "",
     error: str = "",
+    id_codes: frozenset[str] = frozenset(),
 ) -> str:
     """The plan against what happened, with favourable read from the account."""
     rows = []
@@ -123,7 +126,8 @@ def render_budget(
                 f"{_esc(word)}</span>"
             )
         rows.append(
-            f"<tr><td>{_esc(line.get('code'))}</td><td>{_esc(line.get('name'))}</td>"
+            f"<tr><td>{_esc(account_number(line.get('code'), id_codes))}</td>"
+            f"<td>{_esc(line.get('name'))}</td>"
             f"{_num(line.get('budget_minor'))}{_num(line.get('actual_minor'))}"
             f"{_num(line.get('variance_minor'))}<td>{chip}</td></tr>"
         )
@@ -169,7 +173,7 @@ def render_budget(
         provenance=most_cautious((Provenance.FORECAST, Provenance.POSTED)),
     )
     if can_post:
-        out += _budget_form(tenant, period, accounts, data)
+        out += _budget_form(tenant, period, accounts, data, id_codes)
     return out
 
 
@@ -186,7 +190,8 @@ def _period_form(tenant: str, period: str) -> str:
 
 
 def _budget_form(
-    tenant: str, period: str, accounts: Mapping[str, object], data: Mapping[str, object]
+    tenant: str, period: str, accounts: Mapping[str, object], data: Mapping[str, object],
+    id_codes: frozenset[str] = frozenset(),
 ) -> str:
     """Pre-filled with what's already budgeted, so revising is editing, not retyping."""
     existing: dict[str, str] = {}
@@ -207,7 +212,7 @@ def _budget_form(
             continue
         code = str(a.get("code"))
         rows.append(
-            f'<div><label>{_esc(code)} — {_esc(a.get("name"))}</label>'
+            f'<div><label>{_esc(account_label(code, a.get("name"), id_codes))}</label>'
             f'<input name="amount_{_esc(code)}" value="{_esc(existing.get(code, ""))}" '
             'placeholder="0.00" inputmode="decimal"></div>'
         )

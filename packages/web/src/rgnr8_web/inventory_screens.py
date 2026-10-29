@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from .books_screens import _card, _esc, _minor, _num, _seq, money
+from .books_screens import _card, _esc, _minor, _num, _seq, account_select, money
 from .job_screens import _milli
 from .provenance_labels import Provenance
 
@@ -42,6 +42,7 @@ def render_inventory(
     can_edit: bool,
     message: str = "",
     error: str = "",
+    id_codes: frozenset[str] = frozenset(),
 ) -> str:
     items = [i for i in _seq(valuation.get("items")) if isinstance(i, Mapping)]
     totals = valuation.get("totals") if isinstance(valuation.get("totals"), Mapping) else {}
@@ -109,7 +110,7 @@ def render_inventory(
         out += _card("Running low", f"<ul>{items_list}</ul>")
 
     if can_edit:
-        out += _forms(tenant, items, jobs, cost_codes, accounts)
+        out += _forms(tenant, items, jobs, cost_codes, accounts, id_codes)
     return out
 
 
@@ -119,6 +120,7 @@ def _forms(
     jobs: Mapping[str, object],
     cost_codes: Mapping[str, object],
     accounts: Mapping[str, object],
+    id_codes: frozenset[str] = frozenset(),
 ) -> str:
     sku_options = _options(
         [(str(i.get("sku")), f"{i.get('sku')} — {i.get('name')}") for i in items]
@@ -131,13 +133,13 @@ def _forms(
     code_options = _options(
         [("", "—")] + [(str(c.get("code")), f"{c.get('code')} — {c.get('name')}") for c in codes]
     )
-    asset = [
-        a for a in _seq(accounts.get("accounts"))
-        if isinstance(a, Mapping) and str(a.get("type")) == "ASSET"
-    ]
-    asset_options = _options(
-        [(str(a.get("code")), f"{a.get('code')} — {a.get('name')}") for a in asset], "1300",
-    )
+    # The ledger's defaults when a field is left out: stock in 1300, its cost in
+    # 5100, paid for from 1000.
+    stock = account_select("inventory_account_code", accounts, id_codes,
+                           fallback="1300", types=("ASSET",))
+    cost = account_select("cost_account_code", accounts, id_codes,
+                          fallback="5100", types=("EXPENSE",))
+    paid_from = account_select("paid_from_code", accounts, id_codes, fallback="1000")
 
     body = (
         f'<form method="post" action="/t/{_esc(tenant)}/inventory/items" class="grid">'
@@ -145,8 +147,8 @@ def _forms(
         '<label>Name<input name="name" required placeholder="3/4in plywood"></label>'
         '<label>Unit<input name="unit" placeholder="sheet"></label>'
         '<label>Reorder at<input name="reorder_point" placeholder="20"></label>'
-        f'<label>Stock account<select name="inventory_account_code">{asset_options}</select></label>'
-        '<label>Cost account<input name="cost_account_code" placeholder="5100"></label>'
+        f"<label>Stock account{stock}</label>"
+        f"<label>Cost account{cost}</label>"
         '<div class="wide"><button type="submit">Save the item</button></div>'
         "</form>"
     )
@@ -159,7 +161,7 @@ def _forms(
             '<label>Date<input name="date" placeholder="YYYY-MM-DD" required></label>'
             '<label>How many<input name="quantity" required placeholder="100"></label>'
             '<label>Cost each<input name="unit_cost" required placeholder="48.00"></label>'
-            '<label>Paid from<input name="paid_from_code" placeholder="1000"></label>'
+            f"<label>Paid from{paid_from}</label>"
             '<div class="wide"><button type="submit">Record it</button>'
             '<span class="muted" style="margin-left:8px">For stock on a purchase order, '
             "receive it there instead — this is the trip to the supply house.</span>"

@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from .books_screens import _card, _esc
+from .health_screens import month_name
 from .modules import OPTIONAL_MODULES
 
 
@@ -54,6 +55,8 @@ def render_settings(
     can_manage_retention: bool,
     can_erase: bool,
     modules_on: frozenset[str] = frozenset(),
+    fiscal_year_start_month: int = 1,
+    mirrors_quickbooks: bool = False,
     done: str = "",
     error: str = "",
 ) -> str:
@@ -91,6 +94,14 @@ def render_settings(
         + _options([("false", "Off — one currency"), ("true", "On — translate group members")],
                    "true" if multi else "false")
         + "</select></label>"
+        "<label>Fiscal year starts in"
+        f'<select name="fiscal_year_start_month"{disabled}>'
+        + _options([(str(i), month_name(i)) for i in range(1, 13)], str(fiscal_year_start_month))
+        + "</select></label>"
+        + ('<p class="muted wide">Year-to-date figures, such as revenue on Business health, '
+           "count from the first of this month. While your books mirror QuickBooks, each "
+           "successful Refresh sets it to the month QuickBooks has, when QuickBooks has "
+           "one.</p>" if mirrors_quickbooks else "")
         + ('<div class="wide"><button type="submit">Save account options</button></div>'
            if can_manage_settings else
            '<p class="muted wide">You can view these, but changing them '

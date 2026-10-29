@@ -19,7 +19,7 @@ from collections.abc import Mapping
 
 from .attachment_screens import attachment_link
 from .components import Action, empty_state
-from .books_screens import _card, _esc, _minor, _seq, money
+from .books_screens import _card, _esc, _minor, _seq, account_label, account_order, money
 from .provenance_labels import Provenance, legend as prov_legend
 
 
@@ -47,17 +47,19 @@ def _confidence_chip(confidence: float, source: str) -> str:
 
 
 def _account_options(accounts: Mapping[str, object], selected: str,
-                     *, exclude: str = "") -> str:
+                     *, exclude: str = "", id_codes: frozenset[str] = frozenset()) -> str:
     out = ['<option value="">— choose an account —</option>']
-    for a in _seq(accounts.get("accounts")):
-        if not isinstance(a, Mapping):
-            continue
+    listed = sorted((a for a in _seq(accounts.get("accounts")) if isinstance(a, Mapping)),
+                    key=lambda a: account_order(a.get("code"), a.get("name"), a.get("type"),
+                                                id_codes))
+    for a in listed:
         code = str(a.get("code"))
         if code == exclude:
             continue  # a line can never be categorized to its own bank account
         sel = " selected" if code == selected else ""
         out.append(
-            f'<option value="{_esc(code)}"{sel}>{_esc(code)} — {_esc(a.get("name"))}</option>'
+            f'<option value="{_esc(code)}"{sel}>'
+            f'{_esc(account_label(code, a.get("name"), id_codes))}</option>'
         )
     return "".join(out)
 
@@ -101,7 +103,8 @@ def _match_form(tenant: str, item: Mapping[str, object]) -> str:
 
 
 def _row(tenant: str, item: Mapping[str, object], accounts: Mapping[str, object],
-         can_post: bool, dimensions: Mapping[str, object] | None = None) -> str:
+         can_post: bool, dimensions: Mapping[str, object] | None = None,
+         id_codes: frozenset[str] = frozenset()) -> str:
     amount = _minor(item.get("amount_minor")) or 0
     cls = "num neg" if amount < 0 else "num"
     txn_id = str(item.get("id"))
@@ -132,7 +135,7 @@ def _row(tenant: str, item: Mapping[str, object], accounts: Mapping[str, object]
         f'<form method="post" action="/t/{_esc(tenant)}/inbox/{_esc(txn_id)}/accept" '
         'style="display:flex;gap:6px;align-items:center;margin:0;flex-wrap:wrap">'
         f'<select name="category_code">'
-        f'{_account_options(accounts, sug_code, exclude=str(item.get("account_code")))}</select>'
+        f'{_account_options(accounts, sug_code, exclude=str(item.get("account_code")), id_codes=id_codes)}</select>'
         + dimension_selects(dimensions or {})
         + '<button class="btn" style="padding:4px 12px;margin:0" type="submit">Accept</button>'
         "</form>"
@@ -161,10 +164,11 @@ def render_inbox(
     can_post: bool,
     message: str = "",
     error: str = "",
+    id_codes: frozenset[str] = frozenset(),
 ) -> str:
     """The review queue: everything the bank sent that isn't in the books yet."""
     items = [i for i in _seq(view.get("items")) if isinstance(i, Mapping)]
-    rows = "".join(_row(tenant, i, accounts, can_post, dimensions) for i in items)
+    rows = "".join(_row(tenant, i, accounts, can_post, dimensions, id_codes) for i in items)
     empty = (
         '<tr><td colspan="5" class="empty">'
         "Nothing waiting — every bank line has been dealt with.</td></tr>"
@@ -295,8 +299,11 @@ def render_rules(
     can_post: bool,
     message: str = "",
     error: str = "",
+    id_codes: frozenset[str] = frozenset(),
 ) -> str:
     """The rules that pre-categorize the feed, and the form to add one."""
+    names = {str(a.get("code")): a.get("name") for a in _seq(accounts.get("accounts"))
+             if isinstance(a, Mapping)}
     rows = []
     for r in _seq(rules.get("rules")):
         if not isinstance(r, Mapping):
@@ -326,7 +333,8 @@ def render_rules(
         rows.append(
             f"<tr><td><strong>{_esc(r.get('id'))}</strong></td>"
             f"<td>{' and '.join(conditions)}</td>"
-            f"<td>{_esc(r.get('account_code'))}</td><td>{auto}</td><td>{remove}</td></tr>"
+            f"<td>{_esc(account_label(r.get('account_code'), names.get(str(r.get('account_code'))), id_codes))}</td>"
+            f"<td>{auto}</td><td>{remove}</td></tr>"
         )
     empty = (
         '<tr><td colspan="5" class="empty">'
@@ -362,7 +370,7 @@ def render_rules(
             '<option value="">Either</option><option value="out">Money out</option>'
             '<option value="in">Money in</option></select></div>'
             "<div><label>Categorize to</label>"
-            f'<select name="account_code">{_account_options(accounts, "")}</select></div>'
+            f'<select name="account_code">{_account_options(accounts, "", id_codes=id_codes)}</select></div>'
             '<div><label>Post without review?</label><select name="auto_post">'
             '<option value="">No — just suggest it</option>'
             '<option value="1">Yes — post it straight through</option></select></div>'

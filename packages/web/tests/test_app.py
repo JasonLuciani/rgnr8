@@ -15,7 +15,11 @@ def test_health_needs_no_auth() -> None:
 
 def test_missing_token_is_401() -> None:
     app = app_with_two_tenants()
-    assert app.handle(Request("GET", "/t/bright")).status == 401
+    # The JSON API refuses a call with no credential...
+    assert app.handle(Request("GET", "/api/bright/today")).status == 401
+    # ...and so does a page asked for as JSON. A browser asking for the page is
+    # sent to sign-in instead (test_signed_out_redirect.py).
+    assert app.handle(Request("GET", "/t/bright", {"accept": "application/json"})).status == 401
 
 
 def test_today_dashboard_html() -> None:

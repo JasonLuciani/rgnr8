@@ -16,11 +16,12 @@ import os
 import re
 import secrets
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from html import escape
-from urllib.parse import parse_qs, urlsplit
+from typing import Any
+from urllib.parse import parse_qs, quote, urlsplit
 
 from rgnr8_ar import ARReport, ChaseItem, CollectionNudge, ar_report, chase_list, draft_nudge
 from rgnr8_billing import Account, UsageSummary
@@ -102,6 +103,7 @@ from .audit import AuditSink
 from .auth import Authenticator, JwtError, StaticTokenAuthenticator, sign_jwt, verify_jwt
 from .csp import new_nonce as _csp_new_nonce
 from .books_screens import (
+    account_label,
     render_books_home,
     render_books_statements,
     render_chart_of_accounts,
@@ -201,7 +203,7 @@ from .parallel_run import (
 )
 from .debt_screens import render_debt, render_debt_unavailable, render_loan_detail
 from .asset_screens import render_asset_detail, render_assets, render_assets_unavailable
-from .health_screens import render_health, render_health_unavailable
+from .health_screens import fiscal_year_start, render_health, render_health_unavailable
 from .ask_screens import render_ask, render_ask_unavailable
 from .copilot_bridge import AskService, LedgerReaderAdapter, copilot_scopes
 from rgnr8_copilot import AskAnswer, Conversation, LLMProvider
@@ -217,7 +219,7 @@ from .shell import (
     render_shell,
     render_users_admin,
 )
-from .store import InMemoryTenantStore, TenantDef, TenantState, TenantStore
+from .store import InMemoryTenantStore, TenantDef, TenantState, TenantStore, update_state
 from .ten99_screens import render_ten99, render_ten99_unavailable
 from .webhook_outbox import DurableWebhookDispatcher, WebhookOutbox
 from .webhooks_out import (
@@ -516,6 +518,63 @@ def _html(status: int, body: str, extra: "tuple[tuple[str, str], ...]" = ()) -> 
 
 def _redirect(location: str, extra: "tuple[tuple[str, str], ...]" = ()) -> Response:
     return Response(302, "", "text/html; charset=utf-8", (("Location", location), *extra))
+
+
+# The longest return address sign-in will carry. App pages with their query
+# strings are far shorter; anything longer is dropped rather than truncated.
+_NEXT_MAX = 512
+
+
+def _safe_next(value: object, tenants: "Iterable[str] | None" = None) -> "str | None":
+    """`value` if it is safe to send a browser to after sign-in, else None.
+
+    Only an in-app business page qualifies: a path that starts with `/t/<id>/`
+    (or is `/t/<id>`), with no scheme, no host, no protocol-relative `//`, no
+    backslash (browsers read `/\\host` as `//host`) and no control characters
+    (which could split a header). With `tenants`, the business in the path must
+    also be one of them, so the way back can't lead into a business the person
+    isn't a member of. Everything else is dropped and sign-in lands on /app, so
+    the redirect is never an open redirect."""
+    if not isinstance(value, str) or not value or len(value) > _NEXT_MAX:
+        return None
+    if any(ord(c) < 0x20 or c in "\\\x7f" for c in value):
+        return None
+    if not value.startswith("/t/") or value.startswith("//"):
+        return None
+    parts = urlsplit(value)
+    if parts.scheme or parts.netloc:
+        return None
+    seg = parts.path.split("/")
+    if len(seg) < 3 or not seg[2]:
+        return None
+    if tenants is not None and seg[2] not in set(tenants):
+        return None
+    return value
+
+
+def _signed_out_page(req: Request) -> "Response | None":
+    """Where a browser goes when it asks for an app page without a live session.
+
+    The /t/ routes are the pages people open; the JSON API lives under /api/.
+    A signed-out (or expired) page request used to get the API's raw 401
+    `{"error": "missing or invalid bearer token"}`, which reads as a broken app.
+    A page GET now goes to sign-in carrying the page as `next`; a form POST goes
+    to sign-in with a 303 (the browser follows with a GET, so nothing is
+    replayed and nothing was done). A caller that asks for JSON only, or posts
+    JSON, still gets the 401 it can act on. None means: answer with the 401."""
+    if not req.route.startswith("/t/"):
+        return None
+    accept = req.headers.get("accept", "").lower()
+    if "json" in accept and "text/html" not in accept:
+        return None
+    if req.method in ("GET", "HEAD"):
+        nxt = _safe_next(req.path)
+        return _redirect("/login?next=" + quote(nxt, safe="") if nxt else "/login")
+    ct = req.headers.get("content-type", "").lower()
+    if req.method == "POST" and ct.startswith(("application/x-www-form-urlencoded",
+                                               "multipart/form-data")):
+        return Response(303, "", "text/html; charset=utf-8", (("Location", "/login"),))
+    return None
 
 
 def _json(status: int, payload: object) -> Response:
@@ -1122,10 +1181,11 @@ class WebApp:
 
         # --- UI: login / logout (no auth required) ---
         if route == "/login" and req.method == "GET":
-            return self._login_page(
-                200,
-                notice=("Account created — sign in." if req.query.get("notice") == "created" else None),
-            )
+            nxt = _safe_next(req.query.get("next"))
+            notice = ("Account created — sign in." if req.query.get("notice") == "created"
+                      else "Your session ended. Sign in to pick up where you left off."
+                      if nxt else None)
+            return self._login_page(200, notice=notice, next_path=nxt)
         if route == "/login" and req.method == "POST":
             return self._login_post(req)
         # --- end-user auth (invitation signup / verify / reset) ---
@@ -1185,6 +1245,16 @@ class WebApp:
             # the surface — the JSON API — still gets the 401.
             if route in ("/", "/app"):
                 return _redirect("/login")
+            # The same for any business page: sign in, then come back to it.
+            page = _signed_out_page(req)
+            if page is not None:
+                loc = page.headers.get("Location", "")
+                if (req.method in ("GET", "HEAD") and loc.startswith("/login")
+                        and self._session_subject(req) is not None):
+                    # Signed in, but no business picked yet (the chooser's cookie
+                    # carries only who you are): finish choosing, not sign in again.
+                    return _redirect("/choose" + loc[len("/login"):])
+                return page
             return _json(401, {"error": "missing or invalid bearer token"})
         token_tenant, subject = principal
         _VIEW_AS.set(self._resolve_view_as(req, subject))
@@ -2298,7 +2368,10 @@ class WebApp:
             today=self._today(t), can_post=can_post,
             attachment_counts=raw_counts if isinstance(raw_counts, dict) else None,
             message=query.get("ok", ""), error=query.get("err", ""), banks=banks,
-            credit_accounts=tuple((str(a.get("code")), str(a.get("name")))
+            # (code, label): the label reads "4000 — Sales", or "Sales" for an
+            # account QuickBooks has no number for.
+            credit_accounts=tuple((str(a.get("code")),
+                                   account_label(a.get("code"), a.get("name"), self._id_codes(t)))
                                   for a in rows if a.get("type") == reverses and a.get("active", True)),
             control_codes=frozenset(str(a.get("code")) for a in rows
                                     if a.get("subtype") in ("ACCOUNTS_RECEIVABLE", "ACCOUNTS_PAYABLE")),
@@ -2558,6 +2631,7 @@ class WebApp:
             can_post=can_post,
             message=query.get("posted", ""),
             error=query.get("err", ""),
+            id_codes=self._id_codes(t),
         )
         return self._shell(subject, t, "books", body)
 
@@ -2567,7 +2641,8 @@ class WebApp:
         res = self._ledger.trial_balance(t.tenant_id)
         if not res.ok:
             return self._shell(subject, t, "books", render_books_unavailable(res.error()))
-        return self._shell(subject, t, "books", render_trial_balance(t.tenant_id, res.body))
+        return self._shell(subject, t, "books", render_trial_balance(
+            t.tenant_id, res.body, id_codes=self._id_codes(t)))
 
     def _books_accounts_page(self, subject: str, t: _Tenant) -> Response:
         if self._ledger is None:
@@ -2575,7 +2650,8 @@ class WebApp:
         res = self._ledger.accounts(t.tenant_id)
         if not res.ok:
             return self._shell(subject, t, "books", render_books_unavailable(res.error()))
-        return self._shell(subject, t, "books", render_chart_of_accounts(t.tenant_id, res.body))
+        return self._shell(subject, t, "books", render_chart_of_accounts(
+            t.tenant_id, res.body, id_codes=self._id_codes(t)))
 
     def _books_register_page(self, subject: str, t: _Tenant, code: str) -> Response:
         if self._ledger is None:
@@ -2583,7 +2659,8 @@ class WebApp:
         res = self._ledger.register(t.tenant_id, code)
         if not res.ok:
             return self._shell(subject, t, "books", render_books_unavailable(res.error()))
-        return self._shell(subject, t, "books", render_register(t.tenant_id, res.body))
+        return self._shell(subject, t, "books", render_register(
+            t.tenant_id, res.body, id_codes=self._id_codes(t)))
 
     def _books_split_page(self, subject: str, t: _Tenant, method: str, body: str) -> Response:
         """The guided commingled-account split (A-2). Reads the tenant's imported
@@ -2979,6 +3056,7 @@ class WebApp:
             dimensions=dims.body if dims.ok else {},
             can_post=can_post,
             message=query.get("done", ""), error=query.get("err", ""),
+            id_codes=self._id_codes(t),
         )
         return self._shell(subject, t, "inbox", body)
 
@@ -3058,6 +3136,7 @@ class WebApp:
             t.tenant_id, res.body, accounts.body if accounts.ok else {},
             can_post=can_post,
             message=query.get("done", ""), error=query.get("err", ""),
+            id_codes=self._id_codes(t),
         )
         return self._shell(subject, t, "inbox", body)
 
@@ -3144,6 +3223,7 @@ class WebApp:
             accounts.body if accounts.ok else {},
             can_edit=can_edit,
             message=query.get("done", ""), error=query.get("err", ""),
+            id_codes=self._id_codes(t),
         ))
 
     def _inventory_action(
@@ -3749,6 +3829,7 @@ class WebApp:
             accounts.body if accounts.ok else {},
             can_edit=can_edit,
             message=query.get("done", ""), error=query.get("err", ""),
+            id_codes=self._id_codes(t),
         ))
 
     def _estimate_page(
@@ -4009,6 +4090,7 @@ class WebApp:
             accounts.body if accounts.ok else {},
             can_edit=can_edit,
             message=query.get("done", ""), error=query.get("err", ""),
+            id_codes=self._id_codes(t),
         ))
 
     def _job_page(
@@ -4258,6 +4340,7 @@ class WebApp:
             accounts.body if accounts.ok else {}, as_of,
             can_post=can_post,
             message=query.get("done", ""), error=query.get("err", ""),
+            id_codes=self._id_codes(t),
         ))
 
     def _recurring_save(self, subject: str, t: _Tenant, body: str) -> Response:
@@ -4419,7 +4502,8 @@ class WebApp:
         if not res.ok:
             return self._shell(subject, t, "books", render_books_unavailable(res.error()))
         return self._shell(subject, t, "books",
-                           render_general_ledger(t.tenant_id, res.body, frm=frm, to=to))
+                           render_general_ledger(t.tenant_id, res.body, frm=frm, to=to,
+                                                 id_codes=self._id_codes(t)))
 
     def _budget_period(self, t: _Tenant, query: "dict[str, str]") -> str:
         period = query.get("period", "").strip()
@@ -4439,6 +4523,7 @@ class WebApp:
             t.tenant_id, period, res.body, accounts.body if accounts.ok else {},
             can_post=can_post,
             message=query.get("done", ""), error=query.get("err", ""),
+            id_codes=self._id_codes(t),
         ))
 
     def _budget_save(self, subject: str, t: _Tenant, body: str) -> Response:
@@ -4487,7 +4572,8 @@ class WebApp:
         res = self._ledger.accounts(t.tenant_id)
         if not res.ok:
             return self._shell(subject, t, "books", render_books_unavailable(res.error()))
-        return self._shell(subject, t, "books", render_pick_account(t.tenant_id, res.body))
+        return self._shell(subject, t, "books", render_pick_account(
+            t.tenant_id, res.body, id_codes=self._id_codes(t)))
 
     def _reconcile_page(
         self, subject: str, t: _Tenant, code: str, query: "dict[str, str]"
@@ -4513,6 +4599,7 @@ class WebApp:
         body = render_reconcile(
             t.tenant_id, res.body, can_post=can_post,
             message=query.get("done", ""), error=query.get("err", ""),
+            id_codes=self._id_codes(t),
         )
         return self._shell(subject, t, "books", body)
 
@@ -4599,7 +4686,8 @@ class WebApp:
         board = self._close.get(t.tenant_id)
         sealed = bool(board and board.sealed and board.period == frm[:7])
         return self._shell(subject, t, "books",
-                           render_books_statements(f"{frm} to {to}", res.body, sealed=sealed))
+                           render_books_statements(f"{frm} to {to}", res.body, sealed=sealed,
+                                                   id_codes=self._id_codes(t)))
 
     def _books_post_entry(self, subject: str, t: _Tenant, body: str) -> Response:
         """Post a journal entry from the owner form. Amounts are parsed exactly;
@@ -4839,16 +4927,19 @@ class WebApp:
         if self._session_secret is None:
             return _html(400, render_login_html(sso=True, error="Self-issued login is disabled — use SSO."))
         data = self._form_or_json(req.body)
+        # Where the browser was headed when sign-in interrupted it. Re-checked
+        # against the person's own businesses once we know them.
+        nxt = _safe_next(data.get("next"))
         email = str(data.get("email", "")).strip()
         if "@" not in email:
-            return self._login_page(400, error="Enter a valid work email.")
+            return self._login_page(400, error="Enter a valid work email.", next_path=nxt)
         role_raw = str(data.get("role", "owner"))
         # Real credential login (public track): verify the password + verified email
         # via the AuthService. On any failure, respond without distinguishing why.
         if self._auth_service is not None:
             authed = self._auth_service.login(email, str(data.get("password", "")))
             if authed is None:
-                return self._login_failure(req)
+                return self._login_failure(req, next_path=nxt)
         # Seat the user record first, so the founder bootstrap and the staff check
         # below can run even before any business is provisioned.
         subject = email
@@ -4880,13 +4971,16 @@ class WebApp:
             return self._login_page(
                 403, error="This account isn't a member of any business yet. "
                            "Ask the owner to send you an invitation.")
+        # The way back only counts if it is one of this person's businesses.
+        nxt = _safe_next(nxt, businesses)
         # Exactly one business and not staff → skip the chooser, straight in.
         if total == 1 and not is_staff:
-            return _redirect("/app", (("Set-Cookie",
+            return _redirect(nxt or "/app", (("Set-Cookie",
                 self._session_cookie(sub=subject, tenant=businesses[0])),))
         # Staff, or more than one destination → the "choose your view" screen.
         # The cookie carries only `sub` until a business is picked.
-        return _redirect("/choose", (("Set-Cookie", self._session_cookie(sub=subject)),))
+        choose = "/choose?next=" + quote(nxt, safe="") if nxt else "/choose"
+        return _redirect(choose, (("Set-Cookie", self._session_cookie(sub=subject)),))
 
     def _session_cookie(self, *, sub: str, tenant: "str | None" = None) -> str:
         """Build the `rgnr8_session` Set-Cookie value. Carries `sub` always and a
@@ -4944,8 +5038,10 @@ class WebApp:
             u = self._users.get_user(subject)
             if u is not None and getattr(u, "email", None):
                 email = u.email
+        nxt = _safe_next(req.query.get("next"), [tid for tid, _name in businesses])
         return _html(200, render_choose_html(
-            businesses=businesses, staff=is_staff, operator_url=op, email=email))
+            businesses=businesses, staff=is_staff, operator_url=op, email=email,
+            next_path=nxt))
 
     def _choose_enter(self, req: Request) -> Response:
         """Enter a chosen business: re-mint the session cookie with that tenant,
@@ -4965,7 +5061,9 @@ class WebApp:
         if self._session_secret is None:
             return _html(400, render_login_html(
                 sso=True, error="Choosing a business is handled by your identity provider."))
-        return _redirect("/app", (("Set-Cookie",
+        # Back to the page sign-in interrupted, if it belongs to this business.
+        nxt = _safe_next(req.query.get("next"), [tenant])
+        return _redirect(nxt or "/app", (("Set-Cookie",
             self._session_cookie(sub=subject, tenant=tenant)),))
 
     @staticmethod
@@ -4976,7 +5074,7 @@ class WebApp:
         return req.body.lstrip().startswith("{")
 
     def _login_page(self, status: int, *, error: str | None = None,
-                    notice: str | None = None) -> Response:
+                    notice: str | None = None, next_path: str | None = None) -> Response:
         """Render the sign-in page in the mode this deployment actually uses.
 
         Every failure path must come through here. Calling `render_login_html`
@@ -4992,15 +5090,15 @@ class WebApp:
             # Without an emailer the token comes back in an API response nobody
             # sees, so the link would promise mail that never arrives.
             reset_open=self._auth_service is not None and self._emailer is not None,
-            error=error, notice=notice,
+            error=error, notice=notice, next_path=next_path,
         ))
 
-    def _login_failure(self, req: Request) -> Response:
+    def _login_failure(self, req: Request, *, next_path: str | None = None) -> Response:
         """A single, non-committal login rejection — never reveals whether the email
         is unknown, the password wrong, or the account unverified."""
         if self._wants_json(req):
             return _json(401, {"error": "invalid email or password"})
-        return self._login_page(401, error="Invalid email or password.")
+        return self._login_page(401, error="Invalid email or password.", next_path=next_path)
 
     # --- end-user auth (invitation-gated signup) ----------------------------
     _INVITE_ONLY = ("RGNR8 is invitation-only. Ask the owner of your business "
@@ -5269,9 +5367,12 @@ class WebApp:
             else:
                 raw = res.body.get("settings", {})
                 current = raw if isinstance(raw, dict) else {}
+                state = self._store.load(t.tenant_id)
                 body = render_settings(
                     t.tenant_id, current,
-                    modules_on=enabled_modules(self._store.load(t.tenant_id).modules),
+                    modules_on=enabled_modules(state.modules),
+                    fiscal_year_start_month=state.fiscal_year_start_month or 1,
+                    mirrors_quickbooks=str(current.get("book_of_record") or "") == "quickbooks",
                     can_manage_settings=can_settings,
                     can_manage_retention=can_retention,
                     can_erase=can_erase,
@@ -5286,12 +5387,13 @@ class WebApp:
         """Which optional modules show in this business's sidebar. Only the
         sidebar: a module switched off keeps its pages and its data."""
         chosen = [m for m in parse_qs(body).get("module", []) if m in OPTIONAL_MODULES]
-        t.state = self._store.load(t.tenant_id)  # on top of what's stored now
-        t.state.modules = sorted(set(chosen))
-        self._store.save(t.tenant_id, t.state)
+        def choose(state: TenantState) -> None:
+            state.modules = sorted(set(chosen))
+
+        t.state = update_state(self._store, t.tenant_id, choose)
         if self._audit is not None:
             self._audit.record(subject, "settings.modules", self._session_clock(),
-                               tenant_id=t.tenant_id, detail=",".join(t.state.modules) or "none")
+                               tenant_id=t.tenant_id, detail=",".join(sorted(set(chosen))) or "none")
         return _redirect(f"/t/{t.tenant_id}/settings?done=Modules+updated")
 
     def _settings_save(self, subject: str, t: _Tenant, body: str) -> Response:
@@ -5299,6 +5401,15 @@ class WebApp:
         if self._ledger is None:
             return _redirect(f"{back}?err=No+ledger+service+configured")
         data = self._form_or_json(body)
+        # The fiscal year start lives with this app's state, not the ledger's
+        # settings: it only decides which dates a "year to date" figure covers.
+        fiscal_changed = False
+        raw_month = str(data.get("fiscal_year_start_month", "")).strip()
+        if raw_month:
+            if raw_month not in {str(i) for i in range(1, 13)}:
+                return _redirect(f"{back}?err=Choose+the+month+your+fiscal+year+starts+in")
+            # Unset reads as January, so choosing January then changes nothing.
+            fiscal_changed = (self._store.load(t.tenant_id).fiscal_year_start_month or 1) != int(raw_month)
         patch: dict[str, object] = {}
         for key in ("inventory_costing_method", "base_currency", "multi_currency_enabled"):
             if str(data.get(key, "")).strip():
@@ -5313,14 +5424,28 @@ class WebApp:
                 if not may_retention:
                     return _redirect(f"{back}?err=Changing+retention+needs+the+Manage+data+retention+permission")
                 patch[key] = str(data.get(key, "")).strip()
-        if not patch:
+        if not patch and not fiscal_changed:
             return _redirect(f"{back}?done=Nothing+to+change")
-        res = self._ledger.save_settings(t.tenant_id, patch)
-        if not res.ok:
-            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        # The month is saved first: if that fails nothing has changed anywhere,
+        # rather than the ledger's half saved and a 500 for the rest.
+        saved = sorted(patch.keys())
+        if fiscal_changed:
+            def set_month(state: TenantState) -> None:
+                state.fiscal_year_start_month = int(raw_month)
+
+            try:
+                t.state = update_state(self._store, t.tenant_id, set_month)
+            except Exception:  # noqa: BLE001 - a store failure, said plainly
+                return _redirect(f"{back}?err=Couldn%27t+save+the+fiscal+year+start%3B+nothing+was+changed")
+            saved.append("fiscal_year_start_month")
+        if patch:
+            res = self._ledger.save_settings(t.tenant_id, patch)
+            if not res.ok:
+                done = " (the fiscal year start was saved)" if fiscal_changed else ""
+                return _redirect(f"{back}?err={_qs_escape(res.error() + done)}")
         if self._audit is not None:
             self._audit.record(subject, "settings.saved", self._session_clock(),
-                               tenant_id=t.tenant_id, target=",".join(sorted(patch.keys())))
+                               tenant_id=t.tenant_id, target=",".join(sorted(saved)))
         return _redirect(f"{back}?done=Settings+saved")
 
     # --- debt (loans, lines of credit) --------------------------------------
@@ -5328,14 +5453,24 @@ class WebApp:
         perms, _role = self._perms_role(subject, t.tenant_id)
         return self._policy is None or Permission.POST_JOURNAL in perms
 
+    def _account_pickers(self, t: _Tenant, can_write: bool) -> "dict[str, Any]":
+        """The chart and the id codes, for a page whose forms pick an account.
+        Only read when the viewer can use the forms."""
+        if not can_write or self._ledger is None:
+            return {}
+        res = self._ledger.accounts(t.tenant_id)
+        return {"accounts": res.body if res.ok else {}, "id_codes": self._id_codes(t)}
+
     def _debt_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
         if self._ledger is None:
             return self._shell(subject, t, "debt", render_debt_unavailable("No ledger service is configured."))
         res = self._ledger.debt_dashboard(t.tenant_id, as_of=query.get("as_of", ""))
         if not res.ok:
             return self._shell(subject, t, "debt", render_debt_unavailable(res.error()))
-        body = render_debt(t.tenant_id, res.body, can_write=self._can_post(subject, t),
-                           done=query.get("done", ""), error=query.get("err", ""))
+        can_write = self._can_post(subject, t)
+        body = render_debt(t.tenant_id, res.body, can_write=can_write,
+                           done=query.get("done", ""), error=query.get("err", ""),
+                           **self._account_pickers(t, can_write))
         return self._shell(subject, t, "debt", body)
 
     def _loan_detail_page(
@@ -5428,8 +5563,10 @@ class WebApp:
         res = self._ledger.asset_register(t.tenant_id)
         if not res.ok:
             return self._shell(subject, t, "assets", render_assets_unavailable(res.error()))
-        body = render_assets(t.tenant_id, res.body, can_write=self._can_post(subject, t),
-                             done=query.get("done", ""), error=query.get("err", ""))
+        can_write = self._can_post(subject, t)
+        body = render_assets(t.tenant_id, res.body, can_write=can_write,
+                             done=query.get("done", ""), error=query.get("err", ""),
+                             **self._account_pickers(t, can_write))
         return self._shell(subject, t, "assets", body)
 
     def _asset_detail_page(
@@ -5440,8 +5577,10 @@ class WebApp:
         res = self._ledger.asset(t.tenant_id, asset_id)
         if not res.ok:
             return self._shell(subject, t, "assets", render_assets_unavailable(res.error()))
-        body = render_asset_detail(t.tenant_id, res.body, can_write=self._can_post(subject, t),
-                                   done=query.get("done", ""), error=query.get("err", ""))
+        can_write = self._can_post(subject, t)
+        body = render_asset_detail(t.tenant_id, res.body, can_write=can_write,
+                                   done=query.get("done", ""), error=query.get("err", ""),
+                                   **self._account_pickers(t, can_write))
         return self._shell(subject, t, "assets", body)
 
     def _asset_add(self, subject: str, t: _Tenant, body: str) -> Response:
@@ -5508,7 +5647,34 @@ class WebApp:
         res = self._ledger.ratios(t.tenant_id, as_of=query.get("as_of", ""))
         if not res.ok:
             return self._shell(subject, t, "health", render_health_unavailable(res.error()))
-        return self._shell(subject, t, "health", render_health(t.tenant_id, res.body))
+        return self._shell(subject, t, "health", render_health(
+            t.tenant_id, res.body, fiscal=self._fiscal_year_to_date(t, res.body)))
+
+    def _fiscal_year_to_date(
+        self, t: _Tenant, ratios: Mapping[str, object],
+    ) -> "dict[str, object] | None":
+        """Revenue and net income from the start of this business's fiscal year to
+        the health page's as-of date, from the books' own income statement. None
+        when it can't be read, and the page says what its figures cover instead."""
+        assert self._ledger is not None
+        try:
+            end = date.fromisoformat(str(ratios.get("as_of") or self._today(t)))
+        except ValueError:
+            return None
+        month = self._store.load(t.tenant_id).fiscal_year_start_month or 1
+        start = fiscal_year_start(end, month)
+        res = self._ledger.statements(t.tenant_id, start.isoformat(), end.isoformat())
+        income = res.body.get("income_statement") if res.ok else None
+        if not isinstance(income, Mapping):
+            return None
+
+        def minor(v: object) -> "int | None":
+            # financial-statements/1 carries minor units as JSON numbers.
+            return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+        return {"start": start, "end": end, "start_month": month,
+                "revenue_minor": minor(income.get("total_revenue")),
+                "net_income_minor": minor(income.get("net_income"))}
 
     # --- Ask RGNR8 (conversational finance) ---------------------------------
     # Display cap: how many past exchanges to render (the copilot separately trims
@@ -6141,17 +6307,20 @@ class WebApp:
         action = (parse_qs(body).get("action") or [""])[0]
         # Save on top of what is stored now, not this process's older copy, so a
         # change made through the other worker isn't written over.
-        t.state = self._store.load(t.tenant_id)
         if action == "remove":
-            t.state.cost_baseline = None
+            saved: dict[str, object] | None = None
         elif action == "add":
             baseline, why_not = self._proposed_baseline(t)
             if baseline is None:
                 return self._costs_page(subject, t, notice=f"Nothing was added: {why_not}.")
-            t.state.cost_baseline = baseline.to_dict()
+            saved = baseline.to_dict()
         else:
             return _json(400, {"error": "action must be add or remove"})
-        self._store.save(t.tenant_id, t.state)
+
+        def keep(state: TenantState) -> None:
+            state.cost_baseline = saved
+
+        t.state = update_state(self._store, t.tenant_id, keep)
         t._dirty = True
         if self._audit is not None:
             self._audit.record(subject, f"costs.baseline_{'added' if action == 'add' else 'removed'}",
@@ -6516,6 +6685,59 @@ class WebApp:
         problem = self._qbo_pin(t, realm, "")
         return "" if not problem else f"couldn't pin the QuickBooks company ({problem}); nothing was changed"
 
+    def _record_quickbooks_facts(
+        self, t: _Tenant, *, numbered: "Mapping[str, bool] | None" = None,
+        fiscal_month: "int | None" = None,
+    ) -> None:
+        """Remember two things QuickBooks knows about these books that the ledger
+        doesn't hold: which account codes are QuickBooks' internal ids rather
+        than account numbers, and the month the fiscal year starts.
+
+        A refresh only reads accounts with a balance, so an account it didn't
+        see keeps what was recorded for it before. Saved on top of what's stored
+        now, so a change made through the other worker isn't written over."""
+        if not numbered and fiscal_month is None:
+            return
+
+        def record(state: TenantState) -> None:
+            if numbered:
+                ids = set(state.qbo_id_codes or ())
+                ids -= {code for code, has_number in numbered.items() if has_number}
+                ids |= {code for code, has_number in numbered.items() if not has_number}
+                state.qbo_id_codes = sorted(ids)
+            if fiscal_month is not None:
+                state.fiscal_year_start_month = fiscal_month
+
+        t.state = update_state(self._store, t.tenant_id, record)
+
+    @staticmethod
+    def _numbering(client: object, seen: "Mapping[str, bool]") -> "dict[str, bool]":
+        """Which codes are account numbers, for the whole QuickBooks chart. The
+        refresh's trial balance (`seen`) only lists accounts with a balance, so
+        books brought over before this was recorded would otherwise keep showing
+        ids for every account at zero today. One more read of the chart; if it
+        fails, what the trial balance showed is still recorded. Nothing seen
+        means the trial balance itself couldn't be read, so neither is the chart."""
+        if not seen:
+            return {}
+        out: dict[str, bool] = {}
+        try:
+            chart = client.chart_of_accounts(include_inactive=True)  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001 - the trial balance's answer stands
+            chart = []
+        for a in chart if isinstance(chart, list) else []:
+            code = str(a.get("code") or "").strip() if isinstance(a, dict) else ""
+            if code and "number" in a:  # stripped, as `refresh_mirror` keys them
+                out[code] = bool(str(a["number"]).strip())
+        out.update(seen)
+        return out
+
+    def _id_codes(self, t: _Tenant) -> frozenset[str]:
+        """The account codes to show by name, not as numbers (see
+        `_record_quickbooks_facts`). Read from the store each time so both
+        workers agree."""
+        return frozenset(self._store.load(t.tenant_id).qbo_id_codes or ())
+
     def _qbo_has_ledger(self, t: _Tenant) -> bool:
         """True when the ledger already holds a chart of accounts for this tenant —
         read from the ledger itself, so a restart can't forget it."""
@@ -6581,6 +6803,11 @@ class WebApp:
                     "bring over your chart of accounts and balances first — a refresh "
                     "keeps an existing mirror current, it doesn't create one"))
             mirror = refresh_mirror(client, self._ledger, t.tenant_id, as_of=as_of.isoformat())
+            # QuickBooks' fiscal year is taken only while it is the book of
+            # record and the books really were brought up to date from it.
+            self._record_quickbooks_facts(
+                t, numbered=self._numbering(client, mirror.numbered),
+                fiscal_month=summary.fiscal_year_start_month if mirror.ok else None)
             detail = mirror.describe()
             if mirror.mismatches:
                 detail += ": " + "; ".join(mirror.mismatches[:3])
@@ -6632,6 +6859,14 @@ class WebApp:
             if problem:
                 message += f" (couldn't pin the QuickBooks company yet: {problem})"
             mirror = refresh_mirror(client, self._ledger, t.tenant_id, as_of=today.isoformat())
+            fiscal: int | None = None
+            if mirror.ok:
+                try:
+                    fiscal = client.company_info().fiscal_year_start_month
+                except Exception:  # noqa: BLE001 - the next Refresh reads it again
+                    fiscal = None
+            self._record_quickbooks_facts(t, numbered=self._numbering(client, mirror.numbered),
+                                          fiscal_month=fiscal)
             message += f" (opening balances as of {cutover}); then {mirror.describe()}"
             if mirror.ok:
                 problem = self._store_open_items(t, client, today)
@@ -6772,9 +7007,11 @@ class WebApp:
 
         board = dataclasses.replace(board, sealed=True)
         self._close[t.tenant_id] = board
-        t.state.decisions.append({"id": len(t.state.decisions) + 1, "kind": "close",
-                                  "label": f"Sealed {board.period}"})
-        self._store.save(t.tenant_id, t.state)
+        def sealed(state: TenantState) -> None:
+            state.decisions.append({"id": len(state.decisions) + 1, "kind": "close",
+                                    "label": f"Sealed {board.period}"})
+
+        t.state = update_state(self._store, t.tenant_id, sealed)
         # Fan the event out to any registered webhook endpoints, durably.
         self._emit_event(t.tenant_id, "close.sealed", {"period": board.period})
         return _json(200, {"period": board.period, "sealed": True})
@@ -6858,29 +7095,36 @@ class WebApp:
             return _json(400, {"error": "invalid JSON body"})
 
         changed: list[str] = []
+        min_cash: Money | None = None
+        override: tuple[str, int] | None = None
         if "minimum_cash" in payload:
             try:
-                t.state.set_min_cash(Money.from_decimal(str(payload["minimum_cash"])))
+                min_cash = Money.from_decimal(str(payload["minimum_cash"]))
                 changed.append("minimum_cash")
             except ValueError:
                 return _json(400, {"error": "minimum_cash is not a valid amount"})
         if "payment_override" in payload:
             po = payload["payment_override"]
             try:
-                customer_id = str(po["customer_id"])
-                days = int(po["days_late"])
+                override = (str(po["customer_id"]), int(po["days_late"]))
             except (KeyError, TypeError, ValueError):
                 return _json(400, {"error": "payment_override needs customer_id and integer days_late"})
-            t.state.payment_overrides[customer_id] = days
-            changed.append(f"payment_override:{customer_id}")
+            changed.append(f"payment_override:{override[0]}")
 
         if not changed:
             return _json(400, {"error": "nothing to change"})
 
+        def apply(state: TenantState) -> None:
+            if min_cash is not None:
+                state.set_min_cash(min_cash)
+            if override is not None:
+                state.payment_overrides[override[0]] = override[1]
+            # record the change as a decision alongside it
+            state.decisions.append({"id": len(state.decisions) + 1, "kind": "assumption",
+                                    "changed": changed})
+
+        t.state = update_state(self._store, t.tenant_id, apply)
         t._dirty = True  # invalidate the cached forecast
-        # record the change as a decision, persist, then return the recomputed summary
-        t.state.decisions.append({"id": len(t.state.decisions) + 1, "kind": "assumption", "changed": changed})
-        self._store.save(t.tenant_id, t.state)
         return self._today_json(t)
 
     def _add_decision(self, t: _Tenant, body: str) -> Response:
@@ -6892,14 +7136,17 @@ class WebApp:
         if not label:
             return _json(400, {"error": "provide a 'label'"})
         entry: dict[str, object] = {
-            "id": len(t.state.decisions) + 1,
             "kind": str(payload.get("kind", "decision")),
             "label": label,
             "note": str(payload.get("note", "")),
         }
-        t.state.decisions.append(entry)
-        self._store.save(t.tenant_id, t.state)
-        return _json(201, entry)
+
+        def add(state: TenantState) -> None:
+            entry["id"] = len(state.decisions) + 1
+            state.decisions.append(entry)
+
+        t.state = update_state(self._store, t.tenant_id, add)
+        return _json(201, {"id": entry["id"], **entry})
 
     def _decisions(self, t: _Tenant) -> Response:
         return _json(200, {"tenant": t.tenant_id, "decisions": t.decisions})
@@ -6984,6 +7231,7 @@ class WebApp:
         real cross-store erasure reaching the ledger is tracked separately."""
         txns = self._txns.get(t.tenant_id, [])
         had_close = t.tenant_id in self._close
+        t.state = self._store.load(t.tenant_id)  # count what's stored, not this worker's copy
         decisions_n = len(t.state.decisions)
         overrides_n = len(t.state.payment_overrides)
         had_min_cash = t.state.min_cash_override_dto is not None
@@ -6994,10 +7242,12 @@ class WebApp:
         # month-end close board
         self._close.pop(t.tenant_id, None)
         # mutable owner state (decisions + assumption overrides), then persist
-        t.state.decisions.clear()
-        t.state.payment_overrides.clear()
-        t.state.min_cash_override_dto = None
-        self._store.save(t.tenant_id, t.state)
+        def erase(state: TenantState) -> None:
+            state.decisions.clear()
+            state.payment_overrides.clear()
+            state.min_cash_override_dto = None
+
+        t.state = update_state(self._store, t.tenant_id, erase)
         # cached forecast + briefing — recompute clean on next read
         t._cache = None
         t._briefing_cache = None

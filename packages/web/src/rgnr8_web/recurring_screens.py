@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from .books_screens import _card, _esc, _minor, _num, _seq
+from .books_screens import _card, _esc, _minor, _num, _seq, account_options
 
 
 def _banner(kind: str, text: str) -> str:
@@ -46,6 +46,7 @@ def render_recurring(
     can_post: bool,
     message: str = "",
     error: str = "",
+    id_codes: frozenset[str] = frozenset(),
 ) -> str:
     """What's due, what's memorized, and the form to memorize another."""
     items = [d for d in _seq(due.get("due")) if isinstance(d, Mapping)]
@@ -59,7 +60,7 @@ def render_recurring(
     out = head + _due_card(tenant, items, as_of, can_post)
     out += _templates_card(tenant, templates, can_post)
     if can_post:
-        out += _new_form(tenant, accounts)
+        out += _new_form(tenant, accounts, id_codes)
     return out
 
 
@@ -141,13 +142,9 @@ def _templates_card(
     return _card("Memorized transactions", table, back)
 
 
-def _new_form(tenant: str, accounts: Mapping[str, object]) -> str:
-    options = "".join(
-        f'<option value="{_esc(a.get("code"))}">{_esc(a.get("code"))} — '
-        f'{_esc(a.get("name"))}</option>'
-        for a in _seq(accounts.get("accounts"))
-        if isinstance(a, Mapping)
-    )
+def _new_form(tenant: str, accounts: Mapping[str, object],
+              id_codes: frozenset[str] = frozenset()) -> str:
+    options = account_options(accounts, id_codes)
     if not options:
         return _card("Memorize a transaction",
                      '<p class="muted">Set up a chart of accounts first.</p>')
