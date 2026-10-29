@@ -20,7 +20,7 @@ from collections.abc import Mapping
 from .attachment_screens import attachment_link
 from .components import Action, empty_state
 from .books_screens import _card, _esc, _minor, _seq, money
-from .provenance_labels import Provenance, badge as prov_badge, legend as prov_legend
+from .provenance_labels import Provenance, legend as prov_legend
 
 
 def _banner(kind: str, text: str) -> str:
@@ -211,7 +211,7 @@ def render_inbox(
     # Provenance: for-review lines are IMPORTED (from the bank, not yet in the
     # books); accepting one POSTs it; a bank rec then makes it RECONCILED.
     legend = prov_legend((Provenance.IMPORTED, Provenance.POSTED, Provenance.RECONCILED))
-    out = head + summary + legend + _card("For review", table, actions=prov_badge(Provenance.IMPORTED))
+    out = head + summary + legend + _card("For review", table, provenance=Provenance.IMPORTED)
     if can_post and pending:
         out += _bulk_form(tenant)
     return out
@@ -281,7 +281,8 @@ def render_actioned(tenant: str, status: str, view: Mapping[str, object],
         "journal, because the books are append-only. Then the line comes back to "
         "the review queue.</p>"
     )
-    return _card(title, table + (note if can_post else ""), back)
+    level = Provenance.IMPORTED if status == "EXCLUDED" else Provenance.POSTED
+    return _card(title, table + (note if can_post else ""), back, provenance=level)
 
 
 # --- rules -------------------------------------------------------------------

@@ -12,6 +12,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 
+from .components import card
+from .provenance_labels import Provenance, most_cautious
+
 
 def _esc(s: object) -> str:
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -48,9 +51,8 @@ def _seq(v: object) -> list[object]:
     return list(v) if isinstance(v, (list, tuple)) else []
 
 
-def _card(title: str, body: str) -> str:
-    return (f'<section class="card"><h2 style="margin:0 0 12px;font:600 15px/1.2 var(--rg-sans)">'
-            f'{_esc(title)}</h2>{body}</section>')
+def _card(title: str, body: str, provenance: "Provenance | None" = None) -> str:
+    return card(title, body, provenance=provenance)
 
 
 # --- AR/AP aging (aging/1) ---------------------------------------------------
@@ -82,7 +84,7 @@ def render_aging(data: Mapping[str, object]) -> str:
         + f'<tr style="font-weight:700"><td>Total</td>{total_cells}{_num_cell(data.get("grand_total_minor"))}</tr>'
         + '</tbody></table></div>'
     )
-    return _card(f"{title} — as of {as_of}", table)
+    return _card(f"{title} — as of {as_of}", table, provenance=Provenance.POSTED)
 
 
 # --- budget vs actual (budget-vs-actual/1) -----------------------------------
@@ -115,7 +117,9 @@ def render_budget(data: Mapping[str, object]) -> str:
         + _num_cell(data.get("total_variance_minor"), ccy) + '<td></td><td></td></tr>'
         + '</tbody></table></div>'
     )
-    return _card(f"Budget vs Actual — {period}", table)
+    # The budget is the owner's plan; only the actuals are posted.
+    return _card(f"Budget vs Actual — {period}", table,
+                 provenance=most_cautious((Provenance.FORECAST, Provenance.POSTED)))
 
 
 # --- retained earnings (retained-earnings/1) ---------------------------------
@@ -132,7 +136,8 @@ def render_retained_earnings(data: Mapping[str, object]) -> str:
     )
     body += f'<tr style="font-weight:700"><td>Ending retained earnings</td>{_num_cell(data.get("ending_minor"), ccy)}</tr>'
     return _card("Statement of Retained Earnings",
-                 f'<div class="table-scroll"><table><tbody>{body}</tbody></table></div>')
+                 f'<div class="table-scroll"><table><tbody>{body}</tbody></table></div>',
+                 provenance=Provenance.POSTED)
 
 
 def _neg(minor: object) -> str:

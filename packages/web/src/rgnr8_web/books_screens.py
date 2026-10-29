@@ -15,7 +15,8 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 
-from .provenance_labels import Provenance, badge as prov_badge, legend as prov_legend
+from .components import card
+from .provenance_labels import Provenance, legend as prov_legend
 
 
 def _esc(s: object) -> str:
@@ -53,12 +54,11 @@ def _seq(v: object) -> list[object]:
     return list(v) if isinstance(v, (list, tuple)) else []
 
 
-def _card(title: str, body: str, actions: str = "") -> str:
-    head = (
-        f'<div style="display:flex;justify-content:space-between;align-items:center;margin:0 0 12px">'
-        f'<h2 style="margin:0;font:600 15px/1.2 var(--rg-sans)">{_esc(title)}</h2>{actions}</div>'
-    )
-    return f'<section class="card">{head}{body}</section>'
+def _card(title: str, body: str, actions: str = "", *,
+          provenance: "Provenance | None" = None) -> str:
+    """Every books-family card goes through the one shared layout: title and
+    provenance label in the header, `actions` after the content, bottom-left."""
+    return card(title, body, actions=actions, provenance=provenance)
 
 
 def _banner(kind: str, text: str) -> str:
@@ -196,7 +196,7 @@ def render_accounts_by_type(
             '<th class="num">Balance</th></tr></thead><tbody>' + "".join(sections)
             + "</tbody></table></div>"
         )
-    return _card("Accounts", table)
+    return _card("Accounts", table, provenance=Provenance.POSTED)
 
 
 def render_trial_balance(tenant: str, tb: Mapping[str, object]) -> str:
@@ -232,7 +232,7 @@ def render_trial_balance(tenant: str, tb: Mapping[str, object]) -> str:
         + _num(tb.get("total_credit_minor"), ccy)
         + "</tr></tbody></table></div>"
     )
-    return _card("Trial balance", table)
+    return _card("Trial balance", table, provenance=Provenance.POSTED)
 
 
 def _render_entry_form(
@@ -313,7 +313,7 @@ def render_register(tenant: str, reg: Mapping[str, object]) -> str:
         + "</tr></tbody></table></div>"
     )
     back = f'<a class="btn-link" href="/t/{_esc(tenant)}/books">Back to books</a>'
-    return _card(f"{_esc(reg.get('code'))} — {_esc(reg.get('name'))}", table, back)
+    return _card(f"{_esc(reg.get('code'))} — {_esc(reg.get('name'))}", table, back, provenance=Provenance.POSTED)
 
 
 # --- statements from the client's own books ----------------------------------
@@ -327,7 +327,6 @@ def render_books_statements(
     # Every figure here is at least POSTED (built from the journal); once the
     # period is published and locked it is SEALED and will not move.
     level = Provenance.SEALED if sealed else Provenance.POSTED
-    tag = prov_badge(level)
     out = (
         f'<p class="sub">Computed from this business\'s posted journal — period {_esc(period)}.</p>'
         + prov_legend((Provenance.POSTED, Provenance.RECONCILED, Provenance.SEALED))
@@ -353,7 +352,7 @@ def render_books_statements(
             + '<tr style="font-weight:800"><td colspan="2">Net income</td>'
             + _num(_cents(income.get("net_income")), ccy) + "</tr>"
             "</tbody></table></div>",
-            actions=tag,
+            provenance=level,
         )
 
     if isinstance(bs, Mapping):
@@ -384,7 +383,7 @@ def render_books_statements(
             + '<tr style="font-weight:700"><td colspan="2">Total equity</td>'
             + _num(_cents(bs.get("total_equity")), ccy) + "</tr>"
             "</tbody></table></div>",
-            actions=tag,
+            provenance=level,
         )
     return out
 

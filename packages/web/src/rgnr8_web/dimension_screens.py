@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from .books_screens import _card, _esc, _num, _seq
+from .provenance_labels import Provenance
 
 _ANY_VALUE = '<span class="muted">any value</span>'
 
@@ -162,7 +163,7 @@ def render_dimension_report(
                 "the most useful line on the report — it is exactly the work that "
                 "hasn't been classified.</p>"
             )
-        blocks.append(_card(str(b.get("value")), table + note))
+        blocks.append(_card(str(b.get("value")), table + note, provenance=Provenance.POSTED))
 
     if not blocks:
         blocks.append(_card(

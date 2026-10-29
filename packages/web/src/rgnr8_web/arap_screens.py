@@ -16,7 +16,6 @@ from urllib.parse import quote
 from .attachment_screens import attachment_link
 from .books_screens import _card, _esc, _minor, _num, _seq, money
 from .provenance_labels import Provenance
-from .provenance_labels import badge as prov_badge
 from .provenance_labels import legend as prov_legend
 
 # AR/AP figures: an open-item is a POSTED journal entry; once a payment is matched
@@ -247,7 +246,7 @@ def render_documents(
     )
 
     out = head + summary + prov_legend(_ARAP_PROV) + _card(
-        title, table, actions=prov_badge(Provenance.POSTED))
+        title, table, provenance=Provenance.POSTED)
     if can_post:
         out += _render_new_form(tenant, kind, parties, today)
     return out
@@ -348,7 +347,7 @@ def render_aging(tenant: str, side: str, data: Mapping[str, object],
         f'Back to {"invoices" if is_ar else "bills"}</a>'
     )
     title = f"{'Receivables' if is_ar else 'Payables'} Aging — as of {_esc(data.get('as_of'))}"
-    return _card(title, table, back)
+    return _card(title, table, back, provenance=Provenance.POSTED)
 
 
 def tie_out_line(kind: str, quickbooks_minor: int, books_minor: "int | None") -> str:
@@ -399,15 +398,16 @@ def render_open_items(
         f'<td>{_esc(r.get("date") or "")}</td>'
         f'<td>{_esc(r.get("due_date") or "")}</td>'
         f'{_num(r.get("open_minor"))}'
-        f"<td>{prov_badge(Provenance.IMPORTED)}</td>"
         "</tr>"
         for r in rows
     )
     table = (
         f'<table><thead><tr><th>{"Invoice" if is_ar else "Ref"}</th><th>{who}</th><th>Date</th>'
-        '<th>Due</th><th class="num">Open</th><th></th></tr></thead>'
+        '<th>Due</th><th class="num">Open</th></tr></thead>'
         f"<tbody>{body_rows}</tbody>"
-        f'<tfoot><tr><td colspan="4">Total open</td>{_num(total_minor)}<td></td></tr></tfoot></table>'
+        f'<tfoot><tr><td colspan="4">Total open</td>{_num(total_minor)}</tr></tfoot></table>'
     )
+    # Every row is a QuickBooks copy, so the label goes once on the card, not
+    # on each row.
     return head + tie_out_line(kind, total_minor, books_minor) + _card(
-        f"Open in QuickBooks ({len(rows)})", table)
+        f"Open in QuickBooks ({len(rows)})", table, provenance=Provenance.IMPORTED)

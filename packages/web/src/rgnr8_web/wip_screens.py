@@ -13,6 +13,7 @@ from collections.abc import Mapping
 
 from .books_screens import _card, _esc, _minor, _num, _seq, money
 from .job_screens import _pct
+from .provenance_labels import Provenance, most_cautious
 
 
 def _banner(kind: str, text: str) -> str:
@@ -92,7 +93,9 @@ def render_wip(
         f'{money(totals.get("under_billed_minor"))} is work done and not invoiced; '
         f'{money(totals.get("over_billed_minor"))} is money taken for work not yet done.</p>'
     )
-    out = head + _card(f"Work in progress{f' through {_esc(through)}' if through else ''}", body)
+    # Earned revenue is worked out from estimated total cost: an estimate.
+    out = head + _card(f"Work in progress{f' through {_esc(through)}' if through else ''}", body,
+                       provenance=most_cautious((Provenance.FORECAST, Provenance.POSTED)))
 
     if can_post:
         out += _card("Post the adjustment", (

@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from .books_screens import _banner, _card, _esc
+from .provenance_labels import Provenance
 
 # How many rule rows the builder shows. Six covers a household/business split or a
 # handful of clients; blank rows are ignored.
@@ -216,7 +217,7 @@ def _render_result(tenant: str, result: Mapping[str, object]) -> str:
         "<th>Transaction</th><th>Amount</th><th>Book</th><th>Routed by</th><th>Category</th>"
         "</tr></thead><tbody>" + rows + "</tbody></table></div>"
     )
-    return _card("Proposed split", banner + summary + table)
+    return _card("Proposed split", banner + summary + table, provenance=Provenance.IMPORTED)
 
 
 def _audit_row(r: Mapping[str, object]) -> str:

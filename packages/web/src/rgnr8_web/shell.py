@@ -23,7 +23,7 @@ from rgnr8_forecast.brand import RG_BASE_CSS, RG_TOKENS_CSS, finos_logo_html
 
 from .assets import asset_url, font_face_css
 from .audit import AuditEvent
-from .components import Action, metric, page_header, status_chip
+from .components import Action, card, metric, page_header, status_chip
 from .modules import OPTIONAL_MODULES
 from .modules import capability as module_capability
 from .page_frame import frame
@@ -138,6 +138,15 @@ _NAV: list[tuple[str, str, Permission]] = [
     ("audit", "Audit log", Permission.MANAGE_USERS),
 ]
 
+# Below this width the sidebar folds into the "Menu" disclosure. It was 860px,
+# which left tablets and small laptop windows (860-1023px) with a 200px sidebar
+# squeezing the content column. One number, so the two media rules and the
+# script that closes the menu on load can't disagree about where a phone ends.
+# (1023.98, not 1023: at a fractional zoom a window can be 1023.5px wide, and
+# that must still get the menu rather than fall between the two layouts.)
+MENU_BREAKPOINT_PX = 1024
+_MENU_MEDIA = f"(max-width:{MENU_BREAKPOINT_PX - 0.02:g}px)"
+
 _SHELL_CSS = f"""<style>
 {font_face_css()}
 {RG_TOKENS_CSS}
@@ -167,7 +176,7 @@ _SHELL_CSS = f"""<style>
   .rg-biz{{color:#CBD8CC;font-size:13px;font-weight:600;margin-left:6px;padding-left:18px;
     border-left:1px solid rgba(242,239,230,.18);line-height:30px;flex:1;min-width:0;
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
-  @media (max-width:860px){{
+  @media {_MENU_MEDIA}{{
     .rg-layout{{display:block}}
     .rg-navwrap{{min-height:0;position:static;border-right:0;
       border-bottom:1px solid var(--rg-line);padding:8px 14px}}
@@ -233,6 +242,13 @@ _SHELL_CSS = f"""<style>
     color:var(--rg-muted);text-decoration:none;border-bottom:2px solid transparent}}
   .rg-tabs a:hover{{color:var(--rg-ink)}}
   .rg-tabs a[aria-current=page]{{color:var(--rg-ink);border-bottom-color:var(--rg-ink)}}
+  /* A card: title and its provenance label in the header, the content, then
+     the card's actions bottom-left (see `components.card`). */
+  .card-head{{display:flex;justify-content:space-between;align-items:center;gap:8px;
+    flex-wrap:wrap;margin:0 0 12px}}
+  .card-head h2{{margin:0;font:600 15px/1.2 var(--rg-sans)}}
+  .card-acts{{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;margin-top:14px}}
+  .card-acts form{{margin:0}}
   .more-reports{{margin-top:14px}}
   .more-reports>summary{{cursor:pointer;font:600 13px/1.4 var(--rg-sans);color:var(--rg-muted)}}
   .page-foot{{margin-top:28px;padding-top:12px;border-top:1px solid var(--rg-line)}}
@@ -245,7 +261,7 @@ _SHELL_CSS = f"""<style>
   }}
   /* Fingers, not cursors: 44px targets wherever the nav is a phone menu or the
      pointer is coarse (they were ~32px). */
-  @media (max-width:860px),(pointer:coarse){{
+  @media {_MENU_MEDIA},(pointer:coarse){{
     .rg-nav a,.rg-tabs a{{min-height:44px;display:flex;align-items:center}}
     .btn,.chip,button{{min-height:44px}}
     .rg-navwrap>summary{{min-height:44px;display:flex;align-items:center}}
@@ -664,7 +680,7 @@ def _nav_html(
         '<details class="rg-navwrap" open><summary aria-label="Menu">Menu</summary>'
         '<nav class="rg-nav" aria-label="Sections">' + "".join(groups_html) + "</nav></details>"
         + script_open()
-        + "if(window.matchMedia&&matchMedia('(max-width:860px)').matches){"
+        + f"if(window.matchMedia&&matchMedia('{_MENU_MEDIA}').matches){{"
           "var w=document.querySelector('.rg-navwrap');if(w)w.removeAttribute('open');}"
         + "</script>"
     )
@@ -793,8 +809,7 @@ def render_app_home(
         <div class="line">{escape(headline)}</div></div>
     </div>
     <div class="row" style="margin-top:18px">{cta.html()}{briefing.html()}</div></div>
-    <div class="card"><h2 style="margin-top:0;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--rg-muted)">Records</h2>
-      <div class="row"><div class="grow">Latest sealed financial package</div>{pkg_link}</div></div>"""
+    {card("Records", '<p style="margin:0">Latest sealed financial package</p>', actions=pkg_link)}"""
 
 
 def render_users_admin(

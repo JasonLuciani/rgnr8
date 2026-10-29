@@ -20,7 +20,6 @@ from collections.abc import Mapping
 
 from .books_screens import _card, _esc, _minor, _num, _seq, money
 from .provenance_labels import Provenance
-from .provenance_labels import badge as prov_badge
 from .provenance_labels import legend as prov_legend
 
 # A posted payroll run is a POSTED ledger fact; once its period is published it is
@@ -119,7 +118,7 @@ def render_payroll_home(
     )
 
     out = head + prov_legend(_PAYROLL_PROV) + _card(
-        "Payroll runs", table, actions=prov_badge(Provenance.POSTED))
+        "Payroll runs", table, provenance=Provenance.POSTED)
     if owed > 0 and can_post:
         out += _render_remit_form(tenant, liabilities)
     if can_post:
@@ -253,7 +252,11 @@ def render_payroll_run(
     )
     back = f'<a class="btn-link" href="/t/{_esc(tenant)}/payroll">Back to payroll</a>'
     title = f"{_esc(run.get('id'))} — {_esc(run.get('date'))} · {_STATUS.get(str(run.get('status')), (str(run.get('status')), ''))[0]}"
-    return _card(title, table + explain + entry, back)
+    # A draft run is figures typed in, not yet in the books: only a posted run
+    # can say it was posted.
+    posted = str(run.get("status")) == "POSTED"
+    return _card(title, table + explain + entry, back,
+                 provenance=Provenance.POSTED if posted else None)
 
 
 def render_payroll_unavailable(detail: str = "") -> str:

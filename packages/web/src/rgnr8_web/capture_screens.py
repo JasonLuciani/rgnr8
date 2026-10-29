@@ -13,7 +13,6 @@ from collections.abc import Mapping
 
 from .books_screens import _banner, _card, _esc, _seq, money
 from .provenance_labels import Provenance
-from .provenance_labels import badge as prov_badge
 from .provenance_labels import legend as prov_legend
 
 # A captured receipt is IMPORTED (a claim read from OCR/text); creating the bill
@@ -88,8 +87,7 @@ def _render_draft(tenant: str, draft: Mapping[str, object], vendors: list[object
 
     form = (
         review
-        + f'<div class="muted" style="margin-bottom:8px">Extracted total: <strong>{total}</strong> '
-        f'{prov_badge(Provenance.IMPORTED)}'
+        + f'<div class="muted" style="margin-bottom:8px">Extracted total: <strong>{total}</strong>'
         f' &nbsp;·&nbsp; tax shown on receipt: {tax}</div>'
         f'<form method="post" action="/t/{_esc(tenant)}/capture/bill" class="grid">'
         + vendor_field
@@ -101,7 +99,8 @@ def _render_draft(tenant: str, draft: Mapping[str, object], vendors: list[object
         '<div class="wide"><button type="submit">Create bill</button></div>'
         "</form>"
     )
-    return _card("Drafted bill", form)
+    # Read off a receipt, not yet posted: the card says so in its header.
+    return _card("Drafted bill", form, provenance=Provenance.IMPORTED)
 
 
 def _to_dollars(minor: object) -> str:

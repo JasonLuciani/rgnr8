@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from .books_screens import _card, _esc, _minor, _num, _seq
+from .provenance_labels import Provenance, most_cautious
 
 
 def _banner(kind: str, text: str) -> str:
@@ -54,7 +55,7 @@ def render_general_ledger(
             + _num(a.get("total_debit_minor")) + _num(a.get("total_credit_minor"))
             + _num(a.get("closing_minor")) + "</tr></tbody></table></div>"
         )
-        blocks.append(_card(f"{_esc(a.get('code'))} — {_esc(a.get('name'))}", table))
+        blocks.append(_card(f"{_esc(a.get('code'))} — {_esc(a.get('name'))}", table, provenance=Provenance.POSTED))
 
     if not blocks:
         blocks.append(_card(
@@ -162,8 +163,10 @@ def render_budget(
             + ", ".join(str(u) for u in unknown),
         )
 
+    # The budget is the owner's plan; only the actuals are posted.
     out = head + _period_form(tenant, period) + _card(
-        f"Budget vs Actual — {_esc(period)}", table
+        f"Budget vs Actual — {_esc(period)}", table,
+        provenance=most_cautious((Provenance.FORECAST, Provenance.POSTED)),
     )
     if can_post:
         out += _budget_form(tenant, period, accounts, data)

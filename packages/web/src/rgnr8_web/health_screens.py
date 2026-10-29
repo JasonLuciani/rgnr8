@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from .books_screens import _banner, _card, _esc, _seq, money
+from .provenance_labels import Provenance
 
 
 def render_health_unavailable(detail: str = "") -> str:
@@ -41,7 +42,8 @@ def _group(title: str, health: object, rows: str) -> str:
     verdict = verdict[:1].upper() + verdict[1:]
     read = (f'<p style="margin:0 0 10px;font:400 13.5px/1.45 var(--rg-sans);'
             f'color:var(--rg-ink-2)">{_esc(verdict)}</p>') if verdict else ""
-    return _card(title, read + rows)
+    # Every ratio is worked out from posted balances.
+    return _card(title, read + rows, provenance=Provenance.POSTED)
 
 
 def render_health(tenant: str, ratios: Mapping[str, object]) -> str:
@@ -97,6 +99,7 @@ def render_health(tenant: str, ratios: Mapping[str, object]) -> str:
         + _metric("Equity", money(inputs.get("equity_minor")))
         + _metric("EBITDA", money(inputs.get("ebitda_minor")))
         + _metric("Annual debt service", money(inputs.get("annual_debt_service_minor"))),
+        provenance=Provenance.POSTED,
     )
 
     return header + liquidity + leverage + profitability + covenant_html + basis
