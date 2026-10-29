@@ -118,6 +118,7 @@ import {
 import {
   AttachmentError,
   attachmentJson,
+  fileReceipt,
   listAttachments,
   saveAttachment,
   type AttachmentContext,
@@ -1587,6 +1588,13 @@ export class LedgerService {
             attachment: attachmentJson(
               await saveAttachment(ctx, data as Parameters<typeof saveAttachment>[1]),
             ),
+          });
+        }
+        if (rest.length === 3 && rest[2] === "file" && req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          return ok({
+            tenant, attachment: attachmentJson(await fileReceipt(ctx, rest[1]!, data)),
           });
         }
         if (rest.length === 2 && req.method === "DELETE") {

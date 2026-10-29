@@ -24,12 +24,22 @@ import type { TenantId } from "@rgnr8/ledger-kernel";
 
 export class AttachmentError extends Error {}
 
-/** What an attachment can be evidence for. */
-export type SubjectKind = "entry" | "feed" | "invoice" | "bill" | "payroll";
+/**
+ * What an attachment can be evidence for.
+ *
+ * "receipt" is the odd one out: a receipt kept before anything has been
+ * recorded from it (photographed at the till, waiting to become an expense or a
+ * bill). It evidences nothing yet, so it is its own subject, and filing it
+ * (`fileReceipt`) moves it onto the entry or bill it turned into.
+ */
+export type SubjectKind = "entry" | "feed" | "invoice" | "bill" | "payroll" | "receipt";
 
 const SUBJECT_KINDS: readonly SubjectKind[] = [
-  "entry", "feed", "invoice", "bill", "payroll",
+  "entry", "feed", "invoice", "bill", "payroll", "receipt",
 ];
+
+/** A kept receipt's id is chosen by the caller, so it must be safe in a path. */
+const RECEIPT_ID = /^[A-Za-z0-9_.-]{1,80}$/;
 
 export interface AttachmentRecord {
   readonly id: string;
@@ -352,6 +362,13 @@ async function requireSubject(
       }
       return;
     }
+    case "receipt": {
+      // Nothing to point at yet: the receipt is its own subject until filed.
+      if (!RECEIPT_ID.test(id)) {
+        throw new AttachmentError("a kept receipt's id may use only letters, digits, . _ and -");
+      }
+      return;
+    }
   }
 }
 
@@ -425,6 +442,41 @@ export async function listAttachments(
     return ctx.backend.attachments().list(String(ctx.tenant));
   }
   const kind = requireKind(kindRaw);
-  if (!subjectId) throw new AttachmentError("subject_id is required with subject_kind");
+  if (!subjectId) {
+    // Every attachment of one kind: how the receipts still waiting to be
+    // recorded are listed.
+    const all = await ctx.backend.attachments().list(String(ctx.tenant));
+    return all.filter((a) => a.subjectKind === kind);
+  }
   return ctx.backend.attachments().list(String(ctx.tenant), { kind, id: subjectId });
+}
+
+/**
+ * File a kept receipt onto what was recorded from it: the expense's journal
+ * entry, or the bill.
+ *
+ * Only a kept receipt moves. Evidence already attached to an entry stays where
+ * it is: moving it would quietly take the support out from under a posted
+ * number, so a mis-filed file is removed and attached again, in the open.
+ */
+export async function fileReceipt(
+  ctx: AttachmentContext, attachmentId: string,
+  input: { readonly subject_kind?: unknown; readonly subject_id?: unknown },
+): Promise<AttachmentRecord> {
+  const store = ctx.backend.attachments();
+  const found = await store.get(String(ctx.tenant), attachmentId);
+  if (!found) throw new AttachmentError(`unknown attachment ${attachmentId}`);
+  if (found.record.subjectKind !== "receipt") {
+    throw new AttachmentError(
+      "only a kept receipt can be filed; a file already attached to something stays with it",
+    );
+  }
+  const kind = requireKind(input.subject_kind);
+  if (kind === "receipt") throw new AttachmentError("file a receipt onto an entry or a bill");
+  const subjectId = String(input.subject_id ?? "").trim();
+  if (!subjectId) throw new AttachmentError("subject_id is required");
+  await requireSubject(ctx, kind, subjectId);
+  const record: AttachmentRecord = { ...found.record, subjectKind: kind, subjectId };
+  await store.save(String(ctx.tenant), record, found.content);
+  return record;
 }

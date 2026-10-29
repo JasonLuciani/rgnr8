@@ -27,6 +27,7 @@ _SUBJECT_LABEL = {
     "invoice": "invoice",
     "bill": "bill",
     "payroll": "payroll run",
+    "receipt": "kept receipt",
 }
 
 
@@ -132,7 +133,8 @@ def _back_link(tenant: str, kind: str, subject_id: str) -> str:
         "invoice": f"/t/{tenant}/invoices",
         "bill": f"/t/{tenant}/bills",
         "payroll": f"/t/{tenant}/payroll/{subject_id}",
-        "entry": f"/t/{tenant}/books",
+        "entry": f"/t/{tenant}/books/gl",
+        "receipt": f"/t/{tenant}/capture",
     }
     href = targets.get(kind, f"/t/{tenant}/books")
     return f'<a class="btn-link" href="{_esc(href)}">Back</a>'

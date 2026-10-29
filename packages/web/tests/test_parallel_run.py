@@ -95,7 +95,7 @@ def _parts(path: str) -> list[str]:
 # --- which routes post ----------------------------------------------------------
 
 POSTING = [
-    "/t/acme/invoices", "/t/acme/bills",
+    "/t/acme/invoices", "/t/acme/bills", "/t/acme/expenses",
     "/t/acme/invoices/INV-1/payments", "/t/acme/bills/B-1/credits", "/t/acme/invoices/INV-1/refunds",
     "/t/acme/books/entries", "/t/acme/books/wip", "/t/acme/books/recurring/run",
     "/t/acme/payroll/remit", "/t/acme/payroll/R-1/post", "/t/acme/payroll/R-1/void",
@@ -123,6 +123,8 @@ NOT_POSTING = [
     "/t/acme/sales-orders", "/t/acme/purchase-orders", "/t/acme/work-orders",
     "/t/acme/work-orders/WO-1/complete", "/t/acme/inbox/rules", "/t/acme/integrations",
     "/api/acme/transactions",
+    # Reading a receipt keeps the file and drafts; attaching evidence posts nothing.
+    "/t/acme/capture", "/t/acme/files/entry/acme:1", "/t/acme/files/receipt/rcpt-1",
 ]
 
 
@@ -210,7 +212,8 @@ def test_forms_that_would_post_become_the_notice_and_the_rest_stay() -> None:
 
 
 def test_no_screen_offers_a_posting_form_during_a_parallel_run() -> None:
-    screens = ["/t/acme", "/t/acme/invoices", "/t/acme/bills", "/t/acme/books", "/t/acme/payroll",
+    screens = ["/t/acme", "/t/acme/invoices", "/t/acme/bills", "/t/acme/expenses",
+               "/t/acme/books", "/t/acme/payroll",
                "/t/acme/debt", "/t/acme/assets", "/t/acme/capture", "/t/acme/inventory",
                "/t/acme/inbox", "/t/acme/books/wip"]
     rgnr8, _, _ = _app("rgnr8")
@@ -224,3 +227,65 @@ def test_no_screen_offers_a_posting_form_during_a_parallel_run() -> None:
         assert _posting_forms(page) == [], screen
     for screen in offered:
         assert "data-parallel-run" in _call(qbo, "GET", screen).body, screen
+
+
+# --- a locked form says which form it is --------------------------------------
+
+
+def test_a_form_that_names_itself_is_replaced_by_a_notice_naming_it() -> None:
+    from rgnr8_web.parallel_run import form_label
+
+    html = (f'<form method="post" action="/t/acme/books/entries"'
+            f'{form_label("Journal entry", "+ New → Journal entry")}><button>Post</button></form>'
+            '<form method="post" action="/t/acme/books/wip"><button>Post</button></form>')
+    out = posting_forms_to_notice(html, "acme")
+    assert _posting_forms(out) == []
+    assert ("<strong>Journal entry</strong>: this form opens here after the cutover, when "
+            "RGNR8 becomes the book of record. Until then, add it in QuickBooks "
+            "(+ New → Journal entry), then") in out
+    assert 'href="/t/acme/connect">press Refresh</a>' in out
+    # A form that doesn't name itself still gets today's notice.
+    assert notice_html("acme") in out
+
+
+def test_a_name_is_escaped_on_the_way_in_and_out() -> None:
+    from rgnr8_web.parallel_run import form_label
+
+    html = (f'<form method="post" action="/t/acme/bills"{form_label("<b>&</b>")}>'
+            "</form>")
+    out = posting_forms_to_notice(html, "acme")
+    assert "<strong>&lt;b&gt;&amp;&lt;/b&gt;</strong>" in out and "<b>" not in out
+
+
+def test_the_main_forms_name_themselves_during_a_parallel_run() -> None:
+    from rgnr8_web.arap_screens import render_documents
+
+    qbo, _, _ = _app("quickbooks")
+    books = _call(qbo, "GET", "/t/acme/books").body
+    assert "<strong>Journal entry</strong>" in books and "+ New → Journal entry" in books
+
+    doc = {"id": "D-1", "party_id": "p1", "date": "2026-10-01", "due_date": "2026-10-31",
+           "total_minor": "5000", "open_minor": "5000", "lines": []}
+    for kind, names in (("invoices", ("Invoice", "Receive payment")),
+                        ("bills", ("Bill", "Pay bill"))):
+        html = render_documents("acme", kind, {"documents": [doc]},
+                                {"parties": [{"id": "p1", "name": "Pat"}]},
+                                today="2026-10-05", can_post=True)
+        out = posting_forms_to_notice(html, "acme")
+        assert _posting_forms(out) == [], kind
+        for name in names:
+            assert f"<strong>{name}</strong>" in out, (kind, name)
+
+
+def test_a_receipt_is_still_kept_during_a_parallel_run_and_its_draft_says_what_it_is() -> None:
+    from test_attachments import multipart_body
+
+    app, ledger, _ = _app("quickbooks")
+    body = multipart_body("B", [("file", "till.jpg", "image/jpeg", b"\xff\xd8\xff")], {})
+    r = app.handle(Request("POST", "/t/acme/capture", {
+        "authorization": "Bearer tok-acme",
+        "content-type": "multipart/form-data; boundary=B"}, body))
+    assert r.status == 200
+    assert ledger.posts() == ["/t/acme/attachments"], "the file is kept; nothing posts"
+    assert _posting_forms(r.body) == []
+    assert "<strong>Receipt: expense or bill</strong>" in r.body

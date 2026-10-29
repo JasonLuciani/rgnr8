@@ -5,6 +5,7 @@ poor read is flagged for review, and confirming creates the vendor (if new) and
 the bill through the ordinary AP path.
 """
 
+import base64
 import json
 from datetime import date
 from typing import Any
@@ -84,17 +85,30 @@ def test_capture_page_renders_the_paste_form() -> None:
     r = _req(app, "/t/acme/capture")
     assert r.status == 200
     assert "Capture a receipt" in r.body
-    assert "Receipt text" in r.body
+    assert "paste the receipt text" in r.body
+    # A photo or PDF can be uploaded as well as text pasted.
+    assert 'enctype="multipart/form-data"' in r.body
+    assert 'type="file" name="file" accept="image/*,application/pdf"' in r.body
 
 
 def test_scanning_a_receipt_drafts_a_bill_with_the_total() -> None:
     app, _t, _a = _app()
     r = _req(app, "/t/acme/capture", method="POST", form={"text": RECEIPT})
     assert r.status == 200
-    assert "Drafted bill" in r.body
+    assert "Drafted from the receipt" in r.body
     assert "HOME DEPOT #4512" in r.body       # vendor pulled out
     assert "$117.18" in r.body                # total pulled out
     assert "high confidence" in r.body        # vendor + date + total + tax
+
+
+def test_the_draft_offers_both_outcomes_in_plain_words() -> None:
+    app, _t, _a = _app()
+    r = _req(app, "/t/acme/capture", method="POST", form={"text": RECEIPT})
+    assert "Record as expense (already paid)" in r.body
+    assert "Create bill (pay later)" in r.body
+    # The expense path opens the expense form pre-filled (a GET: nothing posts).
+    assert 'formmethod="get" formaction="/t/acme/expenses"' in r.body
+    assert 'action="/t/acme/capture/bill"' in r.body
 
 
 def test_a_poor_read_is_flagged_for_review() -> None:
@@ -128,3 +142,96 @@ def test_confirming_requires_a_positive_amount() -> None:
     assert r.status in (302, 303)
     location = r.headers.get("Location", "") or r.headers.get("location", "")
     assert "positive" in location and "capture" in location
+
+
+# --- a photo or PDF of the receipt -------------------------------------------
+
+PHOTO = b"\xff\xd8\xff\xe0" + bytes(range(256))  # a JPEG header, then non-UTF-8 bytes
+
+
+def _upload(app: WebApp, filename: str = "till.jpg", content_type: str = "image/jpeg",
+            content: bytes = PHOTO, text: str = "") -> Any:
+    from test_attachments import multipart_body
+
+    tok = sign_jwt({"sub": "u-owner", "tenant": "acme", "exp": NOW + 3600}, SECRET)
+    body = multipart_body("B", [("file", filename, content_type, content)], {"text": text})
+    return app.handle(Request("POST", "/t/acme/capture", {
+        "authorization": f"Bearer {tok}",
+        "content-type": "multipart/form-data; boundary=B",
+    }, body))
+
+
+def _kept_app() -> tuple[WebApp, FakeTransport, InMemoryAuditLog]:
+    app, transport, audit = _app()
+    transport.routes["POST /t/acme/attachments"] = (201, {"attachment": {
+        "id": "att-receipt-rcpt-1", "subject_kind": "receipt", "subject_id": "rcpt-1",
+        "filename": "till.jpg"}})
+    transport.routes["GET /t/acme/attachments"] = (200, {"attachments": []})
+    return app, transport, audit
+
+
+def test_an_uploaded_receipt_is_kept_even_when_it_cant_be_read() -> None:
+    app, transport, _a = _kept_app()
+    r = _upload(app)
+    assert r.status == 200
+    [kept] = [json.loads(c[2]) for c in transport.calls
+              if c[0] == "POST" and c[1] == "/t/acme/attachments"]
+    assert kept["subject_kind"] == "receipt"
+    assert kept["filename"] == "till.jpg"
+    assert base64.b64decode(kept["content_base64"]) == PHOTO, "byte for byte"
+    # No reader wired: say so, and let the person type it.
+    assert "We kept till.jpg" in r.body
+    assert "Type the vendor, date and total" in r.body
+    assert 'name="receipt" value="att-receipt-rcpt-1"' in r.body
+    # Downloaded, never shown in the page's own origin.
+    assert 'href="/t/acme/files/att-receipt-rcpt-1/download"' in r.body
+    assert "<img" not in r.body.split("Drafted from the receipt", 1)[1]
+
+
+def test_a_wired_reader_fills_the_draft_from_the_photo() -> None:
+    from rgnr8_ocr import StubOcrClient
+
+    app, _t, _a = _kept_app()
+    app.set_ocr(StubOcrClient({PHOTO: RECEIPT}))
+    r = _upload(app)
+    assert "HOME DEPOT #4512" in r.body and "$117.18" in r.body
+    assert "We kept" not in r.body
+
+
+def test_only_a_photo_or_a_pdf_is_taken_as_a_receipt() -> None:
+    app, transport, _a = _kept_app()
+    r = _upload(app, filename="notes.html", content_type="text/html", content=b"<script>")
+    assert "photo (JPEG, PNG, HEIC, …) or a PDF" in r.body
+    assert not [c for c in transport.calls if c[0] == "POST"]
+    # A phone photo the browser couldn't label still counts, by its extension.
+    from rgnr8_web.capture_screens import is_receipt_file
+
+    assert is_receipt_file("IMG_0042.HEIC", "application/octet-stream")
+    assert is_receipt_file("scan.pdf", "application/pdf")
+    assert not is_receipt_file("evil.svg.html", "application/octet-stream")
+
+
+def test_a_kept_receipt_is_filed_onto_the_bill_made_from_it() -> None:
+    app, transport, _a = _kept_app()
+    transport.routes["POST /t/acme/attachments/att-receipt-rcpt-1/file"] = (
+        200, {"attachment": {"id": "att-receipt-rcpt-1"}})
+    r = _req(app, "/t/acme/capture/bill", method="POST", form={
+        "vendor": "HOME DEPOT #4512", "date": "2026-03-14", "amount": "117.18",
+        "receipt": "att-receipt-rcpt-1",
+    })
+    assert "/t/acme/bills?ok=" in r.headers["Location"]
+    [filed] = [json.loads(c[2]) for c in transport.calls if c[1].endswith("/file")]
+    assert filed == {"subject_kind": "bill", "subject_id": "CAP-20260314-home-depot-4512"}
+
+
+def test_receipts_kept_and_not_recorded_are_listed_and_can_be_reopened() -> None:
+    app, transport, _a = _kept_app()
+    transport.routes["GET /t/acme/attachments"] = (200, {"attachments": [{
+        "id": "att-receipt-rcpt-9", "subject_kind": "receipt", "subject_id": "rcpt-9",
+        "filename": "lunch.pdf", "uploaded_at": "2026-10-01T10:00:00Z"}]})
+    page = _req(app, "/t/acme/capture").body
+    assert "Kept, not recorded yet" in page and "lunch.pdf" in page
+    assert 'href="/t/acme/capture?receipt=att-receipt-rcpt-9"' in page
+    reopened = _req(app, "/t/acme/capture?receipt=att-receipt-rcpt-9").body
+    assert 'name="receipt" value="att-receipt-rcpt-9"' in reopened
+    assert "Record as expense (already paid)" in reopened

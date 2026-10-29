@@ -16,6 +16,7 @@ import re
 from collections.abc import Mapping
 
 from .components import card
+from .parallel_run import form_label
 from .provenance_labels import Provenance, legend as prov_legend
 
 
@@ -388,14 +389,19 @@ def _render_entry_form(
     )
     return _card(
         "Record a transaction",
-        f'<form method="post" action="/t/{_esc(tenant)}/books/entries">'
+        f'<form method="post" enctype="multipart/form-data" '
+        f'action="/t/{_esc(tenant)}/books/entries"'
+        f'{form_label("Journal entry", "+ New → Journal entry")}>'
         '<div class="grid2">'
         '<div><label>Date</label><input name="date" placeholder="YYYY-MM-DD"></div>'
         '<div><label>Memo</label><input name="memo" placeholder="What was this?"></div>'
         "</div>"
         f"{lines}"
+        '<div><label>Attach a file (optional)</label>'
+        '<input type="file" name="file" accept="image/*,application/pdf"></div>'
         '<p class="note">Enter an amount in either Debit or Credit on each line. '
-        "Total debits must equal total credits — the ledger refuses anything else.</p>"
+        "Total debits must equal total credits — the ledger refuses anything else. "
+        "A file you attach stays with the entry, behind its paperclip.</p>"
         '<button class="btn" type="submit">Post entry</button>'
         "</form>",
     )
