@@ -44,8 +44,9 @@ import { CONSOLIDATION_DDL } from "./consolidation.js";
 import { SETTINGS_DDL, SETTINGS_MIRROR_DDL } from "./settings.js";
 import { DEBT_DDL } from "./debt.js";
 import { FIXED_ASSET_DDL } from "./fixedassets.js";
-import { TENANT_TABLES_SINCE_RLS, rlsDdl } from "./security.js";
+import { rlsDdl } from "./security.js";
 import { OPEN_ITEMS_DDL } from "./openItems.js";
+import { CUTOVER_DDL } from "./cutover.js";
 
 /**
  * The ordered schema migrations. Dependency order: core ledger + chart first,
@@ -86,13 +87,17 @@ export function ledgerMigrations(opts: { enforceRls: boolean }): Migration[] {
     { version: 24, name: "close_state", sql: CLOSE_STATE_MIGRATIONS[0]!.sql },
     { version: 25, name: "settings_mirror_binding", sql: SETTINGS_MIRROR_DDL },
     { version: 26, name: "mirror_open_items", sql: OPEN_ITEMS_DDL },
+    { version: 27, name: "cutover_record", sql: CUTOVER_DDL },
   ];
   // RLS policies key on every tenant table, so they migrate last.
   if (opts.enforceRls) {
     tables.push({ version: 100, name: "rls_policies", sql: rlsDdl() });
     // Tables added after 100 was applied get their policies in a migration of
     // their own: adding them to TENANT_TABLES would change 100's SQL (drift).
-    tables.push({ version: 101, name: "rls_policies_open_items", sql: rlsDdl(TENANT_TABLES_SINCE_RLS) });
+    // Each names its own tables, fixed: a shared list growing would change
+    // an applied migration's SQL.
+    tables.push({ version: 101, name: "rls_policies_open_items", sql: rlsDdl(["mirror_open_item"]) });
+    tables.push({ version: 102, name: "rls_policies_cutover", sql: rlsDdl(["rgnr8_cutover"]) });
   }
   return tables;
 }

@@ -57,6 +57,16 @@ import type { LedgerBackend } from "./backend.js";
 import { LEDGER_SCHEMA_VERSION } from "./migrations.js";
 import { OpenItemsError, snapshotFromJson, snapshotJson } from "./openItems.js";
 import {
+  CutoverError,
+  backOutCutover,
+  backoutBlocker,
+  executeCutover,
+  planCutover,
+  planJson,
+  recordJson,
+  type CutoverContext,
+} from "./cutover.js";
+import {
   BookOfRecordError,
   MIRROR_KEY_PREFIX,
   PARALLEL_RUN_MESSAGE,
@@ -508,6 +518,39 @@ export class LedgerService {
     }
 
     try {
+      // --- cutover: QuickBooks -> RGNR8, with a way back --------------------
+      if (rest[0] === "cutover") {
+        const ctx: CutoverContext = {
+          backend: this.backend, tenant, currency: this.currency, now: this.opts.now,
+        };
+        if (rest.length === 1 && req.method === "GET") {
+          const blocker = await backoutBlocker(ctx);
+          return ok({
+            tenant,
+            record: recordJson(await this.backend.cutovers().get(String(tenant))),
+            backout_blocker: blocker,
+          });
+        }
+        if (rest.length === 2 && req.method === "POST") {
+          const data = parseJson(req.body) ?? {};
+          if (rest[1] === "plan") {
+            return ok({ tenant, plan: planJson(await planCutover(ctx, str(data["cutover_date"]).trim())) });
+          }
+          if (rest[1] === "execute") {
+            const { record, plan } = await executeCutover(ctx, {
+              cutoverDate: str(data["cutover_date"]).trim(),
+              signedBy: str(data["signed_by"]),
+              reportHash: str(data["report_hash"]).trim(),
+              acceptDifferences: data["accept_differences"] === true,
+            });
+            return ok({ tenant, record: recordJson(record), plan: planJson(plan) });
+          }
+          if (rest[1] === "backout") {
+            return ok({ tenant, record: recordJson(await backOutCutover(ctx)) });
+          }
+        }
+      }
+
       // --- QuickBooks open items (a non-posting copy) ----------------------
       if (rest[0] === "mirror" && rest[1] === "open-items" && rest.length === 2) {
         const store = this.backend.openItems();
@@ -1722,6 +1765,7 @@ export class LedgerService {
       if (err instanceof ConsolidationServiceError) return bad(err.message);
       if (err instanceof SettingsError) return bad(err.message);
       if (err instanceof OpenItemsError) return bad(err.message);
+      if (err instanceof CutoverError) return conflict(err.message);
       if (err instanceof DebtError) return bad(err.message);
       if (err instanceof FixedAssetError) return bad(err.message);
       if (err instanceof RatiosError) return bad(err.message);

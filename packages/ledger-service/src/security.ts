@@ -106,6 +106,7 @@ export const TENANT_TABLES: readonly string[] = Object.freeze([
  */
 export const TENANT_TABLES_SINCE_RLS: readonly string[] = Object.freeze([
   "mirror_open_item", // migration 26, policy in 101
+  "rgnr8_cutover", // migration 27, policy in 102
 ]);
 
 export function rlsDdl(tables: readonly string[] = TENANT_TABLES): string {

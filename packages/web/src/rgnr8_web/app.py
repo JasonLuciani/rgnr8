@@ -185,6 +185,7 @@ from .capture_screens import render_capture
 from .cost_baseline import CostBaseline, as_recurring
 from .cost_baseline import from_quickbooks as baseline_from_quickbooks
 from .cost_baseline import window as cost_window
+from .cutover_screens import render_cutover
 from .deploy_check import LedgerBuild, ledger_skew
 from .modules import OPTIONAL_MODULES
 from .modules import capability as module_capability
@@ -1354,6 +1355,18 @@ class WebApp:
             return self._require(subject, token_tenant, parts[1], P.MANAGE_CONNECTORS,
                                  lambda t: self._connect_page(subject, t, req.headers))
 
+        # /t/<tenant>/connect/cutover -> move the book of record to RGNR8 (and back)
+        if len(parts) == 4 and parts[0] == "t" and parts[2] == "connect" and parts[3] == "cutover":
+            if req.method == "POST":
+                return self._require(subject, token_tenant, parts[1], P.MANAGE_CONNECTORS,
+                                     lambda t: self._cutover_execute(subject, t, req.body))
+            return self._require(subject, token_tenant, parts[1], P.MANAGE_CONNECTORS,
+                                 lambda t: self._cutover_page(subject, t, req.query))
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "connect" and parts[3] == "cutover"
+                and parts[4] == "backout" and req.method == "POST"):
+            return self._require(subject, token_tenant, parts[1], P.MANAGE_CONNECTORS,
+                                 lambda t: self._cutover_backout(subject, t))
+
         # /t/<tenant>/connect/qbo -> start the QBO OAuth flow (redirect to Intuit)
         if len(parts) == 4 and parts[0] == "t" and parts[2] == "connect" and parts[3] == "qbo":
             return self._require(subject, token_tenant, parts[1], P.MANAGE_CONNECTORS,
@@ -2266,11 +2279,16 @@ class WebApp:
             t.tenant_id, "invoice" if kind == "invoices" else "bill",
         )
         raw_counts = counts.body.get("counts") if counts.ok else None
+        chart = self._ledger.accounts(t.tenant_id)
+        listed = chart.body.get("accounts") if chart.ok else None
+        banks = tuple((str(a.get("code")), str(a.get("name")))
+                      for a in (listed if isinstance(listed, list) else [])
+                      if isinstance(a, dict) and a.get("subtype") == "BANK")
         body = render_documents(
             t.tenant_id, kind, docs.body, parties.body if parties.ok else {},
             today=self._today(t), can_post=can_post,
             attachment_counts=raw_counts if isinstance(raw_counts, dict) else None,
-            message=query.get("ok", ""), error=query.get("err", ""),
+            message=query.get("ok", ""), error=query.get("err", ""), banks=banks,
         )
         return self._shell(subject, t, kind, body)
 
@@ -2438,7 +2456,8 @@ class WebApp:
         if minor is None or minor <= 0:
             return _redirect(f"/t/{t.tenant_id}/{kind}?err={_qs_escape('Enter an amount to pay')}")
         date = str(data.get("date", "")).strip() or self._today(t)
-        res = self._ledger.record_payment(t.tenant_id, kind, doc_id, date, str(minor))
+        res = self._ledger.record_payment(t.tenant_id, kind, doc_id, date, str(minor),
+                                          bank_code=str(data.get("bank_code", "")).strip())
         if not res.ok:
             return _redirect(f"/t/{t.tenant_id}/{kind}?err={_qs_escape(res.error())}")
         if self._audit is not None:
@@ -6125,6 +6144,70 @@ class WebApp:
                                self._session_clock(), tenant_id=t.tenant_id)
         return _redirect(f"/t/{t.tenant_id}" if action == "add" else f"/t/{t.tenant_id}/costs")
 
+    @staticmethod
+    def _last_month_end(today: date) -> str:
+        return (today.replace(day=1) - timedelta(days=1)).isoformat()
+
+    def _cutover_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
+        """The cutover report and sign-off, or the live cutover and its way back."""
+        if self._ledger is None:
+            return self._shell(subject, t, "connect", render_books_unavailable(
+                "No ledger service is configured for this deployment."))
+        status = self._ledger.cutover_status(t.tenant_id)
+        if not status.ok:
+            return self._shell(subject, t, "connect", render_books_unavailable(status.error()))
+        chosen = query.get("date", "")
+        plan = None
+        if chosen:
+            res = self._ledger.cutover_plan(t.tenant_id, chosen)
+            raw = res.body.get("plan") if res.ok else None
+            plan = raw if isinstance(raw, dict) else None
+        body = render_cutover(
+            t.tenant_id, status=status.body, plan=plan,
+            cutover_date=chosen or self._last_month_end(date.fromtimestamp(self._session_clock())),
+            message=query.get("ok", ""), error=query.get("err", ""))
+        return self._shell(subject, t, "connect", body)
+
+    def _cutover_execute(self, subject: str, t: _Tenant, body: str) -> Response:
+        back = f"/t/{t.tenant_id}/connect/cutover"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        cutover_date = str(data.get("cutover_date", "")).strip()
+        signed_by = str(data.get("signed_by", "")).strip()
+        if not signed_by or str(data.get("reviewed", "")) not in ("on", "true", "1"):
+            return _redirect(f"{back}?date={cutover_date}&err="
+                             + _qs_escape("Name the person who signed the report and confirm they reviewed it"))
+        res = self._ledger.cutover_execute(
+            t.tenant_id, cutover_date=cutover_date, signed_by=signed_by,
+            report_hash=str(data.get("report_hash", "")).strip(),
+            accept_differences=str(data.get("accept_differences", "")) in ("on", "true", "1"),
+        )
+        if not res.ok:
+            return _redirect(f"{back}?date={cutover_date}&err={_qs_escape(res.error())}")
+        # Posting opens up now, on this worker; the other re-reads within a minute.
+        self._book_of_record.pop(t.tenant_id, None)
+        self._qbo_bound.pop(t.tenant_id, None)
+        if self._audit is not None:
+            self._audit.record(subject, "cutover.executed", self._session_clock(),
+                               tenant_id=t.tenant_id, detail=f"{cutover_date} signed by {signed_by}")
+        return _redirect(f"{back}?ok=" + _qs_escape(
+            f"RGNR8 is now the book of record from the end of {cutover_date}"))
+
+    def _cutover_backout(self, subject: str, t: _Tenant) -> Response:
+        back = f"/t/{t.tenant_id}/connect/cutover"
+        if self._ledger is None:
+            return _redirect(f"{back}?err=No+ledger+service+configured")
+        res = self._ledger.cutover_backout(t.tenant_id)
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        self._book_of_record.pop(t.tenant_id, None)
+        if self._audit is not None:
+            self._audit.record(subject, "cutover.backed_out", self._session_clock(),
+                               tenant_id=t.tenant_id)
+        return _redirect(f"{back}?ok=" + _qs_escape(
+            "Backed out: QuickBooks is the book of record again. Refresh to bring the books level."))
+
     def _connect_result(self, t: _Tenant, kind: str, ok: bool, message: str = "") -> Response:
         """Back to Connections, carrying this outcome to be shown exactly once.
 
@@ -6190,7 +6273,13 @@ class WebApp:
         # Only a live connection needs to know what the books mirror; a page for a
         # disconnected or unconfigured tenant makes no ledger call at all.
         mirror = self._qbo_mirror_state(t, realm or "") if status == "connected" else ("none", "")
-        page = self._shell(subject, t, "connect",
+        cutover_card = (
+            '<div class="card"><h2>Move to RGNR8</h2><p>When the parallel run is done, cut over '
+            "at a month-end: RGNR8 becomes the book of record, with a way back until it records "
+            "anything of its own.</p>"
+            f'<a class="btn ghost" href="/t/{t.tenant_id}/connect/cutover">Plan the cutover</a></div>'
+            if mirror[0] == "mirrored" else "")
+        page = self._shell(subject, t, "connect", cutover_card +
                            render_connect_page(t.tenant_id, configured=configured,
                                                status=status, realm_id=realm,
                                                last_sync=last_sync, sync_flag=sync_flag,

@@ -146,8 +146,18 @@ def render_documents(
     attachment_counts: Mapping[str, object] | None = None,
     message: str = "",
     error: str = "",
+    banks: "tuple[tuple[str, str], ...]" = (),
 ) -> str:
-    """The invoices or bills list, with totals, plus the create/collect forms."""
+    """The invoices or bills list, with totals, plus the create/collect forms.
+
+    `banks` is (code, name) for each bank account. With more than one, a payment
+    says which it went through: the ledger refuses to guess on a chart without
+    RGNR8's default 1000 (a QuickBooks chart, after cutover)."""
+    bank_pick = ""
+    if len(banks) > 1:
+        options = "".join(f'<option value="{_esc(c)}">{_esc(n)}</option>' for c, n in banks)
+        bank_pick = (f'<select name="bank_code" aria-label="Bank account" '
+                     f'style="width:auto;padding:6px 8px">{options}</select>')
     is_ar = kind == "invoices"
     who = "Customer" if is_ar else "Vendor"
     title = "Invoices" if is_ar else "Bills"
@@ -168,7 +178,7 @@ def render_documents(
                 'style="display:flex;gap:6px;align-items:center;margin:0">'
                 f'<input name="amount" placeholder="{money(d.get("open_minor"))[1:]}" '
                 'style="width:110px;padding:6px 8px" inputmode="decimal">'
-                f'<input type="hidden" name="date" value="{_esc(today)}">'
+                f'<input type="hidden" name="date" value="{_esc(today)}">{bank_pick}'
                 f'<button class="btn" style="padding:6px 12px;margin:0" type="submit">'
                 f'{"Collect" if is_ar else "Pay"}</button></form>'
             )

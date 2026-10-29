@@ -40,8 +40,10 @@ const APPLIED: Record<number, string> = {
   24: "198d202f92fee6d332fff31b9511a593ae11e077904c60b4535a982fe9de1bec",
   25: "a8b45d11db586dd608e36e572029702598603d39d8e3d5be7661be7eff91a19a",
   26: "09863bc49fd51510493646c237bdeba94d0e411bc8dfae6a4d2af788f3a140cd",
+  27: "29ff5ed7fa81be7bc7dde6e1b53f03cdcbe7bf3cb568e20020ed9a224ee8466f",
   100: "571297610009ceaed4746f00ffb546974f2101b6a51040e8a42a6049150c7ee5",
   101: "ce8b0eccb676b79e5446e3aacdd7b76725bbcac86ae09ac1fc150448eb9f95c8",
+  102: "5446042c161a96fba6b6291074a83e9e5ac3127bd38d9d49d98c3c616932c523",
 };
 
 const sha = (sql: string): string => createHash("sha256").update(sql).digest("hex");
