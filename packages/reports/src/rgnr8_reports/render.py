@@ -110,6 +110,13 @@ def render_csv(report: Report) -> str:
     buf = io.StringIO()
     writer = csv.writer(buf)
     first = True
+    # A spreadsheet of an incomplete report says so on its first rows: the CSV
+    # carries tables only, so an empty section would otherwise just vanish.
+    if report.missing:
+        writer.writerow(["This report is incomplete"])
+        for gap in report.missing:
+            writer.writerow([f"Nothing in: {gap}"])
+        first = False
     for section in report.sections:
         for block in section.blocks:
             if not isinstance(block, Table):

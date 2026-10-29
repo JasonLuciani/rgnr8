@@ -87,10 +87,12 @@ Block = Union[KpiRow, Table, Narrative, Chart]
 
 @dataclass(frozen=True, slots=True)
 class ReportSection:
-    """A titled group of rendered blocks."""
+    """A titled group of rendered blocks. `missing` is why it has nothing in it
+    ("no budget provided"), or "" when it rendered real content."""
 
     title: str
     blocks: tuple[Block, ...]
+    missing: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,3 +104,8 @@ class Report:
     period: str
     generated_at: datetime
     sections: tuple[ReportSection, ...]
+
+    @property
+    def missing(self) -> tuple[str, ...]:
+        """The sections with nothing in them, as "Title (why)"."""
+        return tuple(f"{s.title} ({s.missing})" for s in self.sections if s.missing)

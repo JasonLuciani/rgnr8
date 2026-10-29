@@ -36,6 +36,7 @@ def render(spec: ReportSpec, context: DataContext, *, clock: Clock) -> Report:
                 ReportSection(
                     title=spec_section.title or spec_section.kind,
                     blocks=(Narrative(f"Not available — unknown section kind {spec_section.kind!r}."),),
+                    missing=f"unknown section kind {spec_section.kind!r}",
                 )
             )
             continue
@@ -43,6 +44,19 @@ def render(spec: ReportSpec, context: DataContext, *, clock: Clock) -> Report:
         if spec_section.title:
             section = dataclasses.replace(section, title=spec_section.title)
         sections.append(section)
+
+    # A pack with empty sections used to look as complete as a full one: the
+    # gaps were only visible by reading every page. Say so first, by name.
+    gaps = [s for s in sections if s.missing]
+    if gaps:
+        listed = "; ".join(f"{s.title}: {s.missing}" for s in gaps)
+        sections.insert(0, ReportSection(
+            title="This report is incomplete",
+            blocks=(Narrative(
+                f"{len(gaps)} of {len(sections)} sections have nothing in them ({listed}). "
+                "Check whether that is really so, or what is missing from the data, before "
+                "relying on this report."),),
+        ))
 
     period = context.period or (spec.params.get("period") if isinstance(spec.params.get("period"), str) else "")
     return Report(

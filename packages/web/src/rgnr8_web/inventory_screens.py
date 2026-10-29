@@ -57,7 +57,8 @@ def render_inventory(
     tie_out = (
         f'<p class="muted">{money(totals.get("items_value_minor"))} on the shelf, '
         f'{money(totals.get("ledger_balance_minor"))} on the balance sheet. '
-        + ("They agree." if ties else "")
+        # "They agree" about two zeros says nothing; only say it when it means something.
+        + ("They agree." if ties and (_minor(totals.get("items_value_minor")) or 0) else "")
         + "</p>"
     )
     if not ties:
