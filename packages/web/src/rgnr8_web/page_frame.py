@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from html import escape
+from html import escape, unescape
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +76,9 @@ def _cut(html: str, start: int, end: int) -> tuple[str, str]:
 
 
 def _text(fragment: str) -> str:
-    return re.sub(r"<[^>]+>", "", fragment).strip()
+    """The words in a fragment of our markup, unescaped (they are escaped again
+    when written into the header; leaving entities in would show "&amp;")."""
+    return unescape(re.sub(r"<[^>]+>", "", fragment)).strip()
 
 
 def _current_tab(tabs: tuple[Tab, ...], here: str) -> int:
@@ -112,7 +114,9 @@ def frame(body: str, *, title: str, tenant: str, section: str, here: str) -> str
     """Put `body` into the standard frame. `title` is the nav label; `section`
     the nav suffix (for tabs); `here` the path after /t/<tenant>/ with query."""
     eyebrow = sub = acts = own_title = ""
-    head_at = len(body)
+    # Where the screen's own title stood. With no title found, nothing is
+    # "above" it: banners stay where they are, inside the cards they belong to.
+    head_at = 0
 
     m = re.search(r'<div class=["]page-head["]', body)
     h1 = re.search(r"<h1\b[^>]*>(.*?)</h1>", body, re.S)
@@ -131,6 +135,12 @@ def frame(body: str, *, title: str, tenant: str, section: str, here: str) -> str
         head_at = h1.start()
         own_title = _text(h1.group(1))
         body, _ = _cut(body, h1.start(), h1.end())
+        # An eyebrow written just above that title ("Report") goes with it: the
+        # frame draws its own, and a leftover would label nothing.
+        orphan = re.search(r'<div class=["]rg-eyebrow["]>[^<]*</div>\s*$', body[:head_at])
+        if orphan is not None:
+            body = body[:orphan.start()] + body[head_at:]
+            head_at = orphan.start()
         s = re.match(r'\s*<p class=["]sub["][^>]*>(.*?)</p>', body[head_at:], re.S)
         if s:
             sub = s.group(1)

@@ -104,3 +104,28 @@ def test_actions_in_a_page_head_stay_top_right() -> None:
     out = frame(head, title="Invoices", tenant="acme", section="invoices", here="invoices")
     assert '<div class="acts"><a class="btn" href="/new">New invoice</a></div></div>' in out
 
+
+
+# --- from the independent review ----------------------------------------------
+
+
+def test_a_screen_without_a_title_keeps_its_banners_inside_their_cards() -> None:
+    body = ('<section class="card"><h2>Balance sheet</h2>'
+            '<div class="banner warn">Balance sheet does not balance</div><table></table></section>')
+    out = frame(body, title="Ledger", tenant="acme", section="books", here="books/statements")
+    card = out.index('<section class="card">')
+    assert card < out.index("does not balance") < out.index("</section>")
+
+
+def test_a_title_with_an_ampersand_is_escaped_once() -> None:
+    out = frame('<div class="rg-eyebrow">Report</div><h1>AR Aging &amp; Collections</h1>',
+                title="Reports", tenant="acme", section="reports", here="reports/ar_aging")
+    assert "<h1>AR Aging &amp; Collections</h1>" in out and "&amp;amp;" not in out
+    # One eyebrow, the section's: the report's own "Report" went with its title.
+    assert re.findall(r'<div class="rg-eyebrow">(.*?)</div>', out) == ["Reports"]
+
+
+def test_the_report_pages_render_with_one_title_and_one_eyebrow() -> None:
+    main = _page(_app(), "/t/acme/reports/ar_aging")
+    assert re.findall(r"<h1>(.*?)</h1>", main) == ["AR Aging &amp; Collections"]
+    assert re.findall(r'<div class="rg-eyebrow">(.*?)</div>', main) == ["Reports"]
