@@ -31,7 +31,7 @@ def test_live_server_round_trip() -> None:
         status, body = _request(port, "/health")
         assert status == 200 and json.loads(body)["status"] == "ok"
 
-        status, _ = _request(port, "/t/bright")  # no token
+        status, _ = _request(port, "/api/bright/today")  # no token
         assert status == 401
 
         status, body = _request(port, "/api/bright/today", token="tok-bright")

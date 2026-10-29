@@ -118,8 +118,13 @@ def test_no_cookie_no_access() -> None:
     home = app.handle(Request("GET", "/app"))
     assert home.status in (302, 303)
     assert home.headers.get("Location") == "/login"
-    # ...but a deep tenant/API route with no credential is still refused.
-    assert app.handle(Request("GET", "/t/acme/team")).status == 401
+    # ...and so does a deep business page, carrying the page as the way back,
+    # without serving any of it.
+    team = app.handle(Request("GET", "/t/acme/team"))
+    assert team.status == 302 and team.headers.get("Location") == "/login?next=%2Ft%2Facme%2Fteam"
+    assert team.body == ""
+    # The API with no credential is still refused outright.
+    assert app.handle(Request("GET", "/api/acme/today")).status == 401
 
 # --- H1-5: session cookie carries Secure (HTTPS-only) by default -------------
 
