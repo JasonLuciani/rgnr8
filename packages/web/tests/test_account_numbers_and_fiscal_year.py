@@ -206,13 +206,39 @@ def test_go_live_records_which_codes_are_ids_and_the_fiscal_year(monkeypatch) ->
     assert state.fiscal_year_start_month == 7
 
 
-def test_a_refresh_records_the_fiscal_year_from_quickbooks() -> None:
+def _refresh(monkeypatch, *, month: "str | None", mirror_ok: bool = True,
+             ledger: bool = True, saved: "int | None" = None) -> "int | None":
+    """One Refresh of a mirrored tenant whose QuickBooks company says `month`
+    (None: CompanyInfo doesn't say). Returns the fiscal month stored after it."""
+    import rgnr8_web.qbo_mirror as mirror_mod
+    from rgnr8_web.qbo_mirror import MirrorResult
     from test_qbo_connect import _connected_app, _h, _qr
 
-    app = _connected_app(queries=[
-        _qr({"CompanyInfo": [{"CompanyName": "Sandbox Co", "FiscalYearStartMonth": "April"}]})])
+    monkeypatch.setattr(mirror_mod, "refresh_mirror", lambda *a, **k: MirrorResult(
+        mirror_ok, error="" if mirror_ok else "could not read the QuickBooks trial balance"))
+    info: dict[str, object] = {"CompanyName": "Sandbox Co"}
+    if month is not None:
+        info["FiscalYearStartMonth"] = month
+    routes = {**DEFAULT_ROUTES, "GET /t/acme/settings": (200, {"settings": {
+        "book_of_record": "quickbooks", "mirror_realm_id": "R42"}})}
+    app = _connected_app(ledger=LedgerClient(FakeTransport(routes)) if ledger else None,
+                         queries=[_qr({"CompanyInfo": [info]})])
+    if saved is not None:
+        app._store.save("acme", TenantState(fiscal_year_start_month=saved))  # noqa: SLF001
     app.handle(Request("POST", "/t/acme/connect/qbo/sync", _h("owner@acme.com")))
-    assert app._store.load("acme").fiscal_year_start_month == 4  # noqa: SLF001
+    return app._store.load("acme").fiscal_year_start_month  # noqa: SLF001
+
+
+def test_a_refresh_of_the_mirror_records_the_fiscal_year_from_quickbooks(monkeypatch) -> None:
+    assert _refresh(monkeypatch, month="April") == 4
+
+
+def test_the_fiscal_year_is_left_alone_unless_the_mirror_was_refreshed(monkeypatch) -> None:
+    # A refresh that failed, or one with no books to mirror, doesn't take it.
+    assert _refresh(monkeypatch, month="April", mirror_ok=False, saved=10) == 10
+    assert _refresh(monkeypatch, month="April", ledger=False, saved=10) == 10
+    # QuickBooks not saying isn't QuickBooks saying January.
+    assert _refresh(monkeypatch, month=None, saved=10) == 10
 
 
 def test_a_refresh_updates_what_it_saw_and_keeps_what_it_did_not() -> None:
@@ -324,3 +350,190 @@ def test_settings_shows_and_saves_the_fiscal_year_start() -> None:
     r = _req(app, "/t/acme/settings", method="POST", body="fiscal_year_start_month=13")
     assert "err=" in dict(r.extra_headers)["Location"]
     assert app._store.load("acme").fiscal_year_start_month == 10  # noqa: SLF001
+
+
+# --- every save starts from what's stored, so two workers can't erase each other ---
+
+def test_a_worker_saving_its_own_change_keeps_what_the_other_worker_recorded() -> None:
+    """Each worker loads a tenant's state once, at startup. A Refresh on worker B
+    records the account numbering and fiscal year; worker A then records a
+    decision, changes an assumption and erases. Each used to save A's startup
+    copy, wiping what B had recorded."""
+    import json
+
+    from factory import _inputs as factory_inputs
+
+    store = InMemoryTenantStore()
+    workers = []
+    for _ in range(2):
+        app = WebApp(store=store)
+        app.add_tenant("bright", "Bright Agency", factory_inputs("80000.00"),
+                       ForecastConfig(minimum_cash=Money.from_decimal("10000.00")), token="tok-bright")
+        workers.append(app)
+    a, b = workers
+    auth = {"authorization": "Bearer tok-bright"}
+
+    b._record_quickbooks_facts(b._tenants["bright"],  # noqa: SLF001
+                               numbered={"57": False}, fiscal_month=7)
+    b.handle(Request("POST", "/api/bright/decisions", auth, json.dumps({"label": "Hire later"})))
+
+    r = a.handle(Request("POST", "/api/bright/decisions", auth, json.dumps({"label": "Raise prices"})))
+    assert json.loads(r.body)["id"] == 2                 # numbered after B's, not over it
+    a.handle(Request("POST", "/api/bright/assumptions", auth,
+                     json.dumps({"minimum_cash": "20000.00"})))
+    state = store.load("bright")
+    assert state.qbo_id_codes == ["57"] and state.fiscal_year_start_month == 7
+    assert [d.get("label") for d in state.decisions][:2] == ["Hire later", "Raise prices"]
+    assert state.min_cash_override_dto is not None
+
+    a.handle(Request("POST", "/api/bright/erase", auth))
+    state = store.load("bright")
+    assert state.decisions == [] and state.min_cash_override_dto is None
+    assert state.qbo_id_codes == ["57"] and state.fiscal_year_start_month == 7
+
+
+# --- forms that took a typed account code now pick one -------------------------------
+
+IDS = frozenset(ID_CODES)
+
+
+def _select(html: str, name: str) -> str:
+    m = re.search(rf'<select name="{name}">(.*?)</select>', html)
+    assert m, f"no picker for {name}"
+    return m.group(1)
+
+
+def test_asset_forms_pick_the_account_instead_of_asking_for_a_code() -> None:
+    from rgnr8_web.asset_screens import render_asset_detail, render_assets
+
+    page = render_assets("acme", {}, can_write=True, accounts=ID_ACCOUNTS, id_codes=IDS)
+    paid = _select(page, "paid_from_code")
+    # Optional in the ledger: left blank, the purchase isn't posted.
+    assert paid.startswith("<option value=\"\" selected>Don't post the purchase</option>")
+    assert '<option value="57">Business Checking</option>' in paid and "57 — " not in paid
+    assert 'placeholder="1000"' not in page
+
+    detail = render_asset_detail("acme", {"asset": {"id": "TRUCK", "status": "ACTIVE"}},
+                                 can_write=True, accounts=ID_ACCOUNTS, id_codes=IDS)
+    # The ledger would fall back to 1000, which this chart doesn't have: the bank
+    # account is chosen instead, so leaving it alone still means "the bank".
+    assert '<option value="57" selected>Business Checking</option>' in _select(detail, "proceeds_to_code")
+
+
+def test_debt_forms_pick_the_account() -> None:
+    from rgnr8_web.debt_screens import render_debt
+
+    page = render_debt("acme", {"loans": []}, can_write=True, accounts=ID_ACCOUNTS, id_codes=IDS)
+    assert _select(page, "proceeds_to_code").startswith('<option value="" selected>')
+    assert '<option value="57" selected>Business Checking</option>' in _select(page, "paid_from_code")
+    assert 'placeholder="1000"' not in page
+    # A numbered chart keeps the ledger's own default selected.
+    page = render_debt("acme", {"loans": []}, can_write=True, accounts=ACCOUNTS)
+    assert '<option value="1000" selected>1000 — Business Checking</option>' in _select(page, "paid_from_code")
+
+
+def test_inventory_forms_pick_the_accounts() -> None:
+    from rgnr8_web.inventory_screens import render_inventory
+
+    accounts = {"accounts": [*ID_ACCOUNTS["accounts"],
+                             {"code": "61", "name": "Stock on hand", "type": "ASSET"},
+                             {"code": "62", "name": "Materials used", "type": "EXPENSE"}]}
+    ids = IDS | {"61", "62"}
+    page = render_inventory("acme", {"items": [{"sku": "PLY", "name": "Plywood"}]}, {}, {},
+                            accounts, can_edit=True, id_codes=ids)
+    stock, cost = _select(page, "inventory_account_code"), _select(page, "cost_account_code")
+    assert "Stock on hand" in stock and "Rent" not in stock          # assets only
+    assert "Materials used" in cost and "Business Checking" not in cost  # expenses only
+    assert '<option value="57" selected>Business Checking</option>' in _select(page, "paid_from_code")
+    assert not re.search(r"\b(57|61|62) — ", page)
+
+
+def test_the_assets_page_reads_the_chart_for_its_form() -> None:
+    routes = {**DEFAULT_ROUTES, "GET /t/acme/accounts": (200, ID_ACCOUNTS),
+              "GET /t/acme/assets": (200, {"assets": [], "totals": {}})}
+    app, _ = _app(routes, state=TenantState(qbo_id_codes=list(ID_CODES)))
+    page = _req(app, "/t/acme/assets").body
+    assert '<option value="57">Business Checking</option>' in _select(page, "paid_from_code")
+
+
+def test_with_no_chart_to_offer_the_field_stays_a_text_box() -> None:
+    from rgnr8_web.debt_screens import render_debt
+
+    page = render_debt("acme", {"loans": []}, can_write=True)
+    assert '<input name="paid_from_code" placeholder="1000">' in page
+
+
+# --- the other pickers and titles ------------------------------------------------------
+
+def test_revenue_pickers_and_the_reconcile_title_name_the_account() -> None:
+    from rgnr8_web.arap_screens import _account_pick
+    from rgnr8_web.estimate_screens import render_estimates
+    from rgnr8_web.job_screens import render_jobs
+    from rgnr8_web.reconcile_screens import render_reconcile
+
+    est = render_estimates("acme", {}, {}, {}, ID_ACCOUNTS, can_edit=True, id_codes=IDS)
+    jobs = render_jobs("acme", {}, {}, ID_ACCOUNTS, can_edit=True, id_codes=IDS)
+    for page, field in ((est, "account1"), (jobs, "revenue_account_code")):
+        picker = _select(page, field)
+        assert picker == '<option value="1">Services</option>'   # income accounts, by name
+
+    title = render_reconcile("acme", {"account_code": "57", "account_name": "R&D Checking",
+                                      "statement_date": "2026-10-31"},
+                             can_post=False, id_codes=IDS)
+    assert "Reconcile R&amp;D Checking · as of 2026-10-31" in title
+    assert "&amp;amp;" not in title and "57 — " not in title
+
+    # Credits on a cutover document: the app passes each account's label.
+    assert '<option value="12">Rent</option>' in _account_pick((("12", "Rent"),))
+
+
+def test_an_account_with_no_name_still_has_a_link() -> None:
+    from rgnr8_web.books_screens import render_chart_of_accounts, render_trial_balance
+
+    chart = render_chart_of_accounts("acme", {"accounts": [{"code": "4000", "name": "",
+                                                            "type": "REVENUE"}]})
+    assert 'books/accounts/4000">4000</a>' in chart
+    tb = render_trial_balance("acme", {"rows": [{"code": "57", "name": "", "type": "ASSET",
+                                                 "debit_minor": "1", "credit_minor": "0"}]})
+    assert 'books/accounts/57">57</a>' in tb
+
+
+# --- Settings and the QuickBooks reads: the edges ------------------------------------------
+
+def test_an_unchanged_month_is_not_written_or_audited() -> None:
+    routes = {**DEFAULT_ROUTES, "GET /t/acme/settings": (200, SETTINGS),
+              "POST /t/acme/settings": (200, SETTINGS)}
+    app, transport = _app(routes)
+    r = _req(app, "/t/acme/settings", method="POST", body="fiscal_year_start_month=1")
+    assert "Nothing+to+change" in dict(r.extra_headers)["Location"]
+    assert app._store.load("acme").fiscal_year_start_month is None  # noqa: SLF001
+    assert not [c for c in transport.calls if c[0] == "POST"]
+
+
+def test_a_store_failure_changes_nothing_and_says_so() -> None:
+    class BrokenStore(InMemoryTenantStore):
+        def save(self, tenant_id: str, state: TenantState) -> None:
+            raise OSError("disk full")
+
+    routes = {**DEFAULT_ROUTES, "GET /t/acme/settings": (200, SETTINGS),
+              "POST /t/acme/settings": (200, SETTINGS)}
+    app, transport = _app(routes, store=BrokenStore())
+    r = _req(app, "/t/acme/settings", method="POST",
+             body="fiscal_year_start_month=7&inventory_costing_method=FIFO")
+    assert r.status == 302 and "err=" in dict(r.extra_headers)["Location"]
+    assert not [c for c in transport.calls if c[0] == "POST"]   # the ledger wasn't half-saved
+
+
+def test_numbering_reads_the_chart_only_after_a_trial_balance_was_read() -> None:
+    class Client:
+        reads = 0
+
+        def chart_of_accounts(self, *, include_inactive: bool = False) -> list[dict[str, str]]:
+            Client.reads += 1
+            return [{"id": "57", "code": " 57 ", "number": ""},
+                    {"id": "2", "code": "2300", "number": "2300"}]
+
+    assert WebApp._numbering(Client(), {}) == {} and Client.reads == 0  # noqa: SLF001
+    # Codes are stripped, as refresh_mirror keys them; the trial balance's word wins.
+    assert WebApp._numbering(Client(), {"88": False}) == {  # noqa: SLF001
+        "57": False, "2300": True, "88": False}

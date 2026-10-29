@@ -20,6 +20,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from html import escape
+from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from rgnr8_ar import ARReport, ChaseItem, CollectionNudge, ar_report, chase_list, draft_nudge
@@ -102,6 +103,7 @@ from .audit import AuditSink
 from .auth import Authenticator, JwtError, StaticTokenAuthenticator, sign_jwt, verify_jwt
 from .csp import new_nonce as _csp_new_nonce
 from .books_screens import (
+    account_label,
     render_books_home,
     render_books_statements,
     render_chart_of_accounts,
@@ -217,7 +219,7 @@ from .shell import (
     render_shell,
     render_users_admin,
 )
-from .store import InMemoryTenantStore, TenantDef, TenantState, TenantStore
+from .store import InMemoryTenantStore, TenantDef, TenantState, TenantStore, update_state
 from .ten99_screens import render_ten99, render_ten99_unavailable
 from .webhook_outbox import DurableWebhookDispatcher, WebhookOutbox
 from .webhooks_out import (
@@ -2298,7 +2300,10 @@ class WebApp:
             today=self._today(t), can_post=can_post,
             attachment_counts=raw_counts if isinstance(raw_counts, dict) else None,
             message=query.get("ok", ""), error=query.get("err", ""), banks=banks,
-            credit_accounts=tuple((str(a.get("code")), str(a.get("name")))
+            # (code, label): the label reads "4000 — Sales", or "Sales" for an
+            # account QuickBooks has no number for.
+            credit_accounts=tuple((str(a.get("code")),
+                                   account_label(a.get("code"), a.get("name"), self._id_codes(t)))
                                   for a in rows if a.get("type") == reverses and a.get("active", True)),
             control_codes=frozenset(str(a.get("code")) for a in rows
                                     if a.get("subtype") in ("ACCOUNTS_RECEIVABLE", "ACCOUNTS_PAYABLE")),
@@ -3150,6 +3155,7 @@ class WebApp:
             accounts.body if accounts.ok else {},
             can_edit=can_edit,
             message=query.get("done", ""), error=query.get("err", ""),
+            id_codes=self._id_codes(t),
         ))
 
     def _inventory_action(
@@ -3755,6 +3761,7 @@ class WebApp:
             accounts.body if accounts.ok else {},
             can_edit=can_edit,
             message=query.get("done", ""), error=query.get("err", ""),
+            id_codes=self._id_codes(t),
         ))
 
     def _estimate_page(
@@ -4015,6 +4022,7 @@ class WebApp:
             accounts.body if accounts.ok else {},
             can_edit=can_edit,
             message=query.get("done", ""), error=query.get("err", ""),
+            id_codes=self._id_codes(t),
         ))
 
     def _job_page(
@@ -4523,6 +4531,7 @@ class WebApp:
         body = render_reconcile(
             t.tenant_id, res.body, can_post=can_post,
             message=query.get("done", ""), error=query.get("err", ""),
+            id_codes=self._id_codes(t),
         )
         return self._shell(subject, t, "books", body)
 
@@ -5300,12 +5309,13 @@ class WebApp:
         """Which optional modules show in this business's sidebar. Only the
         sidebar: a module switched off keeps its pages and its data."""
         chosen = [m for m in parse_qs(body).get("module", []) if m in OPTIONAL_MODULES]
-        t.state = self._store.load(t.tenant_id)  # on top of what's stored now
-        t.state.modules = sorted(set(chosen))
-        self._store.save(t.tenant_id, t.state)
+        def choose(state: TenantState) -> None:
+            state.modules = sorted(set(chosen))
+
+        t.state = update_state(self._store, t.tenant_id, choose)
         if self._audit is not None:
             self._audit.record(subject, "settings.modules", self._session_clock(),
-                               tenant_id=t.tenant_id, detail=",".join(t.state.modules) or "none")
+                               tenant_id=t.tenant_id, detail=",".join(sorted(set(chosen))) or "none")
         return _redirect(f"/t/{t.tenant_id}/settings?done=Modules+updated")
 
     def _settings_save(self, subject: str, t: _Tenant, body: str) -> Response:
@@ -5320,10 +5330,8 @@ class WebApp:
         if raw_month:
             if raw_month not in {str(i) for i in range(1, 13)}:
                 return _redirect(f"{back}?err=Choose+the+month+your+fiscal+year+starts+in")
-            t.state = self._store.load(t.tenant_id)  # on top of what's stored now
-            if t.state.fiscal_year_start_month != int(raw_month):
-                t.state.fiscal_year_start_month = int(raw_month)
-                fiscal_changed = True
+            # Unset reads as January, so choosing January then changes nothing.
+            fiscal_changed = (self._store.load(t.tenant_id).fiscal_year_start_month or 1) != int(raw_month)
         patch: dict[str, object] = {}
         for key in ("inventory_costing_method", "base_currency", "multi_currency_enabled"):
             if str(data.get(key, "")).strip():
@@ -5340,16 +5348,26 @@ class WebApp:
                 patch[key] = str(data.get(key, "")).strip()
         if not patch and not fiscal_changed:
             return _redirect(f"{back}?done=Nothing+to+change")
+        # The month is saved first: if that fails nothing has changed anywhere,
+        # rather than the ledger's half saved and a 500 for the rest.
+        saved = sorted(patch.keys())
+        if fiscal_changed:
+            def set_month(state: TenantState) -> None:
+                state.fiscal_year_start_month = int(raw_month)
+
+            try:
+                t.state = update_state(self._store, t.tenant_id, set_month)
+            except Exception:  # noqa: BLE001 - a store failure, said plainly
+                return _redirect(f"{back}?err=Couldn%27t+save+the+fiscal+year+start%3B+nothing+was+changed")
+            saved.append("fiscal_year_start_month")
         if patch:
             res = self._ledger.save_settings(t.tenant_id, patch)
             if not res.ok:
-                return _redirect(f"{back}?err={_qs_escape(res.error())}")
-        if fiscal_changed:
-            self._store.save(t.tenant_id, t.state)
-            patch["fiscal_year_start_month"] = raw_month
+                done = " (the fiscal year start was saved)" if fiscal_changed else ""
+                return _redirect(f"{back}?err={_qs_escape(res.error() + done)}")
         if self._audit is not None:
             self._audit.record(subject, "settings.saved", self._session_clock(),
-                               tenant_id=t.tenant_id, target=",".join(sorted(patch.keys())))
+                               tenant_id=t.tenant_id, target=",".join(sorted(saved)))
         return _redirect(f"{back}?done=Settings+saved")
 
     # --- debt (loans, lines of credit) --------------------------------------
@@ -5357,14 +5375,24 @@ class WebApp:
         perms, _role = self._perms_role(subject, t.tenant_id)
         return self._policy is None or Permission.POST_JOURNAL in perms
 
+    def _account_pickers(self, t: _Tenant, can_write: bool) -> "dict[str, Any]":
+        """The chart and the id codes, for a page whose forms pick an account.
+        Only read when the viewer can use the forms."""
+        if not can_write or self._ledger is None:
+            return {}
+        res = self._ledger.accounts(t.tenant_id)
+        return {"accounts": res.body if res.ok else {}, "id_codes": self._id_codes(t)}
+
     def _debt_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
         if self._ledger is None:
             return self._shell(subject, t, "debt", render_debt_unavailable("No ledger service is configured."))
         res = self._ledger.debt_dashboard(t.tenant_id, as_of=query.get("as_of", ""))
         if not res.ok:
             return self._shell(subject, t, "debt", render_debt_unavailable(res.error()))
-        body = render_debt(t.tenant_id, res.body, can_write=self._can_post(subject, t),
-                           done=query.get("done", ""), error=query.get("err", ""))
+        can_write = self._can_post(subject, t)
+        body = render_debt(t.tenant_id, res.body, can_write=can_write,
+                           done=query.get("done", ""), error=query.get("err", ""),
+                           **self._account_pickers(t, can_write))
         return self._shell(subject, t, "debt", body)
 
     def _loan_detail_page(
@@ -5457,8 +5485,10 @@ class WebApp:
         res = self._ledger.asset_register(t.tenant_id)
         if not res.ok:
             return self._shell(subject, t, "assets", render_assets_unavailable(res.error()))
-        body = render_assets(t.tenant_id, res.body, can_write=self._can_post(subject, t),
-                             done=query.get("done", ""), error=query.get("err", ""))
+        can_write = self._can_post(subject, t)
+        body = render_assets(t.tenant_id, res.body, can_write=can_write,
+                             done=query.get("done", ""), error=query.get("err", ""),
+                             **self._account_pickers(t, can_write))
         return self._shell(subject, t, "assets", body)
 
     def _asset_detail_page(
@@ -5469,8 +5499,10 @@ class WebApp:
         res = self._ledger.asset(t.tenant_id, asset_id)
         if not res.ok:
             return self._shell(subject, t, "assets", render_assets_unavailable(res.error()))
-        body = render_asset_detail(t.tenant_id, res.body, can_write=self._can_post(subject, t),
-                                   done=query.get("done", ""), error=query.get("err", ""))
+        can_write = self._can_post(subject, t)
+        body = render_asset_detail(t.tenant_id, res.body, can_write=can_write,
+                                   done=query.get("done", ""), error=query.get("err", ""),
+                                   **self._account_pickers(t, can_write))
         return self._shell(subject, t, "assets", body)
 
     def _asset_add(self, subject: str, t: _Tenant, body: str) -> Response:
@@ -6197,17 +6229,20 @@ class WebApp:
         action = (parse_qs(body).get("action") or [""])[0]
         # Save on top of what is stored now, not this process's older copy, so a
         # change made through the other worker isn't written over.
-        t.state = self._store.load(t.tenant_id)
         if action == "remove":
-            t.state.cost_baseline = None
+            saved: dict[str, object] | None = None
         elif action == "add":
             baseline, why_not = self._proposed_baseline(t)
             if baseline is None:
                 return self._costs_page(subject, t, notice=f"Nothing was added: {why_not}.")
-            t.state.cost_baseline = baseline.to_dict()
+            saved = baseline.to_dict()
         else:
             return _json(400, {"error": "action must be add or remove"})
-        self._store.save(t.tenant_id, t.state)
+
+        def keep(state: TenantState) -> None:
+            state.cost_baseline = saved
+
+        t.state = update_state(self._store, t.tenant_id, keep)
         t._dirty = True
         if self._audit is not None:
             self._audit.record(subject, f"costs.baseline_{'added' if action == 'add' else 'removed'}",
@@ -6585,15 +6620,17 @@ class WebApp:
         now, so a change made through the other worker isn't written over."""
         if not numbered and fiscal_month is None:
             return
-        t.state = self._store.load(t.tenant_id)
-        if numbered:
-            ids = set(t.state.qbo_id_codes or ())
-            ids -= {code for code, has_number in numbered.items() if has_number}
-            ids |= {code for code, has_number in numbered.items() if not has_number}
-            t.state.qbo_id_codes = sorted(ids)
-        if fiscal_month is not None:
-            t.state.fiscal_year_start_month = fiscal_month
-        self._store.save(t.tenant_id, t.state)
+
+        def record(state: TenantState) -> None:
+            if numbered:
+                ids = set(state.qbo_id_codes or ())
+                ids -= {code for code, has_number in numbered.items() if has_number}
+                ids |= {code for code, has_number in numbered.items() if not has_number}
+                state.qbo_id_codes = sorted(ids)
+            if fiscal_month is not None:
+                state.fiscal_year_start_month = fiscal_month
+
+        t.state = update_state(self._store, t.tenant_id, record)
 
     @staticmethod
     def _numbering(client: object, seen: "Mapping[str, bool]") -> "dict[str, bool]":
@@ -6601,15 +6638,19 @@ class WebApp:
         refresh's trial balance (`seen`) only lists accounts with a balance, so
         books brought over before this was recorded would otherwise keep showing
         ids for every account at zero today. One more read of the chart; if it
-        fails, what the trial balance showed is still recorded."""
+        fails, what the trial balance showed is still recorded. Nothing seen
+        means the trial balance itself couldn't be read, so neither is the chart."""
+        if not seen:
+            return {}
         out: dict[str, bool] = {}
         try:
             chart = client.chart_of_accounts(include_inactive=True)  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001 - the trial balance's answer stands
             chart = []
         for a in chart if isinstance(chart, list) else []:
-            if isinstance(a, dict) and "number" in a and a.get("code"):
-                out[str(a["code"])] = bool(a["number"])
+            code = str(a.get("code") or "").strip() if isinstance(a, dict) else ""
+            if code and "number" in a:  # stripped, as `refresh_mirror` keys them
+                out[code] = bool(str(a["number"]).strip())
         out.update(seen)
         return out
 
@@ -6663,7 +6704,6 @@ class WebApp:
         t.inputs = merge_refresh(t.inputs, inputs)
         t._dirty = True
         self._qbo_last_sync[t.tenant_id] = summary
-        self._record_quickbooks_facts(t, fiscal_month=summary.fiscal_year_start_month)
         if self._audit is not None:
             self._audit.record(subject, "qbo.synced", self._session_clock(),
                                tenant_id=t.tenant_id,
@@ -6685,7 +6725,11 @@ class WebApp:
                     "bring over your chart of accounts and balances first — a refresh "
                     "keeps an existing mirror current, it doesn't create one"))
             mirror = refresh_mirror(client, self._ledger, t.tenant_id, as_of=as_of.isoformat())
-            self._record_quickbooks_facts(t, numbered=self._numbering(client, mirror.numbered))
+            # QuickBooks' fiscal year is taken only while it is the book of
+            # record and the books really were brought up to date from it.
+            self._record_quickbooks_facts(
+                t, numbered=self._numbering(client, mirror.numbered),
+                fiscal_month=summary.fiscal_year_start_month if mirror.ok else None)
             detail = mirror.describe()
             if mirror.mismatches:
                 detail += ": " + "; ".join(mirror.mismatches[:3])
@@ -6737,10 +6781,12 @@ class WebApp:
             if problem:
                 message += f" (couldn't pin the QuickBooks company yet: {problem})"
             mirror = refresh_mirror(client, self._ledger, t.tenant_id, as_of=today.isoformat())
-            try:
-                fiscal: int | None = client.company_info().fiscal_year_start_month
-            except Exception:  # noqa: BLE001 - the next Refresh reads it again
-                fiscal = None
+            fiscal: int | None = None
+            if mirror.ok:
+                try:
+                    fiscal = client.company_info().fiscal_year_start_month
+                except Exception:  # noqa: BLE001 - the next Refresh reads it again
+                    fiscal = None
             self._record_quickbooks_facts(t, numbered=self._numbering(client, mirror.numbered),
                                           fiscal_month=fiscal)
             message += f" (opening balances as of {cutover}); then {mirror.describe()}"
@@ -6883,9 +6929,11 @@ class WebApp:
 
         board = dataclasses.replace(board, sealed=True)
         self._close[t.tenant_id] = board
-        t.state.decisions.append({"id": len(t.state.decisions) + 1, "kind": "close",
-                                  "label": f"Sealed {board.period}"})
-        self._store.save(t.tenant_id, t.state)
+        def sealed(state: TenantState) -> None:
+            state.decisions.append({"id": len(state.decisions) + 1, "kind": "close",
+                                    "label": f"Sealed {board.period}"})
+
+        t.state = update_state(self._store, t.tenant_id, sealed)
         # Fan the event out to any registered webhook endpoints, durably.
         self._emit_event(t.tenant_id, "close.sealed", {"period": board.period})
         return _json(200, {"period": board.period, "sealed": True})
@@ -6969,29 +7017,36 @@ class WebApp:
             return _json(400, {"error": "invalid JSON body"})
 
         changed: list[str] = []
+        min_cash: Money | None = None
+        override: tuple[str, int] | None = None
         if "minimum_cash" in payload:
             try:
-                t.state.set_min_cash(Money.from_decimal(str(payload["minimum_cash"])))
+                min_cash = Money.from_decimal(str(payload["minimum_cash"]))
                 changed.append("minimum_cash")
             except ValueError:
                 return _json(400, {"error": "minimum_cash is not a valid amount"})
         if "payment_override" in payload:
             po = payload["payment_override"]
             try:
-                customer_id = str(po["customer_id"])
-                days = int(po["days_late"])
+                override = (str(po["customer_id"]), int(po["days_late"]))
             except (KeyError, TypeError, ValueError):
                 return _json(400, {"error": "payment_override needs customer_id and integer days_late"})
-            t.state.payment_overrides[customer_id] = days
-            changed.append(f"payment_override:{customer_id}")
+            changed.append(f"payment_override:{override[0]}")
 
         if not changed:
             return _json(400, {"error": "nothing to change"})
 
+        def apply(state: TenantState) -> None:
+            if min_cash is not None:
+                state.set_min_cash(min_cash)
+            if override is not None:
+                state.payment_overrides[override[0]] = override[1]
+            # record the change as a decision alongside it
+            state.decisions.append({"id": len(state.decisions) + 1, "kind": "assumption",
+                                    "changed": changed})
+
+        t.state = update_state(self._store, t.tenant_id, apply)
         t._dirty = True  # invalidate the cached forecast
-        # record the change as a decision, persist, then return the recomputed summary
-        t.state.decisions.append({"id": len(t.state.decisions) + 1, "kind": "assumption", "changed": changed})
-        self._store.save(t.tenant_id, t.state)
         return self._today_json(t)
 
     def _add_decision(self, t: _Tenant, body: str) -> Response:
@@ -7003,14 +7058,17 @@ class WebApp:
         if not label:
             return _json(400, {"error": "provide a 'label'"})
         entry: dict[str, object] = {
-            "id": len(t.state.decisions) + 1,
             "kind": str(payload.get("kind", "decision")),
             "label": label,
             "note": str(payload.get("note", "")),
         }
-        t.state.decisions.append(entry)
-        self._store.save(t.tenant_id, t.state)
-        return _json(201, entry)
+
+        def add(state: TenantState) -> None:
+            entry["id"] = len(state.decisions) + 1
+            state.decisions.append(entry)
+
+        t.state = update_state(self._store, t.tenant_id, add)
+        return _json(201, {"id": entry["id"], **entry})
 
     def _decisions(self, t: _Tenant) -> Response:
         return _json(200, {"tenant": t.tenant_id, "decisions": t.decisions})
@@ -7095,6 +7153,7 @@ class WebApp:
         real cross-store erasure reaching the ledger is tracked separately."""
         txns = self._txns.get(t.tenant_id, [])
         had_close = t.tenant_id in self._close
+        t.state = self._store.load(t.tenant_id)  # count what's stored, not this worker's copy
         decisions_n = len(t.state.decisions)
         overrides_n = len(t.state.payment_overrides)
         had_min_cash = t.state.min_cash_override_dto is not None
@@ -7105,10 +7164,12 @@ class WebApp:
         # month-end close board
         self._close.pop(t.tenant_id, None)
         # mutable owner state (decisions + assumption overrides), then persist
-        t.state.decisions.clear()
-        t.state.payment_overrides.clear()
-        t.state.min_cash_override_dto = None
-        self._store.save(t.tenant_id, t.state)
+        def erase(state: TenantState) -> None:
+            state.decisions.clear()
+            state.payment_overrides.clear()
+            state.min_cash_override_dto = None
+
+        t.state = update_state(self._store, t.tenant_id, erase)
         # cached forecast + briefing — recompute clean on next read
         t._cache = None
         t._briefing_cache = None

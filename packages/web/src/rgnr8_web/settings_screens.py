@@ -100,7 +100,8 @@ def render_settings(
         + "</select></label>"
         + ('<p class="muted wide">Year-to-date figures, such as revenue on Business health, '
            "count from the first of this month. While your books mirror QuickBooks, each "
-           "Refresh takes it from QuickBooks.</p>" if mirrors_quickbooks else "")
+           "successful Refresh sets it to the month QuickBooks has, when QuickBooks has "
+           "one.</p>" if mirrors_quickbooks else "")
         + ('<div class="wide"><button type="submit">Save account options</button></div>'
            if can_manage_settings else
            '<p class="muted wide">You can view these, but changing them '

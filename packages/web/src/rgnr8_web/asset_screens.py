@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from .books_screens import _banner, _card, _esc, _seq, money
+from .books_screens import _banner, _card, _esc, _seq, account_select, money
 from .provenance_labels import Provenance
 from .provenance_labels import badge as prov_badge
 from .provenance_labels import legend as prov_legend
@@ -57,6 +57,7 @@ def _tile(label: str, value: str) -> str:
 
 def render_assets(
     tenant: str, register: Mapping[str, object], *, can_write: bool, done: str = "", error: str = "",
+    accounts: Mapping[str, object] | None = None, id_codes: frozenset[str] = frozenset(),
 ) -> str:
     totals = register.get("totals", {})
     totals = totals if isinstance(totals, Mapping) else {}
@@ -96,13 +97,14 @@ def render_assets(
     sections = [_banners(done, error), prov_legend(_ASSET_PROV),
                 _card("Fixed asset register", tiles + table, actions=prov_badge(Provenance.POSTED))]
     if can_write:
-        sections.append(_card("Add an asset", _add_asset_form(tenant)))
+        sections.append(_card("Add an asset", _add_asset_form(tenant, accounts or {}, id_codes)))
     else:
         sections.append('<p class="muted">Adding assets needs the Post journal permission.</p>')
     return "".join(sections)
 
 
-def _add_asset_form(tenant: str) -> str:
+def _add_asset_form(tenant: str, accounts: Mapping[str, object],
+                    id_codes: frozenset[str] = frozenset()) -> str:
     return (
         f'<form method="post" action="/t/{_esc(tenant)}/assets" class="grid">'
         '<label>Asset id (short handle)<input name="id" required></label>'
@@ -115,7 +117,10 @@ def _add_asset_form(tenant: str) -> str:
         '<label>Useful life (months)<input name="useful_life_months" type="number" min="0" placeholder="48"></label>'
         '<label>Declining factor (e.g. 2 for double)<input name="declining_factor" placeholder="2"></label>'
         '<label>Total units (units-of-production)<input name="total_units" placeholder=""></label>'
-        '<label>Pay from (account code)<input name="paid_from_code" placeholder="1000"></label>'
+        # Blank posts nothing for the purchase: the asset is recorded only.
+        + '<label>Paid from'
+        + account_select("paid_from_code", accounts, id_codes,
+                         blank="Don't post the purchase") + '</label>'
         '<div class="wide"><button type="submit">Add asset</button></div>'
         "</form>"
     )
@@ -123,6 +128,7 @@ def _add_asset_form(tenant: str) -> str:
 
 def render_asset_detail(
     tenant: str, data: Mapping[str, object], *, can_write: bool, done: str = "", error: str = "",
+    accounts: Mapping[str, object] | None = None, id_codes: frozenset[str] = frozenset(),
 ) -> str:
     asset = data.get("asset", {})
     asset = asset if isinstance(asset, Mapping) else {}
@@ -177,7 +183,9 @@ def render_asset_detail(
             'data-confirm="Dispose of this asset? This posts the disposal to your books." style="margin-top:12px">'
             '<label>Disposal date<input name="date" type="date" required></label>'
             '<label>Proceeds ($)<input name="proceeds" type="text" placeholder="0.00"></label>'
-            '<label>Deposit to (account code)<input name="proceeds_to_code" placeholder="1000"></label>'
+            '<label>Deposit to'
+            + account_select("proceeds_to_code", accounts or {}, id_codes, fallback="1000")
+            + '</label>'
             '<div class="wide"><button type="submit" class="btn danger">Dispose</button></div></form>'
         )
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from .books_screens import _banner, _card, _esc, _seq, money
+from .books_screens import _banner, _card, _esc, _seq, account_select, money
 from .provenance_labels import Provenance
 from .provenance_labels import badge as prov_badge
 from .provenance_labels import legend as prov_legend
@@ -67,6 +67,7 @@ def _banners(done: str, error: str) -> str:
 
 def render_debt(
     tenant: str, dashboard: Mapping[str, object], *, can_write: bool, done: str = "", error: str = "",
+    accounts: Mapping[str, object] | None = None, id_codes: frozenset[str] = frozenset(),
 ) -> str:
     totals = dashboard.get("totals", {})
     totals = totals if isinstance(totals, Mapping) else {}
@@ -112,8 +113,9 @@ def render_debt(
                 _card("What you owe", tiles + table, actions=prov_badge(Provenance.POSTED))]
 
     if can_write:
-        sections.append(_card("Add a loan", _add_loan_form(tenant)))
-        sections.append(_card("Record a payment", _payment_form(tenant, loans)))
+        sections.append(_card("Add a loan", _add_loan_form(tenant, accounts or {}, id_codes)))
+        sections.append(_card("Record a payment",
+                              _payment_form(tenant, loans, accounts or {}, id_codes)))
     else:
         sections.append(
             '<p class="muted">Recording loans and payments needs the Post journal permission.</p>'
@@ -130,7 +132,8 @@ def _tile(label: str, value: str) -> str:
     )
 
 
-def _add_loan_form(tenant: str) -> str:
+def _add_loan_form(tenant: str, accounts: Mapping[str, object],
+                   id_codes: frozenset[str] = frozenset()) -> str:
     return (
         f'<form method="post" action="/t/{_esc(tenant)}/debt/loans" class="grid">'
         '<label>Loan id (short handle)<input name="id" required></label>'
@@ -141,14 +144,18 @@ def _add_loan_form(tenant: str) -> str:
         '<label>Start date<input name="start_date" type="date" required></label>'
         '<label>Term (number of payments)<input name="term_periods" type="number" min="0" placeholder="60"></label>'
         f'<label>Frequency<select name="frequency">{_options(_FREQS)}</select></label>'
-        '<label>Deposit proceeds to (account code)<input name="proceeds_to_code" placeholder="1000"></label>'
+        # Blank posts nothing for the proceeds: the loan is recorded only.
+        + '<label>Deposit proceeds to'
+        + account_select("proceeds_to_code", accounts, id_codes,
+                         blank="Don't post the proceeds") + '</label>'
         '<label>Min DSCR covenant (e.g. 1.25, optional)<input name="min_dscr" placeholder=""></label>'
         '<div class="wide"><button type="submit">Add loan</button></div>'
         "</form>"
     )
 
 
-def _payment_form(tenant: str, loans: list[object]) -> str:
+def _payment_form(tenant: str, loans: list[object], accounts: Mapping[str, object],
+                  id_codes: frozenset[str] = frozenset()) -> str:
     opts = _options(
         [(str(ln.get("id")), f'{ln.get("lender")} ({money(ln.get("current_principal_minor"))})')
          for ln in loans if isinstance(ln, Mapping)]
@@ -158,7 +165,8 @@ def _payment_form(tenant: str, loans: list[object]) -> str:
         f'<label>Loan<select name="loan_id">{opts}</select></label>'
         '<label>Date<input name="date" type="date" required></label>'
         '<label>Payment amount ($)<input name="amount" type="text" placeholder="860.66" required></label>'
-        '<label>Pay from (account code)<input name="paid_from_code" placeholder="1000"></label>'
+        '<label>Pay from'
+        + account_select("paid_from_code", accounts, id_codes, fallback="1000") + '</label>'
         '<div class="wide"><button type="submit">Record payment</button></div>'
         "</form>"
     )

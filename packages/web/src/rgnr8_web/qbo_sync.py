@@ -44,8 +44,9 @@ class QboSyncSummary:
     ar_total: Money
     bill_count: int
     ap_total: Money
-    # The month the company's fiscal year starts, from its CompanyInfo.
-    fiscal_year_start_month: int = 1
+    # The month the company's fiscal year starts, from its CompanyInfo; None
+    # when QuickBooks doesn't say.
+    fiscal_year_start_month: int | None = None
 
 
 def _money(s: str) -> Money:

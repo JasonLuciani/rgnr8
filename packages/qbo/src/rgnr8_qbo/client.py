@@ -107,23 +107,24 @@ _MONTHS = ("january", "february", "march", "april", "may", "june", "july", "augu
            "september", "october", "november", "december")
 
 
-def fiscal_month(name: str) -> int:
-    """QuickBooks' FiscalYearStartMonth ("July") as a month number; January when
-    it is missing or not a month, which is what QuickBooks assumes too."""
+def fiscal_month(name: str) -> int | None:
+    """QuickBooks' FiscalYearStartMonth ("July") as a month number; None when it
+    is missing or not a month, so a caller never mistakes "QuickBooks didn't
+    say" for "January" and overwrites a month chosen some other way."""
     text = name.strip().lower()
     for i, month in enumerate(_MONTHS, start=1):
         if text and (text == month or (len(text) >= 3 and month.startswith(text))):
             return i
-    return 1
+    return None
 
 
 @dataclass(frozen=True, slots=True)
 class QboCompany:
     name: str
     country: str = ""
-    # The month the company's fiscal year starts (1 = January). QuickBooks
-    # names it ("July"); a company that never set one is on the calendar year.
-    fiscal_year_start_month: int = 1
+    # The month the company's fiscal year starts (1 = January), as QuickBooks
+    # names it ("July"); None when CompanyInfo doesn't say.
+    fiscal_year_start_month: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

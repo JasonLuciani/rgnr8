@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from .books_screens import _card, _esc, _minor, _num, _seq, money
+from .books_screens import _card, _esc, _minor, _num, _seq, account_options, money
 from .job_screens import _milli, _pct, _plain
 from .provenance_labels import Provenance
 from .provenance_labels import badge as prov_badge
@@ -58,6 +58,7 @@ def render_estimates(
     can_edit: bool,
     message: str = "",
     error: str = "",
+    id_codes: frozenset[str] = frozenset(),
 ) -> str:
     rows = [e for e in _seq(estimates.get("estimates")) if isinstance(e, Mapping)]
     head = ""
@@ -100,7 +101,7 @@ def render_estimates(
     out = head + prov_legend(_ESTIMATE_PROV) + _card(
         f"Estimates ({len(rows)})", body, actions=prov_badge(Provenance.FORECAST))
     if can_edit:
-        out += _builder(tenant, customers, cost_codes, accounts)
+        out += _builder(tenant, customers, cost_codes, accounts, id_codes)
     return out
 
 
@@ -116,6 +117,7 @@ def _builder(
     customers: Mapping[str, object],
     cost_codes: Mapping[str, object],
     accounts: Mapping[str, object],
+    id_codes: frozenset[str] = frozenset(),
 ) -> str:
     parties = [p for p in _seq(customers.get("parties")) if isinstance(p, Mapping)]
     customer_options = _options([(str(p.get("id")), str(p.get("name"))) for p in parties])
@@ -123,13 +125,7 @@ def _builder(
     code_options = _options(
         [("", "—")] + [(str(c.get("code")), f"{c.get('code')} — {c.get('name')}") for c in codes]
     )
-    revenue = [
-        a for a in _seq(accounts.get("accounts"))
-        if isinstance(a, Mapping) and str(a.get("type")) == "REVENUE"
-    ]
-    revenue_options = _options(
-        [(str(a.get("code")), f"{a.get('code')} — {a.get('name')}") for a in revenue]
-    )
+    revenue_options = account_options(accounts, id_codes, types=("REVENUE",))
 
     lines = ""
     for i in range(1, 6):

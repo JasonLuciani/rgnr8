@@ -114,6 +114,12 @@ def account_label(code: object, name: object,
 _TYPE_RANK = {"ASSET": 0, "LIABILITY": 1, "EQUITY": 2, "REVENUE": 3, "EXPENSE": 4}
 
 
+def _link_text(a: Mapping[str, object], id_codes: frozenset[str]) -> str:
+    """An account's link text: its name, or its label when it has none, so the
+    link never comes out empty and unclickable."""
+    return str(a.get("name") or "") or account_label(a.get("code"), a.get("name"), id_codes)
+
+
 def account_order(code: object, name: object, type_: object,
                   id_codes: frozenset[str] = frozenset()) -> tuple[object, ...]:
     """Sort key for accounts on screen. A fully numbered chart sorts by number,
@@ -128,18 +134,56 @@ def account_order(code: object, name: object, type_: object,
     return (rank, 0, code_order(code), "")
 
 
+def _listed(accounts: Mapping[str, object], id_codes: frozenset[str],
+            types: tuple[str, ...] = ()) -> list[Mapping[str, object]]:
+    return sorted((a for a in _seq(accounts.get("accounts")) if isinstance(a, Mapping)
+                   and (not types or str(a.get("type")) in types)),
+                  key=lambda a: account_order(a.get("code"), a.get("name"), a.get("type"),
+                                              id_codes))
+
+
 def account_options(accounts: Mapping[str, object],
-                    id_codes: frozenset[str] = frozenset()) -> str:
+                    id_codes: frozenset[str] = frozenset(), *, selected: str = "",
+                    types: tuple[str, ...] = ()) -> str:
     """<option>s for an account picker, in screen order, each labelled the way
-    `account_label` reads. The value is always the stored code."""
-    listed = sorted((a for a in _seq(accounts.get("accounts")) if isinstance(a, Mapping)),
-                    key=lambda a: account_order(a.get("code"), a.get("name"), a.get("type"),
-                                                id_codes))
+    `account_label` reads. The value is always the stored code. `types` keeps
+    only accounts of those types."""
     return "".join(
-        f'<option value="{_esc(a.get("code"))}">'
+        f'<option value="{_esc(a.get("code"))}"'
+        f'{" selected" if str(a.get("code")) == selected else ""}>'
         f'{_esc(account_label(a.get("code"), a.get("name"), id_codes))}</option>'
-        for a in listed
+        for a in _listed(accounts, id_codes, types)
     )
+
+
+_MONEY_SUBTYPES = ("BANK", "CASH")
+
+
+def account_select(
+    name: str, accounts: Mapping[str, object], id_codes: frozenset[str] = frozenset(), *,
+    fallback: str = "", types: tuple[str, ...] = (), blank: str = "",
+) -> str:
+    """An account field as a picker, for a form that used to take a typed code: a
+    company whose codes are QuickBooks ids has no code it could know to type.
+
+    `blank` is for a field the ledger treats as optional: a first, empty choice
+    with that label, selected. Otherwise the field has the account the ledger
+    would fall back to (`fallback`, e.g. "1000") selected when the chart has it,
+    else the first bank or cash account, so leaving it alone still means "the
+    bank". With no accounts to offer (the chart couldn't be read), it stays a
+    text box, as before."""
+    listed = _listed(accounts, id_codes, types)
+    if not listed:
+        hint = f' placeholder="{_esc(fallback)}"' if fallback else ""
+        return f'<input name="{_esc(name)}"{hint}>'
+    selected = ""
+    if not blank:
+        codes = [str(a.get("code")) for a in listed]
+        banks = [str(a.get("code")) for a in listed if str(a.get("subtype")) in _MONEY_SUBTYPES]
+        selected = fallback if fallback in codes else (banks[0] if banks else "")
+    first = f'<option value="" selected>{_esc(blank)}</option>' if blank else ""
+    return (f'<select name="{_esc(name)}">{first}'
+            f"{account_options(accounts, id_codes, selected=selected, types=types)}</select>")
 
 
 def render_chart_of_accounts(tenant: str, data: Mapping[str, object], *,
@@ -157,7 +201,7 @@ def render_chart_of_accounts(tenant: str, data: Mapping[str, object], *,
                   if numbers else "")
         rows.append(
             f'<tr>{number}'
-            f'<td><a href="/t/{_esc(tenant)}/books/accounts/{code}">{_esc(a.get("name"))}</a></td>'
+            f'<td><a href="/t/{_esc(tenant)}/books/accounts/{code}">{_esc(_link_text(a, id_codes))}</a></td>'
             f"<td>{_esc(a.get('type'))}</td>"
             f'<td class="muted">{_esc(sub)}</td></tr>'
         )
@@ -249,7 +293,7 @@ def render_accounts_by_type(
             number = (f'<td class="muted">{_esc(account_number(a.get("code"), id_codes))}</td>'
                       if numbers else "")
             body.append(
-                f'<tr><td><a href="/t/{_esc(tenant)}/books/accounts/{code}">{_esc(a.get("name"))}</a></td>'
+                f'<tr><td><a href="/t/{_esc(tenant)}/books/accounts/{code}">{_esc(_link_text(a, id_codes))}</a></td>'
                 f"{number}{_num(amount, ccy)}</tr>"
             )
         sections.append(
@@ -285,7 +329,7 @@ def render_trial_balance(tenant: str, tb: Mapping[str, object], *,
                   if numbers else "")
         rows.append(
             f"<tr>{number}"
-            f'<td><a href="/t/{_esc(tenant)}/books/accounts/{code}">{_esc(r.get("name"))}</a></td>'
+            f'<td><a href="/t/{_esc(tenant)}/books/accounts/{code}">{_esc(_link_text(r, id_codes))}</a></td>'
             f"{_num(r.get('debit_minor'), ccy)}{_num(r.get('credit_minor'), ccy)}</tr>"
         )
     empty = (

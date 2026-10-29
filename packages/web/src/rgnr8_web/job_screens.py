@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from .books_screens import _card, _esc, _minor, _num, _seq, money
+from .books_screens import _card, _esc, _minor, _num, _seq, account_options, money
 from .provenance_labels import Provenance
 from .provenance_labels import badge as prov_badge
 from .provenance_labels import legend as prov_legend
@@ -84,6 +84,7 @@ def render_jobs(
     can_edit: bool,
     message: str = "",
     error: str = "",
+    id_codes: frozenset[str] = frozenset(),
 ) -> str:
     """Every job on one line, and the form to start another."""
     rows = [j for j in _seq(jobs.get("jobs")) if isinstance(j, Mapping)]
@@ -124,7 +125,7 @@ def render_jobs(
     out = head + prov_legend(_JOBS_PROV) + _card(
         f"Jobs ({len(rows)})", body, actions=prov_badge(Provenance.POSTED))
     if can_edit:
-        out += _new_job_form(tenant, customers, accounts)
+        out += _new_job_form(tenant, customers, accounts, id_codes)
     return out
 
 
@@ -137,16 +138,11 @@ def _options(values: list[tuple[str, str]], selected: str = "") -> str:
 
 def _new_job_form(
     tenant: str, customers: Mapping[str, object], accounts: Mapping[str, object],
+    id_codes: frozenset[str] = frozenset(),
 ) -> str:
     parties = [p for p in _seq(customers.get("parties")) if isinstance(p, Mapping)]
     customer_options = _options([(str(p.get("id")), str(p.get("name"))) for p in parties])
-    revenue = [
-        a for a in _seq(accounts.get("accounts"))
-        if isinstance(a, Mapping) and str(a.get("type")) == "REVENUE"
-    ]
-    revenue_options = _options(
-        [(str(a.get("code")), f"{a.get('code')} — {a.get('name')}") for a in revenue]
-    )
+    revenue_options = account_options(accounts, id_codes, types=("REVENUE",))
     method_options = _options(
         [(k, v) for k, v in _METHOD_LABEL.items()], "TIME_AND_MATERIALS"
     )

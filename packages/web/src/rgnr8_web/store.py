@@ -17,6 +17,7 @@ Postgres-backed implementation of the same three methods.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -109,6 +110,20 @@ class TenantStore(Protocol):
     def save(self, tenant_id: str, state: TenantState) -> None:
         """Durably persist the tenant's state."""
         ...
+
+
+def update_state(
+    store: TenantStore, tenant_id: str, change: Callable[[TenantState], None],
+) -> TenantState:
+    """Load the tenant's state as stored now, apply `change`, save it, and return
+    it. Every writer goes through here. Each worker holds a copy of the state
+    loaded when it started; saving that copy would write over whatever the other
+    worker saved since (a Refresh's account numbering, say, erased by a decision
+    recorded on the other worker)."""
+    state = store.load(tenant_id)
+    change(state)
+    store.save(tenant_id, state)
+    return state
 
 
 class InMemoryTenantStore:

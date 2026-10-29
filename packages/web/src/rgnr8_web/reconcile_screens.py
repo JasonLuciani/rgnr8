@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from .books_screens import _card, _esc, _minor, account_number, account_order, money
+from .books_screens import _card, _esc, _minor, account_label, account_number, account_order, money
 
 
 def _banner(kind: str, text: str) -> str:
@@ -207,6 +207,7 @@ def render_reconcile(
     can_post: bool,
     message: str = "",
     error: str = "",
+    id_codes: frozenset[str] = frozenset(),
 ) -> str:
     """The reconciliation worksheet for one account."""
     code = str(view.get("account_code", ""))
@@ -284,11 +285,12 @@ def render_reconcile(
     if error:
         head += _banner("warn", error)
 
-    title = f"Reconcile {code} — {_esc(view.get('account_name'))}"
+    # Plain text: the card escapes its title.
+    title = f"Reconcile {account_label(code, view.get('account_name'), id_codes)}"
     back = f'<a class="btn-link" href="/t/{_esc(tenant)}/books/reconcile">Other accounts</a>'
     return (
         head
-        + _card(f"{title} · as of {_esc(date)}", tally + finish, back)
+        + _card(f"{title} · as of {date}", tally + finish, back)
         + _statement_form(tenant, code, date, balance_minor)
         + (_import_form(tenant, code, date, balance_minor) if can_post else "")
         + _card("Transactions", table)
