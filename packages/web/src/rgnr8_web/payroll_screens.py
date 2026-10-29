@@ -20,7 +20,6 @@ from collections.abc import Mapping
 
 from .books_screens import _card, _esc, _minor, _num, _seq, money
 from .provenance_labels import Provenance
-from .provenance_labels import badge as prov_badge
 from .provenance_labels import legend as prov_legend
 
 # A posted payroll run is a POSTED ledger fact; once its period is published it is
@@ -118,8 +117,11 @@ def render_payroll_home(
         else "No outstanding payroll liabilities.",
     )
 
-    out = head + prov_legend(_PAYROLL_PROV) + _card(
-        "Payroll runs", table, actions=prov_badge(Provenance.POSTED))
+    # Posted only when every run listed is in the books (a voided run was posted
+    # and reversed). A draft is figures typed in, so a list with one says nothing.
+    statuses = {str(r.get("status")) for r in _seq(runs.get("runs")) if isinstance(r, Mapping)}
+    level = Provenance.POSTED if statuses and statuses <= {"POSTED", "VOID"} else None
+    out = head + prov_legend(_PAYROLL_PROV) + _card("Payroll runs", table, provenance=level)
     if owed > 0 and can_post:
         out += _render_remit_form(tenant, liabilities)
     if can_post:
@@ -142,6 +144,8 @@ def _render_remit_form(tenant: str, liabilities: Mapping[str, object]) -> str:
         '<p class="note">This clears the liability and moves the cash. Paying more '
         "than you owe is refused — that's a typo, not a payment.</p>"
         '<button class="btn" type="submit">Record the deposit</button></form>',
+        # What is owed is the posted liability balance.
+        provenance=Provenance.POSTED,
     )
 
 
@@ -252,8 +256,12 @@ def render_payroll_run(
         if run.get("entry_id") else ""
     )
     back = f'<a class="btn-link" href="/t/{_esc(tenant)}/payroll">Back to payroll</a>'
-    title = f"{_esc(run.get('id'))} — {_esc(run.get('date'))} · {_STATUS.get(str(run.get('status')), (str(run.get('status')), ''))[0]}"
-    return _card(title, table + explain + entry, back)
+    title = f"{run.get('id')} — {run.get('date')} · {_STATUS.get(str(run.get('status')), (str(run.get('status')), ''))[0]}"
+    # A draft run is figures typed in, not yet in the books: only a posted run
+    # can say it was posted.
+    posted = str(run.get("status")) == "POSTED"
+    return _card(title, table + explain + entry, back,
+                 provenance=Provenance.POSTED if posted else None)
 
 
 def render_payroll_unavailable(detail: str = "") -> str:

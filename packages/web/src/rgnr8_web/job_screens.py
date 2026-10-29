@@ -21,14 +21,16 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from .books_screens import _card, _esc, _minor, _num, _seq, account_options, money
-from .provenance_labels import Provenance
-from .provenance_labels import badge as prov_badge
+from .provenance_labels import Provenance, most_cautious
 from .provenance_labels import legend as prov_legend
 
 # Job cost and billed-to-date tie to the general ledger — POSTED, RECONCILED once
 # matched to the bank. (The contract value is the agreed contract, shown for
 # context, not a book figure.)
 _JOBS_PROV = (Provenance.POSTED, Provenance.RECONCILED)
+# A card that sets the plan (bid, estimate) beside the books is only as firm as
+# the plan.
+_PLAN_AND_BOOKS = most_cautious((Provenance.FORECAST, Provenance.POSTED))
 
 
 def _banner(kind: str, text: str) -> str:
@@ -123,7 +125,7 @@ def render_jobs(
         )
 
     out = head + prov_legend(_JOBS_PROV) + _card(
-        f"Jobs ({len(rows)})", body, actions=prov_badge(Provenance.POSTED))
+        f"Jobs ({len(rows)})", body, provenance=Provenance.POSTED)
     if can_edit:
         out += _new_job_form(tenant, customers, accounts, id_codes)
     return out
@@ -261,7 +263,9 @@ def _headline(
         f'<a class="btn ghost" href="/t/{_esc(tenant)}/sales-orders">Orders</a> '
         f'<a class="btn ghost" href="/t/{_esc(tenant)}/purchase-orders">Purchasing</a>'
     )
-    return _card(f"{job.get('name')}", body, actions)
+    # Contract and cost are in the books; percent complete and the WIP note
+    # rest on the estimate, so the card is labelled by its weakest figure.
+    return _card(f"{job.get('name')}", body, actions, provenance=_PLAN_AND_BOOKS)
 
 
 def _cost_card(cost: Mapping[str, object]) -> str:
@@ -314,7 +318,7 @@ def _cost_card(cost: Mapping[str, object]) -> str:
         "<th class='num'>Spent</th></tr></thead>"
         f"<tbody>{cells}</tbody></table>{extra}"
     )
-    return _card("Budget vs actual", body)
+    return _card("Budget vs actual", body, provenance=_PLAN_AND_BOOKS)
 
 
 def _work_order_card(
@@ -355,6 +359,8 @@ def _work_order_card(
         f'<a class="btn ghost" href="/t/{_esc(tenant)}/work-orders?job_id='
         f'{_esc(work_orders.get("job_id"))}">Open work orders</a>' if can_edit else ""
     )
+    # Scheduled and draft orders sit beside booked ones, and "unbilled" is a
+    # promise to invoice: no one rung fits the rows, so no label.
     return _card("Work orders", body, actions)
 
 
@@ -435,7 +441,9 @@ def _billing_card(
 
     if can_edit:
         body += _billing_actions(tenant, job, billing)
-    return _card("Billing", body)
+    # The contract's plan (schedule of values, what is left, milestones not yet
+    # billed) sits beside what was invoiced: only as firm as the plan.
+    return _card("Billing", body, provenance=_PLAN_AND_BOOKS)
 
 
 def _billing_actions(

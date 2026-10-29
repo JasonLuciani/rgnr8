@@ -12,6 +12,7 @@ from collections.abc import Mapping
 
 from .books_screens import _card, _esc, _minor, _num, _seq, account_select, money
 from .job_screens import _milli
+from .provenance_labels import Provenance
 
 
 def _banner(kind: str, text: str) -> str:
@@ -69,7 +70,7 @@ def render_inventory(
             "to the inventory account without going through an item — worth finding before "
             "it becomes a habit.",
         )
-    out = head + _card("What stock is worth", tie_out)
+    out = head + _card("What stock is worth", tie_out, provenance=Provenance.POSTED)
 
     if items:
         cells = ""
@@ -91,7 +92,7 @@ def render_inventory(
             '<p class="muted">Cost is a moving weighted average, worked out from the totals '
             "rather than accumulated, so a year of deliveries cannot compound a rounding "
             "error.</p>"
-        ))
+        ), provenance=Provenance.POSTED)
     else:
         out += _card("Items", (
             '<p class="muted">No stock items. Track something here when you buy it before '

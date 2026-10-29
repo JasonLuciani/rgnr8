@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from .books_screens import _banner, _card, _esc, _num, _seq
+from .provenance_labels import Provenance, most_cautious
 
 
 def _tie_out(rows: Sequence[Mapping[str, object]]) -> str:
@@ -98,7 +99,9 @@ def render_cutover(
         + '<p class="muted">They are recorded, not posted: their amounts are already in A/R and A/P.</p>'
         + f'<p class="muted small">Report fingerprint <code>{_esc(plan.get("report_hash"))}</code></p>'
     )
-    out += _card("Cutover report", report)
+    # Ties the books to QuickBooks' copy, so it is only as firm as the copy.
+    out += _card("Cutover report", report,
+                 provenance=most_cautious((Provenance.IMPORTED, Provenance.POSTED)))
     if blockers:
         return out
     accept = ('<label class="rg-check"><input type="checkbox" name="accept_differences" required>'

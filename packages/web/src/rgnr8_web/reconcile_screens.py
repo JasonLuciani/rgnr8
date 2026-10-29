@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from .books_screens import _card, _esc, _minor, account_label, account_number, account_order, money
+from .provenance_labels import Provenance
 
 
 def _banner(kind: str, text: str) -> str:
@@ -178,6 +179,7 @@ def render_import_result(
             + '<p class="note">These are transactions the business doesn\'t know '
             "happened. Usually a missed receipt or a subscription nobody recorded — "
             "occasionally something worse. Add them to your books, then import again.</p>",
+            provenance=Provenance.IMPORTED,
         )
     if outstanding:
         blocks += _card(
@@ -188,6 +190,7 @@ def render_import_result(
             + '<p class="note">Normally outstanding cheques and deposits in transit, '
             "which is fine and expected. Worth a look if something here is old, or "
             "if you see the same amount twice.</p>",
+            provenance=Provenance.POSTED,
         )
 
     view = result.get("view")
@@ -290,8 +293,11 @@ def render_reconcile(
     back = f'<a class="btn-link" href="/t/{_esc(tenant)}/books/reconcile">Other accounts</a>'
     return (
         head
+        # The statement balance is typed in by the owner from the bank's
+        # statement: not imported, not posted, on no rung of the ladder. So the
+        # worksheet that sets it against the books carries no label.
         + _card(f"{title} · as of {date}", tally + finish, back)
         + _statement_form(tenant, code, date, balance_minor)
         + (_import_form(tenant, code, date, balance_minor) if can_post else "")
-        + _card("Transactions", table)
+        + _card("Transactions", table, provenance=Provenance.POSTED)
     )

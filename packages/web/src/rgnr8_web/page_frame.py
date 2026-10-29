@@ -25,6 +25,9 @@ import re
 from dataclasses import dataclass
 from html import escape, unescape
 
+from .provenance_labels import Provenance
+from .provenance_labels import legend as prov_legend
+
 
 @dataclass(frozen=True, slots=True)
 class Tab:
@@ -108,6 +111,7 @@ def tabs_html(tenant: str, tabs: tuple[Tab, ...], current: int, label: str) -> s
 
 _BANNER = re.compile(r'<div class=["]banner\b')
 _LEGEND = re.compile(r'<details class=["]rg-prov-legend["]')
+_BADGE = re.compile(r'class=["]rg-prov rg-prov-(%s)["]' % "|".join(p.value for p in Provenance))
 
 
 def frame(body: str, *, title: str, tenant: str, section: str, here: str) -> str:
@@ -163,6 +167,12 @@ def frame(body: str, *, title: str, tenant: str, section: str, here: str) -> str
         if g.start() < head_at:
             head_at -= len(legend)
         legends.append(legend)
+    # Every label on the page is explained at its foot, whether or not the
+    # screen remembered to draw a legend: the legend the screen asked for, plus
+    # any level a card uses that it left out.
+    used = {Provenance(v) for v in _BADGE.findall("".join(legends[:1]) + body)}
+    if used:
+        legends = [prov_legend(tuple(used))]
 
     tabs = TABS.get(section, ())
     current = _current_tab(tabs, here) if tabs else -1

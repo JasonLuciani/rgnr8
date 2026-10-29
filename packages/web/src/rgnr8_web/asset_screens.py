@@ -11,7 +11,6 @@ from collections.abc import Mapping
 
 from .books_screens import _banner, _card, _esc, _seq, account_select, money
 from .provenance_labels import Provenance
-from .provenance_labels import badge as prov_badge
 from .provenance_labels import legend as prov_legend
 
 # Asset cost, accumulated depreciation and net book value are POSTED ledger
@@ -95,7 +94,7 @@ def render_assets(
     )
 
     sections = [_banners(done, error), prov_legend(_ASSET_PROV),
-                _card("Fixed asset register", tiles + table, actions=prov_badge(Provenance.POSTED))]
+                _card("Fixed asset register", tiles + table, provenance=Provenance.POSTED)]
     if can_write:
         sections.append(_card("Add an asset", _add_asset_form(tenant, accounts or {}, id_codes)))
     else:
@@ -192,8 +191,9 @@ def render_asset_detail(
     sections = [
         _banners(done, error),
         f'<p><a href="/t/{_esc(tenant)}/assets">← All assets</a></p>',
-        _card(_esc(asset.get("name")), summary),
-        _card("Depreciation schedule", schedule_tbl),
+        _card(str(asset.get("name")), summary, provenance=Provenance.POSTED),
+        # The schedule runs into periods not yet depreciated: a projection.
+        _card("Depreciation schedule", schedule_tbl, provenance=Provenance.FORECAST),
     ]
     if actions:
         sections.append(_card("Actions", actions))

@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from .books_screens import _card, _esc, _minor, _num, _seq, account_label, account_number
+from .provenance_labels import Provenance, most_cautious
 
 
 def _banner(kind: str, text: str) -> str:
@@ -55,7 +56,8 @@ def render_general_ledger(
             + _num(a.get("total_debit_minor")) + _num(a.get("total_credit_minor"))
             + _num(a.get("closing_minor")) + "</tr></tbody></table></div>"
         )
-        blocks.append(_card(account_label(a.get("code"), a.get("name"), id_codes), table))
+        blocks.append(_card(account_label(a.get("code"), a.get("name"), id_codes), table,
+                            provenance=Provenance.POSTED))
 
     if not blocks:
         blocks.append(_card(
@@ -165,8 +167,10 @@ def render_budget(
             + ", ".join(str(u) for u in unknown),
         )
 
+    # The budget is the owner's plan; only the actuals are posted.
     out = head + _period_form(tenant, period) + _card(
-        f"Budget vs Actual — {_esc(period)}", table
+        f"Budget vs Actual — {period}", table,
+        provenance=most_cautious((Provenance.FORECAST, Provenance.POSTED)),
     )
     if can_post:
         out += _budget_form(tenant, period, accounts, data, id_codes)
@@ -218,7 +222,7 @@ def _budget_form(
         f'<div class="grid3">{"".join(rows[i:i + 3])}</div>' for i in range(0, len(rows), 3)
     )
     return _card(
-        f"Set the budget for {_esc(period)}",
+        f"Set the budget for {period}",
         f'<form method="post" action="/t/{_esc(tenant)}/books/budget">'
         f'<input type="hidden" name="period" value="{_esc(period)}">'
         + grid

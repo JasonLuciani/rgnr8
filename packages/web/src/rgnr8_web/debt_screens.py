@@ -12,7 +12,6 @@ from collections.abc import Mapping
 
 from .books_screens import _banner, _card, _esc, _seq, account_select, money
 from .provenance_labels import Provenance
-from .provenance_labels import badge as prov_badge
 from .provenance_labels import legend as prov_legend
 
 # Loan balances post to the general ledger (POSTED) and reconcile against the
@@ -110,7 +109,7 @@ def render_debt(
     )
 
     sections = [_banners(done, error), prov_legend(_DEBT_PROV),
-                _card("What you owe", tiles + table, actions=prov_badge(Provenance.POSTED))]
+                _card("What you owe", tiles + table, provenance=Provenance.POSTED)]
 
     if can_write:
         sections.append(_card("Add a loan", _add_loan_form(tenant, accounts or {}, id_codes)))
@@ -244,9 +243,10 @@ def render_loan_detail(
     sections = [
         _banners(done, error),
         f'<p><a href="/t/{_esc(tenant)}/debt">← All debt</a></p>',
-        _card(_esc(loan.get("lender")), summary),
-        _card("Payoff planning", payoff_html + payoff_form),
-        _card("Amortization schedule", schedule_tbl),
-        _card("Payments", payments_tbl),
+        _card(str(loan.get("lender")), summary, provenance=Provenance.POSTED),
+        # Payoff and amortization look ahead; payments already made are posted.
+        _card("Payoff planning", payoff_html + payoff_form, provenance=Provenance.FORECAST),
+        _card("Amortization schedule", schedule_tbl, provenance=Provenance.FORECAST),
+        _card("Payments", payments_tbl, provenance=Provenance.POSTED),
     ]
     return "".join(sections)

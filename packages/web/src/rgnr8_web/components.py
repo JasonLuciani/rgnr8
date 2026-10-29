@@ -36,6 +36,7 @@ __all__ = [
     "Action",
     "TimelineEntry",
     "alloc_editor",
+    "card",
     "empty_row",
     "empty_state",
     "form_section",
@@ -117,7 +118,7 @@ def page_header(
 
 
 def metric(label: str, value: str, *, note: str = "", hero: bool = False,
-           tone: str = "", provenance: "Provenance | None" = None) -> str:
+           tone: str = "") -> str:
     """One figure with its name.
 
     `hero` is the single number a screen is about — cash today — and there
@@ -125,22 +126,47 @@ def metric(label: str, value: str, *, note: str = "", hero: bool = False,
     *value* only: a negative trough has to look different from a healthy one,
     which was a named finding (P1-9), but the label around it must not shout.
 
-    `provenance` puts the trust label on the figure rather than in a banner
-    somewhere above it, and that distinction is the point: the number is what
-    gets screenshotted, pasted into a board pack and read down the phone, while
-    the banner stays behind on the page. It takes the enum rather than rendered
-    markup, so every value this function emits is still escaped here.
+    An empty `label` draws the figure alone, for a card whose title already
+    names it. There is no provenance label here on purpose: the trust label
+    marks the whole card, in its header (see `card`), never one figure inside
+    it, so two figures in one card can't wear two different stories.
     """
     cls = "metric hero" if hero else "metric"
     vcls = f' class="v {escape(tone)}"' if tone else ' class="v"'
     tail = f'<div class="note">{escape(note)}</div>' if note else ""
-    tag = f" {prov_badge(provenance)}" if provenance is not None else ""
+    name = f'<div class="k">{escape(label)}</div>' if label else ""
     return (
-        f'<div class="{cls}">'
-        f'<div class="k">{escape(label)}{tag}</div>'
+        f'<div class="{cls}">{name}'
         f"<div{vcls}>{escape(value)}</div>"
         f"{tail}</div>"
     )
+
+
+# --- card -------------------------------------------------------------------
+
+
+def card(title: str, body: str, *, actions: str = "",
+         provenance: "Provenance | None" = None) -> str:
+    """A titled panel, laid out the same way everywhere.
+
+        [title]                         [provenance]
+        ...the card's content...
+        [actions]
+
+    The header carries only the title and, where the card shows figures, the
+    one provenance label that covers all of them. The card's actions come
+    last, bottom-left, after what they act on: some cards had them in the
+    header, top-right, and others at the foot, so the button for the same kind
+    of job sat in a different corner from one screen to the next.
+
+    `body` and `actions` are markup the caller built (and escaped); `title` is
+    escaped here.
+    """
+    badge = prov_badge(provenance) if provenance is not None else ""
+    name = f"<h2>{escape(title)}</h2>" if title else ""
+    head = f'<div class="card-head">{name}{badge}</div>' if title or badge else ""
+    acts = f'<div class="card-acts">{actions}</div>' if actions.strip() else ""
+    return f'<section class="card">{head}{body}{acts}</section>'
 
 
 # --- status chip ------------------------------------------------------------

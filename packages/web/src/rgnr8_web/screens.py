@@ -25,13 +25,13 @@ from rgnr8_ar.aging import BUCKET_ORDER, AgingBucket
 from rgnr8_briefing import Question, answer, build_briefing
 from rgnr8_briefing.answer import SUGGESTED
 from rgnr8_briefing.today import _cash_chart, _chart_points  # shared 13-week chart
-from rgnr8_forecast import ForecastResult, Money, Projection
+from rgnr8_forecast import Direction, ForecastResult, Projection
 from rgnr8_forecast.brand import format_money as _money  # the one shared money formatter
 from rgnr8_reports import ReportSpec
 
 from .attention import Item as AttentionItem
 from .cost_baseline import CostBaseline
-from .components import Action, empty_state, metric, page_header, queue, status_chip
+from .components import Action, card, empty_state, metric, page_header, queue, status_chip
 from .provenance_labels import Provenance
 
 _STATUS = {
@@ -41,13 +41,6 @@ _STATUS = {
 }
 # Distinct glyph per state so status never rides on color alone.
 _STATUS_GLYPH = {"STABLE": "✓", "WATCH": "◆", "AT_RISK": "▲"}
-
-
-def _kpi_value(m: Money) -> str:
-    """A KPI money value, colored with the risk token when it's negative (a
-    floor breach / no cushion) so the alarming numbers actually stand out."""
-    v = escape(_money(m))
-    return f'<span class="neg">{v}</span>' if m.minor_units < 0 else v
 
 
 def _status_pill(status: str) -> str:
@@ -111,24 +104,45 @@ def render_attention_queue(items: "Sequence[AttentionItem]") -> str:
     ]
     lead = items[0]
     tone = {"trust": "watch", "money": "risk", "work": "neutral"}.get(lead.kind, "neutral")
+    # The count sits in the card's header beside the title; it is a status,
+    # not an action (each item carries its own).
     return (
-        '<div class="card"><div class="page-head"><div class="t">'
-        f"<h2>What needs you</h2></div>"
-        f'<div class="acts">{status_chip(tone, label=f"{len(items)} open")}</div></div>'
+        '<div class="card"><div class="card-head"><h2>What needs you</h2>'
+        f'{status_chip(tone, label=f"{len(items)} open")}</div>'
         + queue(rows)
         + "</div>"
     )
 
 
-def _chart_summary(p: "Projection") -> str:
-    """The 13-week chart in one sentence, for anyone who can't see the chart
-    (and anyone who'd rather read than read a chart)."""
+def _chart_summary(p: "Projection", *, has_costs: bool = True) -> str:
+    """The 13-week outlook in words: where cash goes, and what that means
+    against the floor. It is the verdict at the top of the 13-week card and
+    the chart's text description at once, so the low point is said once, here,
+    rather than again in a headline and a line of facts."""
     low = p.trough
+    floor = _money(p.effective_floor)
+    if not has_costs and not p.breach.breached:
+        # "Stays above your floor" is true of an outlook in which nothing is
+        # spent, and says nothing about the business.
+        # The trajectory stays in: this sentence is also what a screen reader
+        # hears in place of the chart.
+        return (f"Cash starts at {_money(p.opening_available)} today, reaches its lowest point "
+                f"of {_money(low.balance)} on {low.on_date:%b} {low.on_date.day}, and ends the "
+                f"13 weeks at {_money(p.ending_balance)}. No costs are in the outlook yet, "
+                "though, so it can't say how long your cash really lasts.")
     line = (f"Cash starts at {_money(p.opening_available)} today, reaches its lowest point of "
             f"{_money(low.balance)} on {low.on_date:%b} {low.on_date.day}, and ends the 13 weeks "
             f"at {_money(p.ending_balance)}.")
-    if p.breach.breached:
-        line += f" That low point is below your {_money(p.effective_floor)} minimum-cash floor."
+    first = p.breach.first_date
+    if p.breach.breached and first is not None:
+        line += (f" It first falls below your {floor} floor in week {p.breach.weeks_until} "
+                 f"(around {first:%b} {first.day}), short by up to "
+                 f"{_money(p.breach.worst_shortfall)}.")
+    elif p.breach.breached:
+        line += f" That low point is below your {floor} minimum-cash floor."
+    else:
+        line += (f" It stays above your {floor} floor for all {len(p.weeks)} weeks, with "
+                 f"{_money(low.balance - p.effective_floor)} to spare at the low point.")
     return line
 
 
@@ -157,15 +171,8 @@ def render_cash_body(
         return _cash_empty_state(display_name, tenant)
     b = build_briefing(forecast)
     p = forecast.projection
-    # Floor, low point and cushion support the hero rather than compete with it:
-    # one quiet line under it, not three tiles as loud as the cash figure. A
-    # cushion below zero is the one part that should still stand out.
-    cushion = p.trough.balance - p.effective_floor
-    facts = (f'<p class="muted cash-facts">Minimum-cash floor {escape(_money(p.effective_floor))}'
-             f" · Projected low point {escape(_money(p.trough.balance))}"
-             f" on {p.trough.on_date:%b} {p.trough.on_date.day}"
-             f" · Cushion at low point {_kpi_value(cushion)}</p>")
-    summary = _chart_summary(p)
+    has_costs = any(f.direction is Direction.OUTFLOW for f in forecast.flows)
+    summary = _chart_summary(p, has_costs=has_costs)
     drivers = ""
     if b.drivers:
         top = b.drivers[0].amount.minor_units or 1
@@ -175,7 +182,16 @@ def render_cash_body(
                         f'<span class="num">{escape(_money(d.amount))}</span></div>'
                         f'<div class="track"><div class="fill" style="width:{pct}%"></div></div>'
                         f'<div class="s">{d.share_bps/100:.0f}% of outflows</div></div>')
-        drivers = f'<h2>What\'s using your cash</h2><div class="card">{drivers}</div>'
+    # The trust label marks a whole card, in its header, never one figure, and
+    # a card can only wear one. "Cash today" holds the one figure that can come
+    # straight from the books, and nothing else. Everything that looks ahead
+    # (the status, the floor, the low point) is the 13-week card's, directly
+    # under it, labelled a forecast whenever there are books to tell the two
+    # apart. With no books wired every figure is a forecast and a label would
+    # say nothing.
+    projected = Provenance.FORECAST if cash_provenance is not None else None
+    if drivers:
+        drivers = card("What's using your cash", drivers, provenance=projected)
     # The old standalone "Do this — …" banner is gone: with a queue on the page
     # it was a second, competing instruction, and the two could disagree. The
     # briefing's primary action is now folded into the queue by
@@ -187,18 +203,21 @@ def render_cash_body(
                   f'border-color:var(--rg-line)"><strong>Do this — </strong>{escape(b.primary_action)}</div>')
     needs = "" if attention is None else render_attention_queue(attention)
     _ = _chart_points  # (chart script omitted in-shell; SVG is static here)
+    hero = card("Cash today", metric("", _money(p.opening_available), hero=True),
+                provenance=cash_provenance)
+    # The verdict leads the 13-week card: the status, then the one sentence
+    # that says where cash goes and what that means against the floor.
+    chart = card("Next 13 weeks — projected cash", (
+        f'<div class="cash-verdict">{status_chip(b.status.value)}'
+        f'<p class="chart-summary" id="cash-chart-summary">{escape(summary)}</p></div>'
+        f"{action}"
+        f'<div role="img" aria-describedby="cash-chart-summary">{_cash_chart(forecast)}</div>'),
+        provenance=projected)
     return f"""{page_header("Cash outlook",
         sub=f"{display_name} · as of {p.as_of.isoformat()} · {b.period_label}")}
-    <div class="card"><div class="cash-hero">
-      <div>{metric("Cash today", _money(p.opening_available), hero=True,
-                    provenance=cash_provenance)}</div>
-      <div class="cash-state">{status_chip(b.status.value)}
-        <div class="line">{escape(b.headline)}</div></div>
-    </div>{facts}{action}</div>
+    {hero}
+    {chart}
     {needs}
-    <h2>Next 13 weeks — projected cash</h2>
-    <div class="card"><p class="chart-summary" id="cash-chart-summary">{escape(summary)}</p>
-      <div role="img" aria-describedby="cash-chart-summary">{_cash_chart(forecast)}</div></div>
     {drivers}
     <p class="muted small" >Confidence {b.overall_confidence}/100 · every figure traces to the forecast</p>"""
 
@@ -384,9 +403,9 @@ def render_close_body(board: CloseBoard, tenant: str, *, can_manage: bool, can_p
       <span class="muted small" >{board.done}/{board.total}</span></div>
       <div class="bar" style="margin-top:6px"><span style="width:{pct}%"></span></div></div>
     <table><thead><tr><th>Task</th><th>Owner</th><th>Due</th><th>Status</th><th></th></tr></thead><tbody>{rows}</tbody></table>
-    <div class="card" style="margin-top:16px"><div class="row" style="justify-content:space-between">
-      <div><strong>Seal the period</strong><div class="muted small" >Publishing writes the immutable financial package.</div></div>
-      {seal}</div></div>
+    <div style="margin-top:16px">{card("Seal the period",
+        '<p class="muted small" style="margin:0">Publishing writes the immutable financial package.</p>',
+        actions=seal)}</div>
     {js}"""
 
 
@@ -538,7 +557,7 @@ def render_connect_page(
         )
         return f"""<h1>Connections</h1>
         <p class="sub">Keep RGNR8 in step with your QuickBooks Online company.</p>
-        <div class="card"><h2>QuickBooks Online</h2>{body}</div>"""
+        {card("QuickBooks Online", body)}"""
 
     is_connected = status == "connected"
     banner_cls, label = _QBO_STATUS_UI.get(status or "disconnected", ("", "Not connected"))
@@ -590,35 +609,36 @@ def render_connect_page(
     # meaningful once connected, and hidden once it has run.
     migrate_block = ""
     if is_connected and mirror_realm:
-        migrate_block = (
-            '<div class="card"><h2>This isn\'t the QuickBooks company your books came from</h2>'
+        migrate_block = card(
+            "This isn't the QuickBooks company your books came from",
             f'<div class="banner warn">Your books mirror QuickBooks company {escape(mirror_realm)}, '
             f'but you\'re connected to company {escape(realm_id or "")}.</div>'
             '<p class="muted">Refresh won\'t run while they differ, so another company\'s numbers '
             f'can never be written into these books. Reconnect company {escape(mirror_realm)} '
-            'to keep mirroring.</p></div>'
+            'to keep mirroring.</p>'
         )
     elif is_connected and not ledger_migrated:
-        migrate_block = (
-            '<div class="card"><h2>Bring your full ledger across</h2>'
+        migrate_block = card(
+            "Bring your full ledger across",
             '<p>A one-time step: bring your QuickBooks <strong>chart of accounts and balances</strong> '
             'into RGNR8, so the ledger, trial balance and financial statements match QuickBooks '
-            'to the cent. After that, Refresh keeps them in step.</p>'
-            f'<form method="post" action="{migrate_href}" style="margin-top:8px">'
-            '<button class="btn" type="submit">Bring over chart of accounts + balances</button></form></div>'
+            'to the cent. After that, Refresh keeps them in step.</p>',
+            actions=(f'<form method="post" action="{migrate_href}">'
+                     '<button class="btn" type="submit">Bring over chart of accounts + balances'
+                     "</button></form>"),
         )
     elif is_connected and ledger_migrated and not cut_over:
-        migrate_block = (
-            '<div class="card"><h2>Your books mirror QuickBooks</h2>'
+        migrate_block = card(
+            "Your books mirror QuickBooks",
             '<p class="muted">QuickBooks is still your book of record during the parallel run: '
             'enter invoices, bills and payments there, then use <strong>Refresh from QuickBooks</strong> '
-            'above. RGNR8 brings over the changes and checks every account matches to the cent.</p></div>'
+            'above. RGNR8 brings over the changes and checks every account matches to the cent.</p>'
         )
 
     # last-sync summary table
     sync_block = ""
     if last_sync is not None:
-        company = escape(last_sync.get("company", "")) or "your company"
+        company = last_sync.get("company", "") or "your company"
         rows = (
             ("Cash on hand", last_sync.get("cash", ""), last_sync.get("bank_accounts", "0") + " bank account(s)"),
             ("Open invoices (AR)", last_sync.get("ar_total", ""), last_sync.get("invoice_count", "0") + " invoice(s)"),
@@ -629,27 +649,25 @@ def render_connect_page(
             f'<td class="muted">{escape(b)}</td></tr>'
             for (label, a, b) in rows
         )
-        sync_block = (
-            f'<div class="card"><h2>Last refresh — {company}</h2>'
+        # QuickBooks' own figures, copied at the refresh: labelled as such once,
+        # on the card, like every other card that shows numbers.
+        sync_block = card(
+            f"Last refresh — {company}",
             '<table><thead><tr><th>What</th><th class="num">Amount</th><th>Detail</th></tr></thead>'
             f'<tbody>{body}</tbody></table>'
             '<p class="muted" style="font-size:12px;margin-top:10px">These figures now '
-            'drive your cash outlook, briefing, and reports.</p></div>'
+            'drive your cash outlook, briefing, and reports.</p>',
+            provenance=Provenance.IMPORTED,
         )
 
     return f"""<h1>Connections</h1>
     <p class="sub">Keep RGNR8 in step with your QuickBooks Online company.</p>
     {sync_note}
     {migrate_note}
-    <div class="card">
-      <h2>QuickBooks Online</h2>
-      {banner}
-      {realm_line}
-      <p>RGNR8 reads your QuickBooks company to keep the ledger, cash outlook, and
-      reports current. You'll be sent to Intuit to authorize access; we never see
-      your QuickBooks password.</p>
-      <div style="margin-top:12px">{action}</div>
-    </div>
+    {card("QuickBooks Online", banner + realm_line
+          + "<p>RGNR8 reads your QuickBooks company to keep the ledger, cash outlook, and "
+            "reports current. You'll be sent to Intuit to authorize access; we never see "
+            "your QuickBooks password.</p>", actions=action)}
     {migrate_block}
     {sync_block}"""
 
@@ -850,33 +868,33 @@ def render_costs_page(
         '<p class="muted small">This average includes everything QuickBooks booked as an '
         "expense, payroll too. You have payroll in the outlook separately, so it may be "
         "counted twice; check the Wages lines above.</p>" if has_payroll else "")
+    # Both cards show QuickBooks' figures, so each carries the one "Imported"
+    # label in its header; the button that acts on it comes last.
     if saved is not None:
-        body = (
-            '<div class="card">'
-            + metric("In your outlook", f"{_money(saved.monthly)} a month",
-                     note=f"Average spending {saved.period_label}, from QuickBooks",
-                     provenance=Provenance.IMPORTED)
-            + breakdown(saved) + payroll_note
-            + f'<form method="post" action="/t/{t}/costs" style="margin-top:12px">'
-            '<input type="hidden" name="action" value="remove">'
-            '<button class="btn ghost" type="submit">Take it out of the outlook</button></form>'
-            "</div>")
+        body = card("In your outlook", (
+            metric("", f"{_money(saved.monthly)} a month",
+                   note=f"Average spending {saved.period_label}, from QuickBooks")
+            + breakdown(saved) + payroll_note),
+            actions=(f'<form method="post" action="/t/{t}/costs">'
+                     '<input type="hidden" name="action" value="remove">'
+                     '<button class="btn ghost" type="submit">Take it out of the outlook</button>'
+                     "</form>"),
+            provenance=Provenance.IMPORTED)
     elif proposed is not None:
-        body = (
-            '<div class="card">'
-            + metric("Average spending", f"{_money(proposed.monthly)} a month",
-                     note=f"{proposed.period_label}, from your QuickBooks Profit and Loss",
-                     provenance=Provenance.IMPORTED)
+        body = card("Average spending", (
+            metric("", f"{_money(proposed.monthly)} a month",
+                   note=f"{proposed.period_label}, from your QuickBooks Profit and Loss")
             + breakdown(proposed) + payroll_note
             + ('<p class="muted small">Your outlook has no costs in it, so it can\'t say how '
                "long your cash lasts. Adding this average gives it something real to work from; "
                "it is an average of what you spent, not a promise.</p>" if not has_costs else
                '<p class="muted small">Your outlook already has some costs in it. Add this '
-               "only if they are incomplete, and check it doesn't count any of them twice.</p>")
-            + f'<form method="post" action="/t/{t}/costs" style="margin-top:12px">'
-            '<input type="hidden" name="action" value="add">'
-            f'<button class="btn" type="submit">Add {escape(_money(proposed.monthly))} a month '
-            "to my outlook</button></form></div>")
+               "only if they are incomplete, and check it doesn't count any of them twice.</p>")),
+            actions=(f'<form method="post" action="/t/{t}/costs">'
+                     '<input type="hidden" name="action" value="add">'
+                     f'<button class="btn" type="submit">Add {escape(_money(proposed.monthly))} '
+                     "a month to my outlook</button></form>"),
+            provenance=Provenance.IMPORTED)
     else:
         body = ('<div class="card">' + empty_state(
             "No spending to average yet",

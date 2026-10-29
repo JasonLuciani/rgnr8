@@ -68,6 +68,8 @@ def render_work_orders(
         "the hours booked to it cost the job and bill the customer without being typed "
         "twice.</p>"
     )
+    # Work orders are a schedule, not ledger entries: drafts and scheduled days
+    # sit beside booked time, so neither list claims a provenance rung.
     out = head + _card(f"To do ({len(open_rows)})", body)
     if done_rows:
         out += _card(f"Done ({len(done_rows)})", _table(tenant, done_rows))

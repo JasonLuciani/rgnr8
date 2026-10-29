@@ -106,7 +106,7 @@ def render_attachments(
 
     label = _SUBJECT_LABEL.get(kind, kind)
     back = _back_link(tenant, kind, subject_id)
-    out = head + _card(f"Attached to {label} {_esc(subject_id)}", table, back)
+    out = head + _card(f"Attached to {label} {subject_id}", table, back)
     if can_post:
         out += _card(
             "Attach a receipt",

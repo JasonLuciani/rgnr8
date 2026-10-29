@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from .books_screens import _card, _esc, _num, _seq, money
+from .provenance_labels import Provenance
 
 
 def _mask_tin(tax_id: str) -> str:
@@ -63,8 +64,9 @@ def render_ten99(
         head += _banner("good", f"{len(rows)} form(s) to file for {year}, all with a tax id.")
 
     out = head + _card(
-        f"1099-NEC — {_esc(year)}",
+        f"1099-NEC — {year}",
         _reportable_table(rows, data) + _period_form(tenant, year),
+        provenance=Provenance.POSTED,
     )
     if below:
         out += _below_card(below)
@@ -130,6 +132,7 @@ def _below_card(below: list[Mapping[str, object]]) -> str:
         + '<p class="note">No form is due for these yet. They are here because one '
         "more invoice moves them into the list above — which is the moment to ask "
         "for a W-9, not the following January.</p>",
+        provenance=Provenance.POSTED,
     )
 
 
@@ -151,6 +154,7 @@ def _missing_card(missing: list[Mapping[str, object]]) -> str:
         "counted above</strong>. They probably should be. Enter them as bills "
         "against that vendor and they will be. This is a prompt rather than a "
         "number because guessing produces a total you cannot defend.</p>",
+        # A prompt to act, not a figure to rely on, so it carries no label.
     )
 
 

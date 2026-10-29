@@ -15,7 +15,7 @@ from test_books import DEFAULT_ROUTES, FakeTransport, _inputs
 from rgnr8_forecast import ForecastConfig, Money
 from rgnr8_web import LedgerClient, Request, WebApp
 from rgnr8_web.modules import OPTIONAL_MODULES
-from rgnr8_web.shell import _SHELL_CSS
+from rgnr8_web.shell import _MENU_MEDIA, _SHELL_CSS, MENU_BREAKPOINT_PX
 from rgnr8_web.store import InMemoryTenantStore
 
 OWNER = {"authorization": "Bearer tok"}
@@ -78,4 +78,40 @@ def test_the_phone_menu_opens_onto_the_nav() -> None:
     body = _app().handle(Request("GET", "/t/acme/team", OWNER, "")).body
     # Open without script (every link reachable); closed by script on a phone.
     assert '<details class="rg-navwrap" open>' in body
-    assert "matchMedia('(max-width:860px)')" in body and "removeAttribute('open')" in body
+    assert f"matchMedia('{_MENU_MEDIA}')" in body and "removeAttribute('open')" in body
+
+
+def test_the_sidebar_becomes_the_menu_below_1024px_everywhere_at_once() -> None:
+    # It folded only below 860px, which left a tablet (or a narrow laptop
+    # window) with a 200px sidebar squeezing the page. The stylesheet's two
+    # rules and the script that closes the menu on load use one width, so a
+    # window can't be a phone to the CSS and a desktop to the script.
+    assert MENU_BREAKPOINT_PX == 1024
+    assert _MENU_MEDIA == "(max-width:1023.98px)"
+    css = re.sub(r"\s+", "", _SHELL_CSS)
+    # The menu layout, and the 44px targets that go with it.
+    assert f"@media{_MENU_MEDIA}{{.rg-layout{{display:block}}" in css
+    assert f"@media{_MENU_MEDIA},(pointer:coarse){{.rg-nav" in css
+    body = _app().handle(Request("GET", "/t/acme/team", OWNER, "")).body
+    assert f"matchMedia('{_MENU_MEDIA}')" in body
+    # 860px survives only as where the business name leaves the top bar.
+    assert re.findall(r"@media[^{]*860px[^{]*\{([^{]*)\{", css) == [".rg-biz"]
+    assert "matchMedia('(max-width:860px)')" not in body
+    # Between 860 and 1024px the menu folds but the business name stays.
+    menu_rule = css[css.index(f"@media{_MENU_MEDIA}{{.rg-layout"):]
+    assert ".rg-biz" not in menu_rule[:menu_rule.index("}}")]
+    # A phone still never scrolls sideways: wide tables scroll inside themselves.
+    assert ".shell table{display:block;max-width:100%;overflow-x:auto}" in _SHELL_CSS
+
+
+def test_the_menu_follows_the_window_across_the_breakpoint() -> None:
+    # Closed on load at 960px, the menu stayed closed after maximising, with
+    # its summary hidden above the breakpoint, so the nav vanished until a
+    # reload. The script now listens for the width changing, both ways.
+    body = _app().handle(Request("GET", "/t/acme/team", OWNER, "")).body
+    script = body[body.index("var q=matchMedia("):]
+    script = script[:script.index("</script>")]
+    assert f"matchMedia('{_MENU_MEDIA}')" in script
+    assert "addEventListener('change',fit)" in script and "addListener(fit)" in script
+    assert "w.removeAttribute('open')" in script and "w.setAttribute('open','')" in script
+

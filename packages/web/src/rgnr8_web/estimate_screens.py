@@ -18,7 +18,6 @@ from collections.abc import Mapping
 from .books_screens import _card, _esc, _minor, _num, _seq, account_options, money
 from .job_screens import _milli, _pct, _plain
 from .provenance_labels import Provenance
-from .provenance_labels import badge as prov_badge
 from .provenance_labels import legend as prov_legend
 
 # An estimate is a proposal — FORECAST — until it is accepted and invoiced, when
@@ -99,7 +98,7 @@ def render_estimates(
         )
 
     out = head + prov_legend(_ESTIMATE_PROV) + _card(
-        f"Estimates ({len(rows)})", body, actions=prov_badge(Provenance.FORECAST))
+        f"Estimates ({len(rows)})", body, provenance=Provenance.FORECAST)
     if can_edit:
         out += _builder(tenant, customers, cost_codes, accounts, id_codes)
     return out
@@ -257,7 +256,7 @@ def render_estimate(
         "job that looked like 20% comes in at 16.7%.</p>"
     )
 
-    out = head + _card(str(estimate.get("id")), body)
+    out = head + _card(str(estimate.get("id")), body, provenance=Provenance.FORECAST)
     if can_edit:
         out += _next_steps(tenant, estimate, jobs)
     return out
@@ -367,7 +366,7 @@ def render_pipeline(
         f'{_esc(totals.get("lost_count"))} · win rate {_pct(totals.get("win_rate_ppm"))}.</p>'
     )
     out = head + prov_legend(_PIPELINE_PROV) + _card(
-        "Pipeline", body, actions=prov_badge(Provenance.FORECAST))
+        "Pipeline", body, provenance=Provenance.FORECAST)
 
     opportunities = [
         o for o in _seq(pipeline.get("opportunities")) if isinstance(o, Mapping)
@@ -391,7 +390,7 @@ def render_pipeline(
             "<table><thead><tr><th>Opportunity</th><th>Stage</th><th class='num'>Value</th>"
             "<th class='num'>Odds</th><th class='num'>Weighted</th><th>Expected</th>"
             f"<th></th></tr></thead><tbody>{cells}</tbody></table>"
-        ))
+        ), provenance=Provenance.FORECAST)
 
     reasons = [r for r in _seq(pipeline.get("lost_reasons")) if isinstance(r, Mapping)]
     if reasons:
