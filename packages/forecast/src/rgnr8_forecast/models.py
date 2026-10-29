@@ -42,7 +42,9 @@ class CashPosition:
     as_of: date
     available: Money
     restricted: Money = field(default=Money(0))
-    verified: bool = True
+    # Unverified unless a source that reconciles it says so (the books, a bank
+    # feed, QuickBooks). A balance someone typed in must never read as checked.
+    verified: bool = False
 
 
 # --- receivables / payables --------------------------------------------------

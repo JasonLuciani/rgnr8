@@ -181,3 +181,8 @@ def test_assets_carry_provenance_labels() -> None:
     html = render_assets("acme", {"totals": {}, "assets": []}, can_write=True)
     assert _LEGEND in html
     assert label(Provenance.POSTED) in html
+
+
+def test_running_costs_is_graduated() -> None:
+    # PR 5: the cost baseline the home screen's no-costs card links to.
+    assert not is_provisional("costs")

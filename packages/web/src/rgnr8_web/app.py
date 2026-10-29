@@ -45,6 +45,7 @@ from rgnr8_categorize import (
 )
 from rgnr8_forecast import (
     CustomerHistory,
+    Direction,
     ForecastConfig,
     ForecastInputs,
     ForecastResult,
@@ -180,7 +181,11 @@ from .reporting_screens import render_budget, render_general_ledger
 from .settings_screens import render_settings, render_settings_unavailable
 from rgnr8_ocr import HeuristicExtractor, to_bill_draft
 from .capture_screens import render_capture
+from .cost_baseline import CostBaseline, as_recurring
+from .cost_baseline import from_quickbooks as baseline_from_quickbooks
+from .cost_baseline import window as cost_window
 from .deploy_check import LedgerBuild, ledger_skew
+from .qbo_errors import plain_qbo_error
 from .parallel_run import (
     PARALLEL_RUN_MESSAGE,
     QUICKBOOKS_SOURCE,
@@ -242,6 +247,7 @@ from .screens import (
     render_briefing_body,
     render_cash_body,
     render_close_body,
+    render_costs_page,
     render_packages_body,
     render_reports_list,
     render_scenario_body,
@@ -414,10 +420,14 @@ def _provenance_note(facts: "LedgerFacts", split: "dict[str, int]") -> str:
         )
     known = split.get("from_the_books", 0)
     assumed = split.get("assumed", 0)
+    # Counted in words an owner would say: never "0 open item(s)".
+    from_books = ("Cash on hand comes" if not known else
+                  f"Cash on hand and {known} open item{'s' if known != 1 else ''} come")
+    planned = (f"; {assumed} planned item{'s are' if assumed != 1 else ' is'} your own assumption"
+               f"{'s' if assumed != 1 else ''}" if assumed else "")
     return (
         '<div class="banner good">'
-        f"Cash on hand and {known} open item(s) come straight from your books"
-        f"{f'; {assumed} forward item(s) are your assumptions' if assumed else ''}. "
+        f"{from_books} straight from your books{planned}."
         "</div>"
     )
 
@@ -877,6 +887,11 @@ class WebApp:
             )
             self._ledger_facts[t.tenant_id] = facts
             inputs = merged
+        # Read from the store, not this process's copy: the owner may have added
+        # it through the other worker a moment ago.
+        baseline = CostBaseline.from_dict(self._store.load(t.tenant_id).cost_baseline)
+        if baseline is not None:
+            inputs = dataclasses.replace(inputs, recurring=(*inputs.recurring, as_recurring(baseline)))
         if not t.payment_overrides:
             return inputs
         histories = {h.customer_id: h for h in inputs.customer_histories}
@@ -1293,6 +1308,14 @@ class WebApp:
 
         # /t/<tenant>/packages  -> sealed financial-package records (shell page)
         # /t/<tenant>/connect -> the connections page (QBO status + connect button)
+        # /t/<tenant>/costs -> a cost baseline from what QuickBooks says was spent
+        if len(parts) == 3 and parts[0] == "t" and parts[2] == "costs":
+            if req.method == "POST":
+                return self._require(subject, token_tenant, parts[1], P.EDIT_ASSUMPTIONS,
+                                     lambda t: self._costs_post(subject, t, req.body))
+            return self._require(subject, token_tenant, parts[1], P.EDIT_ASSUMPTIONS,
+                                 lambda t: self._costs_page(subject, t))
+
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "connect":
             return self._require(subject, token_tenant, parts[1], P.MANAGE_CONNECTORS,
                                  lambda t: self._connect_page(subject, t, req.headers))
@@ -5911,6 +5934,55 @@ class WebApp:
                            "sections": [s.kind for s in spec.sections]})
 
     # --- QuickBooks Online connect (rgnr8-qbo) -------------------------------
+    def _proposed_baseline(self, t: _Tenant) -> "tuple[CostBaseline | None, str]":
+        """What QuickBooks says this business spends a month, or why it can't say."""
+        client = self._qbo.api_client(t.tenant_id) if self._qbo is not None else None
+        if client is None:
+            return None, "connect QuickBooks first: the baseline is read from your spending there"
+        today = date.fromtimestamp(self._session_clock())
+        try:
+            baseline = baseline_from_quickbooks(client, today, t.config.currency)
+        except Exception as exc:  # noqa: BLE001 - a live API failure, said plainly
+            return None, plain_qbo_error(exc)
+        if baseline is None:
+            start, end = cost_window(today)
+            return None, f"QuickBooks shows no spending from {start:%b} to {end:%b %Y} to average"
+        return baseline, ""
+
+    def _costs_page(self, subject: str, t: _Tenant, notice: str = "") -> Response:
+        t.state = self._store.load(t.tenant_id)  # the other worker may have changed it
+        saved = CostBaseline.from_dict(t.state.cost_baseline)
+        proposed, why_not = (None, "") if saved is not None else self._proposed_baseline(t)
+        return self._shell(subject, t, "costs", render_costs_page(
+            t.tenant_id, saved=saved, proposed=proposed, why_not=why_not,
+            has_payroll=bool(t.inputs.payroll),
+            has_costs=bool(t.inputs.recurring or t.inputs.payroll or any(
+                i.direction is Direction.OUTFLOW for i in t.inputs.one_time)),
+            notice=notice))
+
+    def _costs_post(self, subject: str, t: _Tenant, body: str) -> Response:
+        """Add the baseline (always re-read from QuickBooks, never from the form)
+        or remove it. One step, as the owner sees it: one button."""
+        action = (parse_qs(body).get("action") or [""])[0]
+        # Save on top of what is stored now, not this process's older copy, so a
+        # change made through the other worker isn't written over.
+        t.state = self._store.load(t.tenant_id)
+        if action == "remove":
+            t.state.cost_baseline = None
+        elif action == "add":
+            baseline, why_not = self._proposed_baseline(t)
+            if baseline is None:
+                return self._costs_page(subject, t, notice=f"Nothing was added: {why_not}.")
+            t.state.cost_baseline = baseline.to_dict()
+        else:
+            return _json(400, {"error": "action must be add or remove"})
+        self._store.save(t.tenant_id, t.state)
+        t._dirty = True
+        if self._audit is not None:
+            self._audit.record(subject, f"costs.baseline_{'added' if action == 'add' else 'removed'}",
+                               self._session_clock(), tenant_id=t.tenant_id)
+        return _redirect(f"/t/{t.tenant_id}" if action == "add" else f"/t/{t.tenant_id}/costs")
+
     def _connect_result(self, t: _Tenant, kind: str, ok: bool, message: str = "") -> Response:
         """Back to Connections, carrying this outcome to be shown exactly once.
 

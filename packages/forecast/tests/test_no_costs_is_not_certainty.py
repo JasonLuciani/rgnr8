@@ -73,3 +73,13 @@ def test_a_forecast_with_costs_in_it_is_untouched() -> None:
     assert not any(n.startswith("no costs") for n in r.data_quality)
     assert "stays above" in r.headline
     assert r.overall_confidence > NO_COSTS_CONFIDENCE_CAP
+
+
+def test_a_typed_in_balance_is_not_verified_unless_something_says_so() -> None:
+    # CashPosition used to default to verified=True, so a balance an owner typed
+    # in read as reconciled cash. Only a source that checks it may say so.
+    assert CashPosition(as_of=AS_OF, available=usd("5000.00")).verified is False
+    result = run_forecast(_cash_only(), CONFIG)
+    assert "opening cash is not yet verified/reconciled" in result.data_quality
+    # ...and the bigger problem, no costs at all, is still said first.
+    assert result.data_quality[0].startswith("no costs in the outlook")

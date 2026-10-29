@@ -97,10 +97,10 @@ def run_forecast(
     # the cash lasts; it is today's balance drawn as a flat line. Said first,
     # because it is the thing most likely to make every other figure wrong.
     no_costs = not any(f.direction is Direction.OUTFLOW for f in resolved.flows)
-    if no_costs:
-        data_quality.insert(0, _NO_COSTS)
     if not inputs.opening.verified:
         data_quality.insert(0, "opening cash is not yet verified/reconciled")
+    if no_costs:
+        data_quality.insert(0, _NO_COSTS)
     if not inputs.invoices:
         data_quality.append("no receivables provided — inflows may be understated")
     missing_hist = _customers_without_history(inputs)

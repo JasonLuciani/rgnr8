@@ -25,11 +25,12 @@ from rgnr8_ar.aging import BUCKET_ORDER, AgingBucket
 from rgnr8_briefing import Question, answer, build_briefing
 from rgnr8_briefing.answer import SUGGESTED
 from rgnr8_briefing.today import _cash_chart, _chart_points  # shared 13-week chart
-from rgnr8_forecast import ForecastResult, Money
+from rgnr8_forecast import ForecastResult, Money, Projection
 from rgnr8_forecast.brand import format_money as _money  # the one shared money formatter
 from rgnr8_reports import ReportSpec
 
 from .attention import Item as AttentionItem
+from .cost_baseline import CostBaseline
 from .components import Action, empty_state, metric, page_header, queue, status_chip
 from .provenance_labels import Provenance
 
@@ -119,6 +120,18 @@ def render_attention_queue(items: "Sequence[AttentionItem]") -> str:
     )
 
 
+def _chart_summary(p: "Projection") -> str:
+    """The 13-week chart in one sentence, for anyone who can't see the chart
+    (and anyone who'd rather read than read a chart)."""
+    low = p.trough
+    line = (f"Cash starts at {_money(p.opening_available)} today, reaches its lowest point of "
+            f"{_money(low.balance)} on {low.on_date:%b} {low.on_date.day}, and ends the 13 weeks "
+            f"at {_money(p.ending_balance)}.")
+    if p.breach.breached:
+        line += f" That low point is below your {_money(p.effective_floor)} minimum-cash floor."
+    return line
+
+
 def render_cash_body(
     forecast: ForecastResult,
     display_name: str,
@@ -144,15 +157,15 @@ def render_cash_body(
         return _cash_empty_state(display_name, tenant)
     b = build_briefing(forecast)
     p = forecast.projection
-    # "Cash today" leads the hero below, so the tile row leads with floor /
-    # low point / cushion (no redundant Cash-today tile).
-    tiles = [
-        ("Minimum-cash floor", p.effective_floor),
-        ("Projected low point", p.trough.balance),
-        ("Cushion at low point", p.trough.balance - p.effective_floor),
-    ]
-    tile_html = "".join(f'<div class="tile"><div class="k">{escape(k)}</div>'
-                        f'<div class="v">{_kpi_value(v)}</div></div>' for k, v in tiles)
+    # Floor, low point and cushion support the hero rather than compete with it:
+    # one quiet line under it, not three tiles as loud as the cash figure. A
+    # cushion below zero is the one part that should still stand out.
+    cushion = p.trough.balance - p.effective_floor
+    facts = (f'<p class="muted cash-facts">Minimum-cash floor {escape(_money(p.effective_floor))}'
+             f" · Projected low point {escape(_money(p.trough.balance))}"
+             f" on {p.trough.on_date:%b} {p.trough.on_date.day}"
+             f" · Cushion at low point {_kpi_value(cushion)}</p>")
+    summary = _chart_summary(p)
     drivers = ""
     if b.drivers:
         top = b.drivers[0].amount.minor_units or 1
@@ -181,13 +194,13 @@ def render_cash_body(
                     provenance=cash_provenance)}</div>
       <div class="cash-state">{status_chip(b.status.value)}
         <div class="line">{escape(b.headline)}</div></div>
-    </div>{action}</div>
+    </div>{facts}{action}</div>
     {needs}
-    <div class="tiles">{tile_html}</div>
     <h2>Next 13 weeks — projected cash</h2>
-    <div class="card">{_cash_chart(forecast)}</div>
+    <div class="card"><p class="chart-summary" id="cash-chart-summary">{escape(summary)}</p>
+      <div role="img" aria-describedby="cash-chart-summary">{_cash_chart(forecast)}</div></div>
     {drivers}
-    <p class="muted small" >Confidence {b.overall_confidence}/100 · every figure traces to the forecast · version {escape(b.version_id)}</p>"""
+    <p class="muted small" >Confidence {b.overall_confidence}/100 · every figure traces to the forecast</p>"""
 
 
 # --- Briefing (in-shell weekly briefing) ------------------------------------
@@ -771,3 +784,66 @@ def render_ar_body(
     <div class="tiles">{tiles}</div>
     {chase_block}
     {drafts_block}"""
+
+
+# --- Running costs (a baseline from QuickBooks spending) ---------------------
+def render_costs_page(
+    tenant: str,
+    *,
+    saved: "CostBaseline | None",
+    proposed: "CostBaseline | None",
+    why_not: str = "",
+    has_payroll: bool = False,
+    has_costs: bool = False,
+    notice: str = "",
+) -> str:
+    """The cost baseline: what QuickBooks says the business spends a month, and
+    one button that puts it in the outlook (or takes it back out)."""
+    t = escape(tenant)
+    head = page_header("Running costs",
+                       sub="What your cash outlook assumes leaves the account each month")
+    note = f'<div class="banner warn" role="alert">{escape(notice)}</div>' if notice else ""
+
+    def breakdown(b: "CostBaseline") -> str:
+        rows = "".join(f'<tr><td>{escape(n)}</td><td class="num">{escape(_money(m))}</td></tr>'
+                       for n, m in b.lines)
+        return ('<table><thead><tr><th>Biggest costs</th><th class="num">A month</th></tr></thead>'
+                f"<tbody>{rows}</tbody></table>")
+
+    payroll_note = (
+        '<p class="muted small">This average includes everything QuickBooks booked as an '
+        "expense, payroll too. You have payroll in the outlook separately, so it may be "
+        "counted twice; check the Wages lines above.</p>" if has_payroll else "")
+    if saved is not None:
+        body = (
+            '<div class="card">'
+            + metric("In your outlook", f"{_money(saved.monthly)} a month",
+                     note=f"Average spending {saved.period_label}, from QuickBooks",
+                     provenance=Provenance.IMPORTED)
+            + breakdown(saved) + payroll_note
+            + f'<form method="post" action="/t/{t}/costs" style="margin-top:12px">'
+            '<input type="hidden" name="action" value="remove">'
+            '<button class="btn ghost" type="submit">Take it out of the outlook</button></form>'
+            "</div>")
+    elif proposed is not None:
+        body = (
+            '<div class="card">'
+            + metric("Average spending", f"{_money(proposed.monthly)} a month",
+                     note=f"{proposed.period_label}, from your QuickBooks Profit and Loss",
+                     provenance=Provenance.IMPORTED)
+            + breakdown(proposed) + payroll_note
+            + ('<p class="muted small">Your outlook has no costs in it, so it can\'t say how '
+               "long your cash lasts. Adding this average gives it something real to work from; "
+               "it is an average of what you spent, not a promise.</p>" if not has_costs else
+               '<p class="muted small">Your outlook already has some costs in it. Add this '
+               "only if they are incomplete, and check it doesn't count any of them twice.</p>")
+            + f'<form method="post" action="/t/{t}/costs" style="margin-top:12px">'
+            '<input type="hidden" name="action" value="add">'
+            f'<button class="btn" type="submit">Add {escape(_money(proposed.monthly))} a month '
+            "to my outlook</button></form></div>")
+    else:
+        body = ('<div class="card">' + empty_state(
+            "No spending to average yet",
+            how=(why_not[:1].upper() + why_not[1:] + ".") if why_not else "",
+            actions=(Action("Go to Connections", href=f"/t/{t}/connect"),)) + "</div>")
+    return head + note + body

@@ -63,6 +63,11 @@ V1_PRODUCTION: frozenset[str] = frozenset({
     "pipeline",    # C-6 · sales pipeline (forecast)
     "debt",        # C-7 · loans (posted → reconciled)
     "assets",      # C-7 · fixed assets (posted)
+    # Graduated 2026-10-29 (PR 5): running costs. Tenant-isolated behind
+    # EDIT_ASSUMPTIONS; the amount is re-read from QuickBooks, never taken from
+    # the form; it persists through the tenant store; its figures are labelled
+    # imported. Tests: test_monday_answer.py.
+    "costs",
 })
 
 

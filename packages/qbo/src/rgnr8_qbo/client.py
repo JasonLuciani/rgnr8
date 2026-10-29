@@ -407,6 +407,30 @@ class QboApiClient:
                 return nested
         return None
 
+    # The Profit and Loss sections that are money going out.
+    _SPEND_GROUPS = frozenset({"COGS", "Expenses", "OtherExpenses"})
+
+    def expense_lines(self, *, start: str, end: str) -> list[tuple[str, int]]:
+        """What the company spent from `start` to `end` (ISO dates), per account:
+        (account name, minor units), from the ProfitAndLoss report's cost of
+        goods, expense and other-expense sections. Accounts with nothing spent
+        are left out; refunds that net an account below zero are kept as such."""
+        report = self.report("ProfitAndLoss", {"start_date": start, "end_date": end,
+                                                "accounting_method": "Accrual"})
+        rows = report.get("Rows")
+        top = rows.get("Row") if isinstance(rows, dict) else None
+        out: list[tuple[str, int]] = []
+        for section in top if isinstance(top, list) else []:
+            if not isinstance(section, dict) or section.get("group") not in self._SPEND_GROUPS:
+                continue
+            for cols in self._report_coldata(section.get("Rows")):
+                if len(cols) < 2:
+                    continue
+                minor = _to_minor(cols[-1].get("value"))
+                if minor:
+                    out.append((str(cols[0].get("value", "")).strip() or "Expense", minor))
+        return out
+
     def company_info(self) -> QboCompany:
         """The connected company's name (and country)."""
         qr = self.query("select * from CompanyInfo")
