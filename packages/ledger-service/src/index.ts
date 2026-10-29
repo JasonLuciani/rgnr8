@@ -360,6 +360,7 @@ export {
   InMemorySettingsStore,
   PgSettingsStore,
   SETTINGS_DDL,
+  SETTINGS_MIRROR_DDL,
   SettingsError,
   defaultSettings,
   mergeSettings,

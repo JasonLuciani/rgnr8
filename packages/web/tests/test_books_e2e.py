@@ -1216,3 +1216,20 @@ def test_a_whole_job_end_to_end_against_the_real_service(ledger_service: str) ->
     assert signed.get("1260", 0) == 0, "nothing held back any more"
     assert signed["4100"] == revenue_before, "and releasing it invented no revenue"
     assert _service_get(base, "/t/buildco/trial-balance")["in_balance"] is True
+
+
+def test_the_quickbooks_pin_round_trips_through_the_real_service(ledger_service: str) -> None:
+    """The web app pins the mirrored QuickBooks company in the ledger's settings and
+    reads it back. Against the real service, so a ledger that ignores the fields
+    (or a column that never got migrated) fails here, not in production."""
+    from types import SimpleNamespace
+
+    app = _app(ledger_service, ["pinco"])
+    t = SimpleNamespace(tenant_id="pinco")
+    assert app._qbo_binding(t) == ""                       # nothing pinned on a fresh account
+    assert app._qbo_pin(t, "9341453432535209", "2026-09-30") == ""
+    app._qbo_bound.clear()                                  # a "restart": forget the cache
+    assert app._qbo_binding(t) == "9341453432535209"       # the ledger remembers
+    stored = app._ledger.settings("pinco").body["settings"]
+    assert stored["book_of_record"] == "quickbooks" and stored["cutover_date"] == "2026-09-30"
+    assert stored["inventory_costing_method"] == "MOVING_AVERAGE"   # other settings untouched

@@ -495,3 +495,24 @@ def test_pinning_writes_the_company_to_the_ledger_and_remembers_it() -> None:
                                "mirror_realm_id": "9341453432535209", "cutover_date": "2026-09-30"}
     ledger.calls.clear()
     assert app._qbo_binding(t) == "9341453432535209" and not ledger.calls   # cached
+
+
+def test_a_pin_the_ledger_did_not_store_is_not_remembered() -> None:
+    """A ledger older than the binding answers 200 and ignores the new fields."""
+    from types import SimpleNamespace
+
+    from rgnr8_web import LedgerClient, LedgerResponse
+
+    class OldLedger(MirrorLedger):
+        def request(self, method, path, body, headers):
+            if path.endswith("/settings"):
+                self.calls.append((method, path, body))
+                return LedgerResponse(200, {"settings": {"base_currency": "USD"}})
+            return super().request(method, path, body, headers)
+
+    ledger = OldLedger()
+    app, _ = _app()
+    app.set_ledger(LedgerClient(ledger))
+    t = SimpleNamespace(tenant_id="acme")
+    assert "didn't store it" in app._qbo_pin(t, "9341453432535209", "2026-09-30")
+    assert app._qbo_binding(t) == ""          # nothing remembered

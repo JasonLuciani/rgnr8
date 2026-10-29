@@ -5935,6 +5935,13 @@ class WebApp:
             "book_of_record": "quickbooks", "mirror_realm_id": realm, "cutover_date": cutover})
         if not res.ok:
             return res.error()
+        # Trust the ledger's answer, not our request: a ledger that predates the
+        # binding answers 200 and silently ignores fields it doesn't know, and
+        # remembering a pin that was never stored would wave refreshes through.
+        raw = res.body.get("settings")
+        stored = raw if isinstance(raw, dict) else {}
+        if str(stored.get("mirror_realm_id") or "") != realm:
+            return "the ledger didn't store it (is the ledger service up to date?)"
         self._qbo_bound[t.tenant_id] = realm
         self._qbo_migrated.add(t.tenant_id)
         return ""
