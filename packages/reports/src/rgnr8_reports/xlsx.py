@@ -149,6 +149,15 @@ def render_xlsx(report: Report) -> bytes:
     cover["A2"] = meta
     cover["A2"].font = _META_FONT
     row = 4
+    # The cover of an incomplete report says so before any figure.
+    if report.missing:
+        cover.cell(row=row, column=1, value="This report is incomplete").font = Font(
+            name=_FONT, bold=True, size=11, color=_argb(RISK))
+        row += 1
+        for gap in report.missing:
+            cover.cell(row=row, column=1, value=f"Nothing in: {gap}").font = _BODY_FONT
+            row += 1
+        row += 1
 
     # KPI figures from every section, listed on the cover.
     for section in report.sections:

@@ -71,8 +71,16 @@ def _as_bool(o: object) -> bool:
 
 # --- shared helpers ----------------------------------------------------------
 def _not_available(title: str, reason: str) -> ReportSection:
-    """A section that had no data to render — the graceful-degradation block."""
-    return ReportSection(title=title, blocks=(Narrative(f"Not available — {reason}."),))
+    """A section that had no data to render — the graceful-degradation block.
+    Marked missing, so the report can say up front that it isn't complete."""
+    return ReportSection(title=title, blocks=(Narrative(f"Not available — {reason}."),),
+                         missing=reason)
+
+
+def _all_clear(title: str, finding: str) -> ReportSection:
+    """A section whose data was there and says there is nothing to report
+    ("nothing overdue"): an answer, not a gap."""
+    return ReportSection(title=title, blocks=(Narrative(f"{finding[:1].upper()}{finding[1:]}."),))
 
 
 def _money_kpi(label: str, m: Money) -> tuple[str, str, bool]:
@@ -303,7 +311,7 @@ def _b_ar_chase(ctx: DataContext, params: Mapping[str, object]) -> ReportSection
     limit = _p_int(params, "limit", 10)
     items = chase_list(ctx.invoices, ctx.as_of, histories=ctx.histories)
     if not items:
-        return _not_available(title, "nothing overdue")
+        return _all_clear(title, "nothing overdue")
     rows = tuple(
         (
             it.invoice.id,

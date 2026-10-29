@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from .attachment_screens import attachment_link
+from .components import Action, empty_state
 from .books_screens import _card, _esc, _minor, _seq, money
 from .provenance_labels import Provenance, badge as prov_badge, legend as prov_legend
 
@@ -180,15 +181,28 @@ def render_inbox(
         head += _banner("good", message)
     if error:
         head += _banner("warn", error)
-    head += _banner(
-        "warn" if pending else "good",
-        f"{pending} to review · {view.get('posted') or 0} posted · "
-        f"{view.get('matched') or 0} matched to invoices and bills · "
-        f"{view.get('excluded') or 0} excluded"
-        if pending
-        else f"All caught up — {view.get('posted') or 0} posted, "
-             f"{view.get('matched') or 0} matched, {view.get('excluded') or 0} excluded.",
-    )
+    handled = sum(_minor(view.get(k)) or 0 for k in ("posted", "matched", "excluded"))
+    if pending:
+        head += _banner(
+            "warn",
+            f"{pending} to review · {view.get('posted') or 0} posted · "
+            f"{view.get('matched') or 0} matched to invoices and bills · "
+            f"{view.get('excluded') or 0} excluded")
+    elif handled:
+        head += _banner(
+            "good",
+            f"All caught up — {view.get('posted') or 0} posted, "
+            f"{view.get('matched') or 0} matched, {view.get('excluded') or 0} excluded.")
+    else:
+        # "All caught up" with nothing ever arrived was an all-clear nobody had
+        # earned: the queue was empty because no bank line had come in at all.
+        head += '<div class="card">' + empty_state(
+            "No bank lines have come in yet",
+            how="Nothing is waiting because nothing has arrived. Connect a bank feed, or "
+                "import a statement on the account you reconcile.",
+            actions=(Action("Connect a bank", href=f"/t/{_esc(tenant)}/connect"),
+                     Action("Import a statement", href=f"/t/{_esc(tenant)}/books/reconcile")),
+        ) + "</div>"
     summary = (
         f'<p class="sub">Waiting: <strong>{money(view.get("pending_in_minor"))}</strong> in · '
         f'<strong>{money(view.get("pending_out_minor"))}</strong> out</p>'

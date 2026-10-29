@@ -163,8 +163,11 @@ def test_html_is_self_contained(
 def test_missing_data_degrades_to_not_available(clock: Callable[[], datetime]) -> None:
     empty = DataContext(period="Empty", as_of=date(2026, 8, 1))
     report = render(baseline("financial_statements"), empty, clock=clock)
-    # every section falls back to a single "Not available" narrative
-    for section in report.sections:
+    # it says first that it is incomplete, naming every empty section...
+    assert report.sections[0].title == "This report is incomplete"
+    assert len(report.missing) == len(report.sections) - 1
+    # ...and every section falls back to a single "Not available" narrative
+    for section in report.sections[1:]:
         assert len(section.blocks) == 1
         block = section.blocks[0]
         assert isinstance(block, Narrative)
@@ -536,3 +539,51 @@ def test_runway_with_nothing_in_the_forecast_says_so(clock: Callable[[], datetim
     assert "Indefinite" not in html
     assert "\u221e" not in html
     assert "nothing to work runway out from" in html
+
+
+# --- an incomplete report says so (issue 29) ---------------------------------
+def test_a_complete_pack_has_no_incomplete_notice(
+    full_context: DataContext, clock: Callable[[], datetime],
+) -> None:
+    report = render(baseline("exec_board_pack"), full_context, clock=clock)
+    assert report.missing == ()
+    assert all(s.title != "This report is incomplete" for s in report.sections)
+
+
+def test_a_pack_with_gaps_names_them_first_in_every_format(
+    full_context: DataContext, clock: Callable[[], datetime],
+) -> None:
+    import dataclasses
+
+    from rgnr8_reports import render_csv
+
+    no_budget = dataclasses.replace(full_context, budget=None)
+    report = render(baseline("budget_vs_actual"), no_budget, clock=clock)
+    assert report.missing and "no budget provided" in report.missing[0]
+    first = report.sections[0]
+    assert first.title == "This report is incomplete"
+    assert "no budget provided" in cast(Narrative, first.blocks[0]).text
+    assert "This report is incomplete" in render_html(report)
+    assert "This report is incomplete" in render_csv(report)
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    from rgnr8_reports import render_xlsx
+
+    cover = load_workbook(BytesIO(render_xlsx(report))).worksheets[0]
+    assert cover["A4"].value == "This report is incomplete"
+
+
+def test_nothing_overdue_is_an_answer_not_a_gap(
+    full_context: DataContext, clock: Callable[[], datetime],
+) -> None:
+    import dataclasses
+
+    from rgnr8_reports.sections import REGISTRY
+
+    # Dated before every due date: the invoices are there and none is overdue.
+    early = dataclasses.replace(full_context, as_of=date(2000, 1, 1))
+    section = REGISTRY["ar_chase"](early, {})
+    assert section.missing == ""
+    assert cast(Narrative, section.blocks[0]).text == "Nothing overdue."

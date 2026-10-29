@@ -767,7 +767,16 @@ def render_ar_body(
               f'<div class="v">{escape(_money(report.total_ar))}</div></div>')
     dso = "" if report.dso is None else f" · DSO ~{report.dso:.0f} days"
 
-    if not chase:
+    if not chase and report.total_ar.minor_units == 0:
+        # "Every open invoice is current" about no invoices at all was an
+        # all-clear with nothing behind it.
+        chase_block = '<div class="card">' + empty_state(
+            "No open invoices in the outlook",
+            how="Nothing is overdue because nothing is owed yet, as far as the books show. "
+                "If customers do owe you, their invoices aren't in yet.",
+            actions=(Action("See invoices", href=f"/t/{escape(tenant)}/invoices"),),
+        ) + "</div>"
+    elif not chase:
         chase_block = ('<div class="banner good">Nothing overdue — every open invoice is current '
                        f'as of {escape(report.as_of.isoformat())}.</div>')
     else:
