@@ -45,7 +45,16 @@ def _to_minor(v: object) -> int:
 
 
 class QboApiError(QboOAuthError):
-    """A QuickBooks Accounting API request failed."""
+    """A QuickBooks Accounting API request failed.
+
+    `status` and `body` are Intuit's answer as received, for code that needs
+    to tell an expired connection from a rate limit; the message is for logs.
+    """
+
+    def __init__(self, message: str, *, status: int | None = None, body: str = "") -> None:
+        super().__init__(message)
+        self.status = status
+        self.body = body
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,7 +133,8 @@ class QboApiClient:
         url = f"{self.api_base}/v3/company/{self.realm_id}/query?{q}"
         resp = self.http.get(url, self._headers())
         if resp.status < 200 or resp.status >= 300:
-            raise QboApiError(f"query returned {resp.status}: {resp.body[:300]}")
+            raise QboApiError(f"query returned {resp.status}: {resp.body[:300]}",
+                              status=resp.status, body=resp.body)
         try:
             data = json.loads(resp.body)
         except json.JSONDecodeError as exc:
@@ -302,7 +312,8 @@ class QboApiClient:
         url = f"{self.api_base}/v3/company/{self.realm_id}/reports/{name}?{urllib.parse.urlencode(q)}"
         resp = self.http.get(url, self._headers())
         if resp.status < 200 or resp.status >= 300:
-            raise QboApiError(f"report {name} returned {resp.status}: {resp.body[:300]}")
+            raise QboApiError(f"report {name} returned {resp.status}: {resp.body[:300]}",
+                              status=resp.status, body=resp.body)
         try:
             data = json.loads(resp.body)
         except json.JSONDecodeError as exc:

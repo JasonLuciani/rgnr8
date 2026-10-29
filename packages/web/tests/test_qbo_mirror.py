@@ -166,6 +166,6 @@ def test_go_live_takes_opening_balances_at_the_last_month_end(monkeypatch) -> No
     today = date.fromtimestamp(app._session_clock())  # noqa: SLF001 - the app's own clock
     r = app.handle(Request("POST", "/t/acme/connect/qbo/migrate", _h("owner@acme.com")))
 
-    assert dict(r.extra_headers)["Location"] == "/t/acme/connect?migrate=ok"
+    assert dict(r.extra_headers)["Location"] == "/t/acme/connect"
     assert seen["cutover"] == (today.replace(day=1) - timedelta(days=1)).isoformat()
     assert seen["refresh_as_of"] == today.isoformat(), "the month so far comes straight across"

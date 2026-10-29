@@ -14,6 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .qbo_errors import plain_qbo_error
+
 
 @dataclass(frozen=True, slots=True)
 class MigrationResult:
@@ -57,7 +59,7 @@ def migrate_qbo_to_ledger(
     try:
         rows = client.trial_balance(as_of=cutover_date)
     except Exception as exc:  # a live QBO API/parse failure, surfaced softly
-        return MigrationResult(False, 0, error=f"could not read the QuickBooks trial balance: {exc}")
+        return MigrationResult(False, 0, error=f"could not read the QuickBooks trial balance: {plain_qbo_error(exc)}")
     if not rows:
         return MigrationResult(False, 0, error="QuickBooks returned no trial-balance accounts")
 

@@ -17,7 +17,7 @@ lands somewhere sensible on the timeline.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 
 from rgnr8_forecast import (
@@ -126,3 +126,27 @@ def build_inputs_from_qbo(
         ap_total=ap_total,
     )
     return inputs, summary
+
+
+def _from_quickbooks(item: OneTimeItem) -> bool:
+    """A one-time item a QuickBooks refresh put there: an open bill, recorded."""
+    return item.category is Category.VENDOR_PAYMENT and item.confidence is Confidence.RECORDED
+
+
+def merge_refresh(current: ForecastInputs, fresh: ForecastInputs) -> ForecastInputs:
+    """The forecast inputs after a Refresh: QuickBooks' facts, the owner's plans.
+
+    A refresh used to replace the inputs wholesale, so the recurring costs,
+    payroll, loans and pipeline an owner had entered vanished every time they
+    pressed it. QuickBooks only knows cash, open invoices and open bills, so
+    only those are replaced: last refresh's bills give way to this one's, and
+    everything the owner entered stays as they left it.
+    """
+    owners_one_time = tuple(i for i in current.one_time if not _from_quickbooks(i))
+    return replace(
+        current,
+        opening=fresh.opening,
+        currency=fresh.currency,
+        invoices=fresh.invoices,
+        one_time=owners_one_time + fresh.one_time,
+    )
