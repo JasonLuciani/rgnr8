@@ -8,6 +8,7 @@ and a token may only reach its own tenant.
 
 from __future__ import annotations
 
+import base64
 import contextvars
 import dataclasses
 import json
@@ -163,8 +164,7 @@ from .payroll_screens import (
     render_payroll_run,
     render_payroll_unavailable,
 )
-from .qbo_ledger import LedgerSyncSummary
-from .qbo_sync import QboSyncSummary, build_inputs_from_qbo
+from .qbo_sync import QboSyncSummary, build_inputs_from_qbo, merge_refresh
 from .rbac import AccessPolicy, Permission, Role, User, UserDirectory
 from .reconcile_screens import (
     render_import_result,
@@ -473,6 +473,10 @@ def _qs_escape(text: str) -> str:
     return quote(text[:200], safe="")
 
 
+# The Connections page's one-time result (see `WebApp._connect_result`).
+_CONNECT_FLASH = "rgnr8_connect_flash"
+
+
 def _cookie(headers: "dict[str, str]", name: str) -> str | None:
     raw = headers.get("cookie", "")
     for part in raw.split(";"):
@@ -579,7 +583,6 @@ class WebApp:
         self._qbo = qbo
         # last successful QBO sync summary, per tenant (for the connect page).
         self._qbo_last_sync: dict[str, QboSyncSummary] = {}
-        self._qbo_last_ledger_sync: dict[str, LedgerSyncSummary] = {}
         # Tenants whose QBO chart of accounts + opening balances have been brought
         # across (go-live). Drives the connect page's migrate card; a restart
         # re-derives it from the ledger having a chart of accounts.
@@ -592,9 +595,6 @@ class WebApp:
         # predate the pinned realm): the Connections page re-scans at most every
         # few minutes instead of downloading the journal on every load.
         self._qbo_scan_miss: dict[str, float] = {}
-        # The last migration's human message per tenant (success detail or the
-        # specific failure), shown on the connect page after a migrate attempt.
-        self._qbo_migrate_msg: dict[str, str] = {}
         # What the books last told the forecast, so a screen can say where a
         # number came from rather than presenting facts and guesses alike.
         self._ledger_facts: dict[str, LedgerFacts] = {}
@@ -1294,10 +1294,8 @@ class WebApp:
         # /t/<tenant>/packages  -> sealed financial-package records (shell page)
         # /t/<tenant>/connect -> the connections page (QBO status + connect button)
         if len(parts) == 3 and parts[0] == "t" and parts[2] == "connect":
-            sync_flag = req.query.get("sync", "")
-            migrate_flag = req.query.get("migrate", "")
             return self._require(subject, token_tenant, parts[1], P.MANAGE_CONNECTORS,
-                                 lambda t: self._connect_page(subject, t, sync_flag, migrate_flag))
+                                 lambda t: self._connect_page(subject, t, req.headers))
 
         # /t/<tenant>/connect/qbo -> start the QBO OAuth flow (redirect to Intuit)
         if len(parts) == 4 and parts[0] == "t" and parts[2] == "connect" and parts[3] == "qbo":
@@ -5913,12 +5911,52 @@ class WebApp:
                            "sections": [s.kind for s in spec.sections]})
 
     # --- QuickBooks Online connect (rgnr8-qbo) -------------------------------
-    def _connect_page(self, subject: str, t: _Tenant, sync_flag: str = "",
-                      migrate_flag: str = "") -> Response:
+    def _connect_result(self, t: _Tenant, kind: str, ok: bool, message: str = "") -> Response:
+        """Back to Connections, carrying this outcome to be shown exactly once.
+
+        It rides in a short-lived cookie scoped to the Connections page rather
+        than the URL: a `?migrate=ok` flag reprinted "Brought your QuickBooks
+        chart… into the books" on every reload and after every restart, and a
+        message kept in this process's memory was lost whenever the next request
+        landed on the other gunicorn worker. The page clears the cookie as it
+        shows it. `kind` is "sync" (the forecast refresh) or "migrate" (the books).
+        """
+        payload = base64.urlsafe_b64encode(
+            json.dumps({"k": kind, "ok": ok, "m": message[:1500]}).encode("utf-8")).decode("ascii")
+        path = f"/t/{t.tenant_id}/connect"
+        cookie = f"{_CONNECT_FLASH}={payload}; Path={path}; Max-Age=120; HttpOnly; SameSite=Lax"
+        if self._secure_cookies:
+            cookie += "; Secure"
+        return _redirect(path, (("Set-Cookie", cookie),))
+
+    @staticmethod
+    def _connect_flash(headers: Mapping[str, str]) -> "tuple[str, bool, str] | None":
+        """The outcome `_connect_result` left, or None (absent or unreadable)."""
+        raw = _cookie(dict(headers), _CONNECT_FLASH)
+        if not raw:
+            return None
+        try:
+            data = json.loads(base64.urlsafe_b64decode(raw.encode("ascii")))
+        except (ValueError, UnicodeError):
+            return None
+        if not isinstance(data, dict) or data.get("k") not in ("sync", "migrate"):
+            return None
+        return str(data["k"]), bool(data.get("ok")), str(data.get("m") or "")
+
+    def _connect_page(self, subject: str, t: _Tenant,
+                      headers: "Mapping[str, str] | None" = None) -> Response:
         """The connections page: QBO status + a Connect / Reconnect / Disconnect
         control, a Refresh-from-QuickBooks action, and the last refresh's summary. Shows a "not
         configured" note when no `QboConnectService` is seated."""
         from .screens import render_connect_page
+        flash = self._connect_flash(headers or {})
+        sync_flag = migrate_flag = migrate_message = ""
+        if flash is not None:
+            kind, ok, migrate_message = flash
+            if kind == "sync":
+                sync_flag = "ok" if ok else "error"
+            else:
+                migrate_flag = "ok" if ok else "error"
         configured = self._qbo is not None
         conn = self._qbo.status(t.tenant_id) if self._qbo is not None else None
         status = conn.status.value if conn is not None else None
@@ -5935,30 +5973,24 @@ class WebApp:
                 "bill_count": str(summary.bill_count),
                 "ap_total": format_money(summary.ap_total),
             }
-        books = self._qbo_last_ledger_sync.get(t.tenant_id)
-        ledger_sync = None
-        if books is not None:
-            ledger_sync = {
-                "invoices": str(books.invoices),
-                "bills": str(books.bills),
-                "bank_new": str(books.bank_new),
-                "pending_review": str(books.pending_review),
-                "skipped": str(books.documents_skipped + books.bank_duplicates),
-                "errors": "; ".join(books.errors[:3]),
-            }
         # Only a live connection needs to know what the books mirror; a page for a
         # disconnected or unconfigured tenant makes no ledger call at all.
         mirror = self._qbo_mirror_state(t, realm or "") if status == "connected" else ("none", "")
-        return self._shell(subject, t, "connect",
+        page = self._shell(subject, t, "connect",
                            render_connect_page(t.tenant_id, configured=configured,
                                                status=status, realm_id=realm,
                                                last_sync=last_sync, sync_flag=sync_flag,
                                                migrate_flag=migrate_flag,
-                                               migrate_message=self._qbo_migrate_msg.get(t.tenant_id, ""),
+                                               migrate_message=migrate_message,
                                                ledger_migrated=mirror[0] == "mirrored",
                                                mirror_realm=(mirror[1] if mirror[0] == "other_company"
-                                                             else ""),
-                                               ledger_sync=ledger_sync))
+                                                             else "")))
+        if flash is None:
+            return page
+        # Shown once: a reload, or coming back tomorrow, shows no stale result.
+        clear = (f"{_CONNECT_FLASH}=; Path=/t/{t.tenant_id}/connect; Max-Age=0; HttpOnly; SameSite=Lax"
+                 + ("; Secure" if self._secure_cookies else ""))
+        return dataclasses.replace(page, extra_headers=(*page.extra_headers, ("Set-Cookie", clear)))
 
     def _qbo_begin(self, t: _Tenant) -> Response:
         """Redirect the owner to Intuit's authorize screen (signed, tenant-bound
@@ -6171,20 +6203,20 @@ class WebApp:
         if self._ledger is not None:
             refusal = self._qbo_company_check(t, client)
             if refusal:
-                self._qbo_migrate_msg[t.tenant_id] = refusal
                 if self._audit is not None:
                     self._audit.record(subject, "qbo.refresh_refused", self._session_clock(),
                                        tenant_id=t.tenant_id, detail=refusal)
-                return _redirect(f"/t/{t.tenant_id}/connect?migrate=error")
+                return self._connect_result(t, "migrate", False, refusal)
         as_of = date.fromtimestamp(self._session_clock())
         try:
             inputs, summary = build_inputs_from_qbo(client, as_of=as_of, currency=t.config.currency)
         except Exception:
             # a live API failure shouldn't 500 the owner; surface a soft error
-            return _redirect(f"/t/{t.tenant_id}/connect?sync=error")
-        # replace the tenant's inputs with the synced ones; invalidate the cache
-        # so the next forecast/briefing/report recomputes from the live books.
-        t.inputs = inputs
+            return self._connect_result(t, "sync", False)
+        # QuickBooks' cash, invoices and bills replace the last refresh's; the
+        # costs, payroll and plans the owner entered are kept. Invalidate the
+        # cache so the next forecast/briefing/report recomputes from them.
+        t.inputs = merge_refresh(t.inputs, inputs)
         t._dirty = True
         self._qbo_last_sync[t.tenant_id] = summary
         if self._audit is not None:
@@ -6204,21 +6236,18 @@ class WebApp:
             from .qbo_mirror import refresh_mirror
 
             if not self._qbo_has_ledger(t):
-                self._qbo_migrate_msg[t.tenant_id] = (
+                return self._connect_result(t, "migrate", False, (
                     "bring over your chart of accounts and balances first — a refresh "
-                    "keeps an existing mirror current, it doesn't create one")
-                return _redirect(f"/t/{t.tenant_id}/connect?migrate=error")
+                    "keeps an existing mirror current, it doesn't create one"))
             mirror = refresh_mirror(client, self._ledger, t.tenant_id, as_of=as_of.isoformat())
             detail = mirror.describe()
             if mirror.mismatches:
                 detail += ": " + "; ".join(mirror.mismatches[:3])
-            self._qbo_migrate_msg[t.tenant_id] = detail
             if self._audit is not None:
                 self._audit.record(subject, "qbo.mirror_refreshed", self._session_clock(),
                                    tenant_id=t.tenant_id, detail=detail)
-            return _redirect(
-                f"/t/{t.tenant_id}/connect?migrate={'ok' if mirror.ok else 'error'}")
-        return _redirect(f"/t/{t.tenant_id}/connect?sync=ok")
+            return self._connect_result(t, "migrate", mirror.ok, detail)
+        return self._connect_result(t, "sync", True)
 
     def _qbo_migrate(self, subject: str, t: _Tenant) -> Response:
         """Bring QuickBooks' chart of accounts + opening trial balance into the
@@ -6229,8 +6258,8 @@ class WebApp:
         if self._qbo is None:
             return _json(501, {"error": "QuickBooks connect is not configured"})
         if self._ledger is None:
-            self._qbo_migrate_msg[t.tenant_id] = "no ledger service is configured for this deployment"
-            return _redirect(f"/t/{t.tenant_id}/connect?migrate=error")
+            return self._connect_result(
+                t, "migrate", False, "no ledger service is configured for this deployment")
         client = self._qbo.api_client(t.tenant_id)
         if client is None:
             return _redirect(f"/t/{t.tenant_id}/connect")
@@ -6258,16 +6287,14 @@ class WebApp:
             mirror = refresh_mirror(client, self._ledger, t.tenant_id, as_of=today.isoformat())
             message += f" (opening balances as of {cutover}); then {mirror.describe()}"
             if not mirror.ok:
-                self._qbo_migrate_msg[t.tenant_id] = message
-                return _redirect(f"/t/{t.tenant_id}/connect?migrate=error")
-        self._qbo_migrate_msg[t.tenant_id] = message
+                return self._connect_result(t, "migrate", False, message)
         if self._audit is not None:
             self._audit.record(subject, "qbo.migrated", self._session_clock(),
                                tenant_id=t.tenant_id, detail=result.describe())
         if not result.ok:
-            return _redirect(f"/t/{t.tenant_id}/connect?migrate=error")
+            return self._connect_result(t, "migrate", False, message)
         self._qbo_migrated.add(t.tenant_id)
-        return _redirect(f"/t/{t.tenant_id}/connect?migrate=ok")
+        return self._connect_result(t, "migrate", True, message)
 
     def _qbo_callback(self, req: Request) -> Response:
         """Intuit's OAuth redirect target. Verifies the signed `state` (which

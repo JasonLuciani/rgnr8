@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .golive import subtype_for_account_type
+from .qbo_errors import plain_qbo_error
 
 SOURCE = "quickbooks"
 
@@ -101,7 +102,7 @@ def refresh_mirror(client: Any, ledger: Any, tenant: str, *, as_of: str) -> Mirr
     try:
         qbo_rows = client.trial_balance(as_of=as_of)
     except Exception as exc:  # noqa: BLE001 — a live API failure, reported softly
-        return MirrorResult(False, error=f"could not read the QuickBooks trial balance: {exc}")
+        return MirrorResult(False, error=f"could not read the QuickBooks trial balance: {plain_qbo_error(exc)}")
     target: dict[str, int] = {}
     meta: dict[str, dict[str, object]] = {}
     for r in qbo_rows:

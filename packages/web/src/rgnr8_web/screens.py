@@ -486,7 +486,6 @@ def render_connect_page(
     migrate_flag: str = "",
     migrate_message: str = "",
     ledger_migrated: bool = False,
-    ledger_sync: "dict[str, str] | None" = None,
     mirror_realm: str = "",
 ) -> str:
     """The connections page: QuickBooks Online status + a connect / reconnect /
@@ -603,39 +602,6 @@ def render_connect_page(
             'drive your cash outlook, briefing, and reports.</p></div>'
         )
 
-    # what the same sync moved into the BOOKS, as opposed to the forecast
-    ledger_block = ""
-    if ledger_sync is not None:
-        problems = ledger_sync.get("errors", "")
-        book_rows = (
-            ("Invoices brought across", ledger_sync.get("invoices", "0"),
-             "now open items in your books"),
-            ("Bills brought across", ledger_sync.get("bills", "0"),
-             "now open items in your books"),
-            ("Bank transactions waiting", ledger_sync.get("bank_new", "0"),
-             f'{ledger_sync.get("pending_review", "0")} in the review queue'),
-            ("Already had", ledger_sync.get("skipped", "0"),
-             "unchanged — a re-sync never duplicates"),
-        )
-        body = "".join(
-            f'<tr><td>{escape(label)}</td><td class="num">{escape(a)}</td>'
-            f'<td class="muted">{escape(b)}</td></tr>'
-            for (label, a, b) in book_rows
-        )
-        warn = (
-            f'<div class="banner warn" style="margin-top:10px">{escape(problems)}</div>'
-            if problems else ""
-        )
-        ledger_block = (
-            '<div class="card"><h2>Brought into your books</h2>'
-            '<table><thead><tr><th>What</th><th></th><th></th></tr></thead>'
-            f'<tbody>{body}</tbody></table>{warn}'
-            '<p class="muted" style="font-size:12px;margin-top:10px">Bank transactions '
-            'are queued for review rather than posted — QuickBooks knows money moved, '
-            'but only you know what it was for in your chart of accounts. '
-            f'<a class="btn-link" href="/t/{escape(tenant)}/inbox">Review them</a></p></div>'
-        )
-
     return f"""<h1>Connections</h1>
     <p class="sub">Keep RGNR8 in step with your QuickBooks Online company.</p>
     {sync_note}
@@ -650,8 +616,7 @@ def render_connect_page(
       <div style="margin-top:12px">{action}</div>
     </div>
     {migrate_block}
-    {sync_block}
-    {ledger_block}"""
+    {sync_block}"""
 
 
 # --- Scenario planning (in-shell what-if owner screen) ----------------------

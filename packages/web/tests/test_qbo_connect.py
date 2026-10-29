@@ -76,6 +76,13 @@ def _app(*, with_qbo: bool = True) -> tuple[WebApp, InMemoryConnectionStore]:
     return app, store
 
 
+def _follow(app: object, r: object) -> object:
+    """Land on Connections the way a browser does after a Refresh: with the
+    one-time result cookie the redirect set."""
+    cookie = dict(r.extra_headers)["Set-Cookie"].split(";", 1)[0]
+    return app.handle(Request("GET", "/t/acme/connect", {**_h("owner@acme.com"), "cookie": cookie}))
+
+
 def _h(sub: str, tenant: str = "acme") -> dict[str, str]:
     tok = sign_jwt({"sub": sub, "tenant": tenant, "exp": NOW + 3600}, SECRET)
     return {"authorization": f"Bearer {tok}"}
@@ -247,10 +254,10 @@ def test_sync_pulls_company_into_forecast() -> None:
     app = _connected_app()
     r = app.handle(Request("POST", "/t/acme/connect/qbo/sync", _h("owner@acme.com")))
     assert r.status == 302
-    assert dict(r.extra_headers)["Location"] == "/t/acme/connect?sync=ok"
+    assert dict(r.extra_headers)["Location"] == "/t/acme/connect"
 
     # the connect page now shows the last-sync summary with the real cash total
-    page = app.handle(Request("GET", "/t/acme/connect?sync=ok", _h("owner@acme.com")))
+    page = _follow(app, r)
     assert "Last refresh" in page.body and "Sandbox Co" in page.body
     assert "$2,001.50" in page.body      # 1201.00 + 800.50 bank balances
     assert "Refreshed from QuickBooks" in page.body
@@ -308,13 +315,13 @@ def test_a_sync_never_reposts_what_quickbooks_already_booked() -> None:
     app = _connected_app(ledger=LedgerClient(transport))
     r = app.handle(Request("POST", "/t/acme/connect/qbo/sync", _h("owner@acme.com")))
     assert r.status == 302
-    assert dict(r.extra_headers)["Location"] == "/t/acme/connect?migrate=error"
+    assert dict(r.extra_headers)["Location"] == "/t/acme/connect"
 
     paths = [c[1] for c in transport.calls if c[0] == "POST"]
     assert not any(p.endswith("/invoices") or p.endswith("/bills") for p in paths)
     assert not any("/feed/" in p for p in paths)
 
-    page = app.handle(Request("GET", "/t/acme/connect?migrate=error", _h("owner@acme.com")))
+    page = _follow(app, r)
     assert "bring over your chart of accounts and balances first" in page.body
 
 
@@ -439,8 +446,8 @@ def test_refresh_refuses_a_different_company_before_reading_anything_from_it() -
     app = _connected_app(ledger=LedgerClient(ledger))      # connected to R42
     before = app._tenants["acme"].inputs if hasattr(app, "_tenants") else None
     r = app.handle(Request("POST", "/t/acme/connect/qbo/sync", _h("owner@acme.com")))
-    assert dict(r.extra_headers)["Location"] == "/t/acme/connect?migrate=error"
-    page = app.handle(Request("GET", "/t/acme/connect?migrate=error", _h("owner@acme.com"))).body
+    assert dict(r.extra_headers)["Location"] == "/t/acme/connect"
+    page = _follow(app, r).body
     assert "your books mirror company R7" in page and "nothing was changed" in page
     # nothing was read from the other company, and nothing was written
     assert app._qbo.api_client("acme") is not None
@@ -470,8 +477,8 @@ def test_books_that_took_their_own_entries_are_never_pinned() -> None:
     names = [a["name"] for a in CHART]
     app = _connected_app(ledger=LedgerClient(ledger), queries=[_qbo_chart(names)])
     r = app.handle(Request("POST", "/t/acme/connect/qbo/sync", _h("owner@acme.com")))
-    assert dict(r.extra_headers)["Location"] == "/t/acme/connect?migrate=error"
-    page = app.handle(Request("GET", "/t/acme/connect?migrate=error", _h("owner@acme.com"))).body
+    assert dict(r.extra_headers)["Location"] == "/t/acme/connect"
+    page = _follow(app, r).body
     assert "no longer a copy of QuickBooks" in page
     assert not ledger.posts("/settings") and not ledger.posts("/entries")
 
@@ -482,8 +489,8 @@ def test_books_from_before_pinning_refuse_a_company_whose_chart_is_not_theirs() 
     other = ["Operating", "Reserve", "Receivables", "Payables", "Consulting", "Office"]
     app = _connected_app(ledger=LedgerClient(ledger), queries=[_qbo_chart(other)])
     r = app.handle(Request("POST", "/t/acme/connect/qbo/sync", _h("owner@acme.com")))
-    assert dict(r.extra_headers)["Location"] == "/t/acme/connect?migrate=error"
-    page = app.handle(Request("GET", "/t/acme/connect?migrate=error", _h("owner@acme.com"))).body
+    assert dict(r.extra_headers)["Location"] == "/t/acme/connect"
+    page = _follow(app, r).body
     assert "0 of 6 accounts" in page
     assert not ledger.posts("/settings") and not ledger.posts("/entries")
 
@@ -531,3 +538,111 @@ def test_a_pin_the_ledger_did_not_store_is_not_remembered() -> None:
     t = SimpleNamespace(tenant_id="acme")
     assert "didn't store it" in app._qbo_pin(t, "9341453432535209", "2026-09-30")
     assert app._qbo_binding(t) == ""          # nothing remembered
+
+
+# --- the result banner is shown once (issue 7) --------------------------------
+
+
+def test_a_refresh_result_is_shown_once_and_not_on_reload() -> None:
+    app = _connected_app()
+    r = app.handle(Request("POST", "/t/acme/connect/qbo/sync", _h("owner@acme.com")))
+    page = _follow(app, r)
+    assert "Refreshed from QuickBooks" in page.body
+    # The page clears the result as it shows it...
+    clears = [v for k, v in page.extra_headers if k == "Set-Cookie" and "rgnr8_connect_flash=;" in v]
+    assert clears and "Max-Age=0" in clears[0]
+    # ...so a reload (no cookie) shows no stale result.
+    again = app.handle(Request("GET", "/t/acme/connect", _h("owner@acme.com")))
+    assert "Refreshed from QuickBooks" not in again.body
+
+
+def test_an_old_result_url_shows_nothing() -> None:
+    # A bookmarked ?migrate=ok used to reprint "Brought your QuickBooks chart…
+    # into the books" forever, including after every restart.
+    app = _connected_app()
+    for flag in ("migrate=ok", "migrate=error", "sync=ok"):
+        page = app.handle(Request("GET", f"/t/acme/connect?{flag}", _h("owner@acme.com"))).body
+        assert "Brought your QuickBooks chart" not in page
+        assert "Refreshed from QuickBooks" not in page
+
+
+def test_the_result_survives_landing_on_the_other_worker() -> None:
+    # Production runs two gunicorn workers: the redirect after a Refresh often
+    # lands on the one that didn't run it. The detailed message must come along.
+    from rgnr8_web import LedgerClient
+    ledger = MirrorLedger(entries=[OPENING, {"source": "owner", "date": "2026-10-02",
+                                             "memo": "October rent"}], accounts=CHART)
+    names = [a["name"] for a in CHART]
+    worker_a = _connected_app(ledger=LedgerClient(ledger), queries=[_qbo_chart(names)])
+    worker_b = _connected_app(ledger=LedgerClient(ledger))
+    r = worker_a.handle(Request("POST", "/t/acme/connect/qbo/sync", _h("owner@acme.com")))
+    assert "no longer a copy of QuickBooks" in _follow(worker_b, r).body
+
+
+def test_a_forged_or_garbled_result_cookie_is_ignored() -> None:
+    app = _connected_app()
+    for junk in ("%%%", "eyJrIjoiZXZpbCJ9", ""):
+        page = app.handle(Request("GET", "/t/acme/connect",
+                                  {**_h("owner@acme.com"), "cookie": f"rgnr8_connect_flash={junk}"}))
+        assert page.status == 200
+
+
+# --- Refresh keeps what the owner entered (issue 8) ---------------------------
+
+
+def test_refresh_replaces_quickbooks_facts_and_keeps_the_owners_plans() -> None:
+    from rgnr8_forecast import (
+        Category, Confidence, Direction, Frequency, OneTimeItem, PayrollSchedule, Recurrence,
+        RecurringItem,
+    )
+
+    second_refresh = [  # the same company again, for the second Refresh
+        _qr({"CompanyInfo": [{"CompanyName": "Sandbox Co"}]}),
+        _qr({"Account": [
+            {"Id": "1", "Name": "Checking", "AccountType": "Bank", "CurrentBalance": 1201.00},
+            {"Id": "2", "Name": "Savings", "AccountType": "Bank", "CurrentBalance": 800.50},
+        ]}),
+        _qr({"Invoice": [{"Id": "9", "DocNumber": "1001", "Balance": 150.00, "TxnDate": "2026-07-01",
+                          "DueDate": "2026-08-01", "CustomerRef": {"name": "Amy"}}]}),
+        _qr({"Bill": [{"Id": "5", "Balance": 400.00, "TxnDate": "2026-07-10",
+                       "DueDate": "2026-08-10", "VendorRef": {"name": "Norton"}}]}),
+    ]
+    app = _connected_app(extra_queries=second_refresh)
+    t = app._tenants["acme"]
+    rent = RecurringItem("Rent", Category.RENT, Direction.OUTFLOW, usd("4000.00"),
+                         Recurrence(Frequency.MONTHLY, anchor=date(2026, 8, 1)))
+    payroll = PayrollSchedule("Payroll", Recurrence(Frequency.BIWEEKLY, anchor=date(2026, 8, 7)),
+                              usd("16000.00"), usd("4200.00"))
+    tax = OneTimeItem(label="Q3 estimated tax", category=Category.TAX_REMITTANCE, direction=Direction.OUTFLOW,
+                      amount=usd("3000.00"), on_date=date(2026, 9, 15), confidence=Confidence.PLANNED)
+    t.inputs = ForecastInputs(opening=t.inputs.opening, recurring=(rent,), payroll=(payroll,),
+                              one_time=(tax,))
+
+    for _ in range(2):  # twice: last refresh's bills are replaced, not piled up
+        app.handle(Request("POST", "/t/acme/connect/qbo/sync", _h("owner@acme.com")))
+
+    inputs = app._tenants["acme"].inputs
+    assert inputs.recurring == (rent,) and inputs.payroll == (payroll,)
+    assert tax in inputs.one_time
+    assert [i.label for i in inputs.one_time if i.confidence is Confidence.RECORDED] == ["Norton"]
+    assert inputs.opening.available == usd("2001.50") and len(inputs.invoices) == 1
+
+
+# --- QuickBooks errors in plain words (issue 10) ------------------------------
+
+
+def test_quickbooks_errors_are_said_plainly() -> None:
+    from rgnr8_qbo import QboApiError
+    from rgnr8_web.qbo_errors import plain_qbo_error
+
+    fault_401 = ('{"Fault":{"Error":[{"Message":"message=AuthenticationFailed; errorCode=003200; '
+                 'statusCode=401","code":"3200"}],"type":"AUTHENTICATION"}}')
+    said = plain_qbo_error(QboApiError("report TrialBalance returned 401: " + fault_401,
+                                       status=401, body=fault_401))
+    assert "Reconnect QuickBooks" in said and "{" not in said and "Fault" not in said
+
+    fault_400 = '{"Fault":{"Error":[{"Message":"Invalid date","code":"2010"}]}}'
+    assert plain_qbo_error(QboApiError("x", status=400, body=fault_400)) == (
+        "QuickBooks turned the request down: Invalid date")
+    assert "error 503" in plain_qbo_error(QboApiError("x", status=503, body="<html>"))
+    assert "Wait a minute" in plain_qbo_error(QboApiError("x", status=429, body=""))
