@@ -537,6 +537,19 @@ _KEY_SCOPES: contextvars.ContextVar[frozenset[str] | None] = contextvars.Context
 _POSTING_REQUEST: contextvars.ContextVar[str] = contextvars.ContextVar(
     "rgnr8_posting_request", default="")
 
+def _in_tenant(path: str) -> str:
+    """The part of /t/<tenant>/... after the tenant, with its query: "" outside."""
+    parts = urlsplit(path)
+    segs = [p for p in parts.path.split("/") if p]
+    if len(segs) < 2 or segs[0] != "t":
+        return ""
+    return "/".join(segs[2:]) + (f"?{parts.query}" if parts.query else "")
+
+
+# Where in the tenant this request is ("books/statements", "inbox?status=POSTED"):
+# the page frame marks the current tab from it. Set per request in `handle`.
+_HERE: contextvars.ContextVar[str] = contextvars.ContextVar("rgnr8_here", default="")
+
 
 class WebApp:
     def __init__(
@@ -1068,6 +1081,7 @@ class WebApp:
         _VIEW_AS.set(None)  # reset per request; only a platform token re-sets it
         _KEY_SCOPES.set(None)  # reset per request; only a scoped API key re-sets it
         _POSTING_REQUEST.set("")  # reset per request; set once the route is known
+        _HERE.set(_in_tenant(req.path))
         _csp_new_nonce()  # fresh CSP script nonce for this request's inline scripts
 
         if route == "/health":
@@ -5621,7 +5635,8 @@ class WebApp:
         return _html(200, render_shell(tenant=t.tenant_id, display_name=t.name, role=role,
                                        permissions=perms, active=active, body_html=body,
                                        subject=subject, available=self._nav_available(),
-                                       deploy_notice=self._ledger_skew() or ""))
+                                       deploy_notice=self._ledger_skew() or "",
+                                       here=_HERE.get()))
 
     def _review_count(self, t: _Tenant) -> "int | None":
         """How many bank lines are waiting, or None when nobody can tell.

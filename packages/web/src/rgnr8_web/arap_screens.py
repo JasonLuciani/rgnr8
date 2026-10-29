@@ -210,10 +210,6 @@ def render_documents(
             if (_minor(overdue_total) or 0) > 0
             else ""
         )
-        + f' · <a class="btn-link" href="/t/{_esc(tenant)}/{"receivables" if is_ar else "payables"}/aging">'
-        "Aging</a>"
-        + ("" if is_ar
-           else f' · <a class="btn-link" href="/t/{_esc(tenant)}/books/1099">1099s</a>')
         + "</p>"
     )
 

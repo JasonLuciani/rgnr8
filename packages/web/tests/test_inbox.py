@@ -410,7 +410,7 @@ def test_transactions_leads_to_the_real_inbox_when_a_ledger_is_configured() -> N
     assert r.headers.get("Location") == "/t/acme/inbox"
     # and there is exactly one register in the nav
     page = _req(app, "/t/acme/inbox")
-    assert page.body.count(">Bank transactions<") == 1
+    assert page.body.count(">Bank transactions</a>") == 1  # the nav link; the title is the h1
 
 
 def test_the_review_queue_is_served_as_json_from_the_real_feed() -> None:
