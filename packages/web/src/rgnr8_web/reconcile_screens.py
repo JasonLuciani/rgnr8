@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from .books_screens import _card, _esc, _minor, money
-from .provenance_labels import Provenance, most_cautious
+from .provenance_labels import Provenance
 
 
 def _banner(kind: str, text: str) -> str:
@@ -283,14 +283,14 @@ def render_reconcile(
     if error:
         head += _banner("warn", error)
 
-    title = f"Reconcile {code} — {_esc(view.get('account_name'))}"
+    title = f"Reconcile {code} — {view.get('account_name')}"
     back = f'<a class="btn-link" href="/t/{_esc(tenant)}/books/reconcile">Other accounts</a>'
     return (
         head
-        # The statement balance is the bank's, typed in; the cleared side is
-        # the books'. The worksheet is only as firm as the statement.
-        + _card(f"{title} · as of {_esc(date)}", tally + finish, back,
-                provenance=most_cautious((Provenance.IMPORTED, Provenance.POSTED)))
+        # The statement balance is typed in by the owner from the bank's
+        # statement: not imported, not posted, on no rung of the ladder. So the
+        # worksheet that sets it against the books carries no label.
+        + _card(f"{title} · as of {date}", tally + finish, back)
         + _statement_form(tenant, code, date, balance_minor)
         + (_import_form(tenant, code, date, balance_minor) if can_post else "")
         + _card("Transactions", table, provenance=Provenance.POSTED)

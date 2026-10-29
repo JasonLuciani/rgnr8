@@ -361,6 +361,8 @@ def test_every_card_follows_the_layout_with_real_books(ledger_service: str) -> N
     go("payroll/employees", "POST", "name=Ada+Reyes")
     go("payroll", "POST", "id=PR-1&date=2026-08-15&employer_taxes=100.00"
                           "&employee1=ada-reyes&gross1=2000.00&taxes1=300.00")
+    # Posted, so the runs list is all books (a draft run leaves it unlabelled).
+    go("payroll/PR-1/post", "POST")
 
     for path in _LEDGER_SCREENS + _OTHER_SCREENS:
         _check_cards(go(path), where=path or "home", ledger_backed=path in _LEDGER_SCREENS)
@@ -485,3 +487,64 @@ def test_every_label_on_a_page_is_explained_at_its_foot() -> None:
     out = frame(body, title="Ledger", tenant="acme", section="books", here="books/trial-balance")
     foot = out[out.index('<footer class="page-foot">'):]
     assert "Sealed" in foot and "Posted" in foot and out.count("rg-prov-legend") == 1
+
+
+# --- from the review of PR #40 -------------------------------------------------
+
+
+def test_a_label_on_a_card_without_a_title_still_shows() -> None:
+    html = card("", "<p>$1.00</p>", provenance=Provenance.POSTED)
+    assert '<div class="card-head"><span class="rg-prov rg-prov-posted"' in html
+    assert "<h2>" not in html
+    assert "card-head" not in card("", "<p>x</p>")
+
+
+def test_a_name_with_an_ampersand_is_escaped_once_in_a_card_title() -> None:
+    from rgnr8_web.asset_screens import render_asset_detail
+    from rgnr8_web.books_screens import render_register
+
+    reg = render_register("acme", {"code": "6100", "name": "R&D", "rows": []})
+    assert "<h2>6100 — R&amp;D</h2>" in reg and "&amp;amp;" not in reg
+    asset = render_asset_detail("acme", {"asset": {"id": "a1", "name": "R&D rig"}},
+                                can_write=False)
+    assert "<h2>R&amp;D rig</h2>" in asset and "&amp;amp;" not in asset
+
+
+def test_a_payroll_list_with_a_draft_in_it_claims_no_label() -> None:
+    from rgnr8_web.payroll_screens import render_payroll_home
+
+    def runs(*statuses: str) -> str:
+        return render_payroll_home(
+            "acme", {"runs": [{"id": f"PR-{i}", "status": s, "totals": {}}
+                              for i, s in enumerate(statuses)]},
+            {}, {}, can_post=False)
+
+    head = '<h2>Payroll runs</h2><span class="rg-prov rg-prov-posted"'
+    assert head in runs("POSTED", "VOID")
+    assert "<h2>Payroll runs</h2></div>" in runs("POSTED", "DRAFT")
+
+
+def test_job_cards_that_mix_the_plan_with_the_books_are_not_posted() -> None:
+    from rgnr8_web.job_screens import _billing_card, _work_order_card
+
+    billing = _billing_card("acme", {"id": "J-1"}, {"totals": {}}, can_edit=False)
+    assert "rg-prov-forecast" in billing and "rg-prov-posted" not in billing
+    orders = _work_order_card("acme", {"job_id": "J-1", "work_orders": [
+        {"id": "W-1", "title": "Frame", "status": "SCHEDULED"}], "totals": {}}, False)
+    assert "rg-prov" not in orders
+
+
+def test_the_app_landing_keeps_cash_today_to_the_figure() -> None:
+    from rgnr8_web.rbac import Role
+    from rgnr8_web.shell import render_app_home
+
+    html = render_app_home(tenant="acme", display_name="Acme", role=Role.OWNER,
+                           permissions=frozenset(), cash_today="$5,000.00", status="WATCH",
+                           headline="Cash stays above your floor.", latest_period="")
+    _check_cards(html, where="app")
+    cards = _cards_by_title(html)
+    assert cards["Cash today"].words().split() == ["Cash", "today", "$5,000.00"]
+    outlook = cards["Next 13 weeks"]
+    assert any("chip-status" in el.cls for el in outlook.walk())
+    assert "Open the cash outlook" in outlook.words()
+

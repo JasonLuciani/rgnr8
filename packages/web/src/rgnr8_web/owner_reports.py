@@ -61,7 +61,7 @@ def render_aging(data: Mapping[str, object]) -> str:
     kind = str(data.get("kind", "AR"))
     who = "Customer" if kind == "AR" else "Vendor"
     title = f"{'Receivables' if kind == 'AR' else 'Payables'} Aging"
-    as_of = _esc(data.get("as_of", ""))
+    as_of = data.get("as_of", "")
     labels = _seq(data.get("bucket_labels"))
     rows = _seq(data.get("rows"))
     header = "".join(f'<th class="num">{_esc(lbl)}</th>' for lbl in labels)
@@ -91,7 +91,7 @@ def render_aging(data: Mapping[str, object]) -> str:
 
 def render_budget(data: Mapping[str, object]) -> str:
     ccy = str(data.get("currency", "USD"))
-    period = _esc(data.get("period", ""))
+    period = data.get("period", "")
     rows = _seq(data.get("lines"))
     body_rows = []
     for l in rows:

@@ -235,7 +235,7 @@ def render_loan_detail(
     sections = [
         _banners(done, error),
         f'<p><a href="/t/{_esc(tenant)}/debt">← All debt</a></p>',
-        _card(_esc(loan.get("lender")), summary, provenance=Provenance.POSTED),
+        _card(str(loan.get("lender")), summary, provenance=Provenance.POSTED),
         # Payoff and amortization look ahead; payments already made are posted.
         _card("Payoff planning", payoff_html + payoff_form, provenance=Provenance.FORECAST),
         _card("Amortization schedule", schedule_tbl, provenance=Provenance.FORECAST),

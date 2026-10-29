@@ -346,7 +346,7 @@ def render_aging(tenant: str, side: str, data: Mapping[str, object],
         f'<a class="btn-link" href="/t/{_esc(tenant)}/{"invoices" if is_ar else "bills"}">'
         f'Back to {"invoices" if is_ar else "bills"}</a>'
     )
-    title = f"{'Receivables' if is_ar else 'Payables'} Aging — as of {_esc(data.get('as_of'))}"
+    title = f"{'Receivables' if is_ar else 'Payables'} Aging — as of {data.get('as_of')}"
     return _card(title, table, back, provenance=Provenance.POSTED)
 
 

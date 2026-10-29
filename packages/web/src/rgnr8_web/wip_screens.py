@@ -94,7 +94,7 @@ def render_wip(
         f'{money(totals.get("over_billed_minor"))} is money taken for work not yet done.</p>'
     )
     # Earned revenue is worked out from estimated total cost: an estimate.
-    out = head + _card(f"Work in progress{f' through {_esc(through)}' if through else ''}", body,
+    out = head + _card(f"Work in progress{f' through {through}' if through else ''}", body,
                        provenance=most_cautious((Provenance.FORECAST, Provenance.POSTED)))
 
     if can_post:

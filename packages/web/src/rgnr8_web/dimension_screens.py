@@ -173,7 +173,7 @@ def render_dimension_report(
 
     key = _esc(data.get("dimension"))
     filter_form = _card(
-        f"{_esc(data.get('label'))} — by value",
+        f"{data.get('label')} — by value",
         f'<form method="get" action="/t/{_esc(tenant)}/books/dimensions/{key}">'
         '<div class="grid2">'
         f'<div><label>From</label><input name="from" value="{_esc(frm)}" '

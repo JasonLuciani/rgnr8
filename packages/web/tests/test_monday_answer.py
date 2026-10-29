@@ -231,7 +231,10 @@ def test_the_outlook_sentence_says_what_the_floor_means_in_each_case() -> None:
                     "Sep 1, and ends the 13 weeks at $18,000.00. It stays above your $10,000.00 "
                     "floor for all 13 weeks, with $4,640.00 to spare at the low point.")
     # With nothing spent, "stays above the floor" would be true and meaningless.
-    assert "no costs are in the outlook" in _chart_summary(proj("20000.00"), has_costs=False)
-    assert "lowest point" not in _chart_summary(proj("20000.00"), has_costs=False)
+    no_costs = _chart_summary(proj("20000.00"), has_costs=False)
+    assert "No costs are in the outlook yet" in no_costs and "floor" not in no_costs
+    # The trajectory stays: the sentence is what a screen reader hears for the chart.
+    assert "reaches its lowest point of $20,000.00 on Sep 1" in no_costs
+    assert "ends the 13 weeks at $18,000.00" in no_costs
     assert "below your $10,000.00 minimum-cash floor" in _chart_summary(
         proj("5000.00", breached=True))

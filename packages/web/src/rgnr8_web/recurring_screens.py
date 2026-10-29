@@ -92,7 +92,7 @@ def _due_card(tenant: str, items: list[Mapping[str, object]], as_of: str,
             "still running after you cancelled it.</p>"
             f'<button class="btn" type="submit">Post all {len(items)}</button></form>'
         )
-    return _card(f"{len(items)} due as of {_esc(as_of)}", table + action)
+    return _card(f"{len(items)} due as of {as_of}", table + action)
 
 
 def _templates_card(

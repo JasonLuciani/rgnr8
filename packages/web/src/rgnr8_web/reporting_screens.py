@@ -55,7 +55,7 @@ def render_general_ledger(
             + _num(a.get("total_debit_minor")) + _num(a.get("total_credit_minor"))
             + _num(a.get("closing_minor")) + "</tr></tbody></table></div>"
         )
-        blocks.append(_card(f"{_esc(a.get('code'))} — {_esc(a.get('name'))}", table, provenance=Provenance.POSTED))
+        blocks.append(_card(f"{a.get('code')} — {a.get('name')}", table, provenance=Provenance.POSTED))
 
     if not blocks:
         blocks.append(_card(
@@ -165,7 +165,7 @@ def render_budget(
 
     # The budget is the owner's plan; only the actuals are posted.
     out = head + _period_form(tenant, period) + _card(
-        f"Budget vs Actual — {_esc(period)}", table,
+        f"Budget vs Actual — {period}", table,
         provenance=most_cautious((Provenance.FORECAST, Provenance.POSTED)),
     )
     if can_post:
@@ -217,7 +217,7 @@ def _budget_form(
         f'<div class="grid3">{"".join(rows[i:i + 3])}</div>' for i in range(0, len(rows), 3)
     )
     return _card(
-        f"Set the budget for {_esc(period)}",
+        f"Set the budget for {period}",
         f'<form method="post" action="/t/{_esc(tenant)}/books/budget">'
         f'<input type="hidden" name="period" value="{_esc(period)}">'
         + grid

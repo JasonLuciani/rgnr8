@@ -163,7 +163,8 @@ def card(title: str, body: str, *, actions: str = "",
     escaped here.
     """
     badge = prov_badge(provenance) if provenance is not None else ""
-    head = f'<div class="card-head"><h2>{escape(title)}</h2>{badge}</div>' if title else ""
+    name = f"<h2>{escape(title)}</h2>" if title else ""
+    head = f'<div class="card-head">{name}{badge}</div>' if title or badge else ""
     acts = f'<div class="card-acts">{actions}</div>' if actions.strip() else ""
     return f'<section class="card">{head}{body}{acts}</section>'
 

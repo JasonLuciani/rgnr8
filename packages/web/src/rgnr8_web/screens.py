@@ -124,8 +124,12 @@ def _chart_summary(p: "Projection", *, has_costs: bool = True) -> str:
     if not has_costs and not p.breach.breached:
         # "Stays above your floor" is true of an outlook in which nothing is
         # spent, and says nothing about the business.
-        return (f"Cash starts at {_money(p.opening_available)} today, but no costs are in the "
-                "outlook yet, so it can't say how long that lasts.")
+        # The trajectory stays in: this sentence is also what a screen reader
+        # hears in place of the chart.
+        return (f"Cash starts at {_money(p.opening_available)} today, reaches its lowest point "
+                f"of {_money(low.balance)} on {low.on_date:%b} {low.on_date.day}, and ends the "
+                f"13 weeks at {_money(p.ending_balance)}. No costs are in the outlook yet, "
+                "though, so it can't say how long your cash really lasts.")
     line = (f"Cash starts at {_money(p.opening_available)} today, reaches its lowest point of "
             f"{_money(low.balance)} on {low.on_date:%b} {low.on_date.day}, and ends the 13 weeks "
             f"at {_money(p.ending_balance)}.")

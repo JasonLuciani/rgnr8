@@ -64,7 +64,7 @@ def render_ten99(
         head += _banner("good", f"{len(rows)} form(s) to file for {year}, all with a tax id.")
 
     out = head + _card(
-        f"1099-NEC — {_esc(year)}",
+        f"1099-NEC — {year}",
         _reportable_table(rows, data) + _period_form(tenant, year),
         provenance=Provenance.POSTED,
     )
@@ -154,7 +154,7 @@ def _missing_card(missing: list[Mapping[str, object]]) -> str:
         "counted above</strong>. They probably should be. Enter them as bills "
         "against that vendor and they will be. This is a prompt rather than a "
         "number because guessing produces a total you cannot defend.</p>",
-        provenance=Provenance.POSTED,
+        # A prompt to act, not a figure to rely on, so it carries no label.
     )
 
 

@@ -363,7 +363,9 @@ def _work_order_card(
         f'<a class="btn ghost" href="/t/{_esc(tenant)}/work-orders?job_id='
         f'{_esc(work_orders.get("job_id"))}">Open work orders</a>' if can_edit else ""
     )
-    return _card("Work orders", body, actions, provenance=Provenance.POSTED)
+    # Scheduled and draft orders sit beside booked ones, and "unbilled" is a
+    # promise to invoice: no one rung fits the rows, so no label.
+    return _card("Work orders", body, actions)
 
 
 def _billing_card(
@@ -443,7 +445,9 @@ def _billing_card(
 
     if can_edit:
         body += _billing_actions(tenant, job, billing)
-    return _card("Billing", body, provenance=Provenance.POSTED)
+    # The contract's plan (schedule of values, what is left, milestones not yet
+    # billed) sits beside what was invoiced: only as firm as the plan.
+    return _card("Billing", body, provenance=_PLAN_AND_BOOKS)
 
 
 def _billing_actions(

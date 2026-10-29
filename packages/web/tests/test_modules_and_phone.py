@@ -94,6 +94,24 @@ def test_the_sidebar_becomes_the_menu_below_1024px_everywhere_at_once() -> None:
     assert f"@media{_MENU_MEDIA},(pointer:coarse){{.rg-nav" in css
     body = _app().handle(Request("GET", "/t/acme/team", OWNER, "")).body
     assert f"matchMedia('{_MENU_MEDIA}')" in body
-    assert "860px" not in body and "860px" not in _SHELL_CSS
+    # 860px survives only as where the business name leaves the top bar.
+    assert re.findall(r"@media[^{]*860px[^{]*\{([^{]*)\{", css) == [".rg-biz"]
+    assert "matchMedia('(max-width:860px)')" not in body
+    # Between 860 and 1024px the menu folds but the business name stays.
+    menu_rule = css[css.index(f"@media{_MENU_MEDIA}{{.rg-layout"):]
+    assert ".rg-biz" not in menu_rule[:menu_rule.index("}}")]
     # A phone still never scrolls sideways: wide tables scroll inside themselves.
     assert ".shell table{display:block;max-width:100%;overflow-x:auto}" in _SHELL_CSS
+
+
+def test_the_menu_follows_the_window_across_the_breakpoint() -> None:
+    # Closed on load at 960px, the menu stayed closed after maximising, with
+    # its summary hidden above the breakpoint, so the nav vanished until a
+    # reload. The script now listens for the width changing, both ways.
+    body = _app().handle(Request("GET", "/t/acme/team", OWNER, "")).body
+    script = body[body.index("var q=matchMedia("):]
+    script = script[:script.index("</script>")]
+    assert f"matchMedia('{_MENU_MEDIA}')" in script
+    assert "addEventListener('change',fit)" in script and "addListener(fit)" in script
+    assert "w.removeAttribute('open')" in script and "w.setAttribute('open','')" in script
+

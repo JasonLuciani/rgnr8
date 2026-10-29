@@ -183,7 +183,7 @@ def render_asset_detail(
     sections = [
         _banners(done, error),
         f'<p><a href="/t/{_esc(tenant)}/assets">← All assets</a></p>',
-        _card(_esc(asset.get("name")), summary, provenance=Provenance.POSTED),
+        _card(str(asset.get("name")), summary, provenance=Provenance.POSTED),
         # The schedule runs into periods not yet depreciated: a projection.
         _card("Depreciation schedule", schedule_tbl, provenance=Provenance.FORECAST),
     ]

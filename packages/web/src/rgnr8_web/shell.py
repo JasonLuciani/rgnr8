@@ -146,6 +146,7 @@ _NAV: list[tuple[str, str, Permission]] = [
 # that must still get the menu rather than fall between the two layouts.)
 MENU_BREAKPOINT_PX = 1024
 _MENU_MEDIA = f"(max-width:{MENU_BREAKPOINT_PX - 0.02:g}px)"
+_BIZ_HIDE_PX = 860
 
 _SHELL_CSS = f"""<style>
 {font_face_css()}
@@ -188,8 +189,11 @@ _SHELL_CSS = f"""<style>
     .rg-nav{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
       gap:4px 14px;padding:8px 0 4px}}
     .rg-navgroup{{margin-bottom:8px}}
-    .rg-biz{{display:none}}
   }}
+  /* The business name in the top bar truncates with an ellipsis, so it only
+     needs to go where the bar is genuinely too narrow for it. That is not the
+     menu breakpoint: between 860 and 1024px there is room for both. */
+  @media (max-width:{_BIZ_HIDE_PX}px){{.rg-biz{{display:none}}}}
   .rg-beta{{color:var(--rg-watch,#e0a600);margin-left:3px;font-size:14px;line-height:0;vertical-align:middle}}
   .rg-who{{display:flex;align-items:center;gap:10px;color:#DDE6DD;font-size:13px}}
   .rg-rolechip{{background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.16);border-radius:999px;
@@ -216,13 +220,6 @@ _SHELL_CSS = f"""<style>
   /* Labels are grid cells in every field grid, so their vertical rhythm comes
      from the grid's row gap rather than from a margin that compounds with it. */
   .grid>label,.grid2>label,.grid3>label,.grid4>label{{margin:10px 0 6px}}
-  /* The cash hero: the figure on the left, the state and its one-line reading
-     on the right, stacking on a phone rather than squeezing to four columns. */
-  .cash-hero{{display:flex;align-items:flex-end;justify-content:space-between;
-    gap:16px;flex-wrap:wrap}}
-  .cash-state{{text-align:right;max-width:36ch}}
-  .cash-state .line{{margin-top:8px;color:var(--rg-ink-2);font-size:14px}}
-  @media(max-width:560px){{.cash-state{{text-align:left}}}}
   /* The 13-week card leads with its verdict: the status, then the sentence
      that says where cash goes against the floor. */
   .cash-verdict{{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;margin:0 0 12px}}
@@ -683,8 +680,14 @@ def _nav_html(
         '<details class="rg-navwrap" open><summary aria-label="Menu">Menu</summary>'
         '<nav class="rg-nav" aria-label="Sections">' + "".join(groups_html) + "</nav></details>"
         + script_open()
-        + f"if(window.matchMedia&&matchMedia('{_MENU_MEDIA}').matches){{"
-          "var w=document.querySelector('.rg-navwrap');if(w)w.removeAttribute('open');}"
+        # Closed on a narrow window, open on a wide one, and kept that way as the
+        # window changes: a menu closed on load at 960px used to stay closed after
+        # maximising, with its summary hidden, so the nav vanished until a reload.
+        + "(function(){var w=document.querySelector('.rg-navwrap');"
+          f"if(!w||!window.matchMedia)return;var q=matchMedia('{_MENU_MEDIA}');"
+          "function fit(){if(q.matches)w.removeAttribute('open');else w.setAttribute('open','');}"
+          "fit();if(q.addEventListener)q.addEventListener('change',fit);"
+          "else if(q.addListener)q.addListener(fit);})();"
         + "</script>"
     )
 
@@ -805,13 +808,15 @@ def render_app_home(
     # status pill that reimplemented the one on the cash screen, which is how
     # the two ended up with different borders.
     briefing = Action("This week's briefing", href=f"/t/{tenant}/briefing", kind="ghost")
+    # As on the cash page: "Cash today" holds the figure and nothing else; the
+    # status and its one-line reading are the outlook's, in a card of their own.
+    outlook = card("Next 13 weeks", (
+        f'<div class="cash-verdict">{status_chip(status)}'
+        f'<p class="chart-summary">{escape(headline)}</p></div>'),
+        actions=cta.html() + briefing.html())
     return f"""{page_header(hello, sub=f"{display_name} · you're signed in as {who}")}
-    <div class="card"><div class="cash-hero">
-      <div>{metric("Cash today", cash_today, hero=True)}</div>
-      <div class="cash-state">{status_chip(status)}
-        <div class="line">{escape(headline)}</div></div>
-    </div>
-    <div class="row" style="margin-top:18px">{cta.html()}{briefing.html()}</div></div>
+    {card("Cash today", metric("", cash_today, hero=True))}
+    {outlook}
     {card("Records", '<p style="margin:0">Latest sealed financial package</p>', actions=pkg_link)}"""
 
 

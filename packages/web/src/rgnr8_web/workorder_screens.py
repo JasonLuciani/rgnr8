@@ -17,7 +17,6 @@ from collections.abc import Mapping
 
 from .books_screens import _card, _esc, _minor, _num, _seq, money
 from .job_screens import _milli
-from .provenance_labels import Provenance
 
 
 def _banner(kind: str, text: str) -> str:
@@ -69,9 +68,11 @@ def render_work_orders(
         "the hours booked to it cost the job and bill the customer without being typed "
         "twice.</p>"
     )
-    out = head + _card(f"To do ({len(open_rows)})", body, provenance=Provenance.POSTED)
+    # Work orders are a schedule, not ledger entries: drafts and scheduled days
+    # sit beside booked time, so neither list claims a provenance rung.
+    out = head + _card(f"To do ({len(open_rows)})", body)
     if done_rows:
-        out += _card(f"Done ({len(done_rows)})", _table(tenant, done_rows), provenance=Provenance.POSTED)
+        out += _card(f"Done ({len(done_rows)})", _table(tenant, done_rows))
     if can_edit:
         out += _new_form(tenant, jobs, employees, job_filter)
     return out

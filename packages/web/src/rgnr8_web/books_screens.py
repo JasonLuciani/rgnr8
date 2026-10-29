@@ -313,7 +313,7 @@ def render_register(tenant: str, reg: Mapping[str, object]) -> str:
         + "</tr></tbody></table></div>"
     )
     back = f'<a class="btn-link" href="/t/{_esc(tenant)}/books">Back to books</a>'
-    return _card(f"{_esc(reg.get('code'))} — {_esc(reg.get('name'))}", table, back, provenance=Provenance.POSTED)
+    return _card(f"{reg.get('code')} — {reg.get('name')}", table, back, provenance=Provenance.POSTED)
 
 
 # --- statements from the client's own books ----------------------------------
