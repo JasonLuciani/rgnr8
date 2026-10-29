@@ -316,7 +316,9 @@ _LEDGER_SCREENS = (
     "books/wip", "books/1099", "books/accounts", "books/accounts/1000", "inventory",
     "receivables/aging", "payables/aging", "inbox/rules",
 )
-_OTHER_SCREENS = ("", "briefing", "ask", "receivables", "capture", "close", "packages",
+# No "ask": this app has no AI provider, so Ask is a 404 here; the stub sweep
+# above covers it switched on.
+_OTHER_SCREENS = ("", "briefing", "receivables", "capture", "close", "packages",
                   "reports", "scenarios", "connect", "team", "settings", "integrations",
                   "audit", "costs", "transactions")
 
