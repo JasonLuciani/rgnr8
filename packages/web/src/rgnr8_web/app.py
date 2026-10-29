@@ -96,7 +96,8 @@ from rgnr8_scenario.adjustments import Adjustment
 
 from .apikeys import ApiKeyService
 from .arap_screens import render_aging as render_arap_aging
-from .arap_screens import render_documents
+from .arap_screens import render_documents, render_open_items, tie_out_line
+from .open_items import read_open_items, snapshot_from_quickbooks
 from .attachment_screens import render_attachments, render_attachments_unavailable
 from .audit import AuditSink
 from .auth import Authenticator, JwtError, StaticTokenAuthenticator, sign_jwt, verify_jwt
@@ -2216,13 +2217,13 @@ class WebApp:
         docs = self._ledger.documents(t.tenant_id, kind)
         if not docs.ok:
             return self._shell(subject, t, kind, render_books_unavailable(docs.error()))
+        mirrored = self._mirrored_open_items(t, kind, docs.body)
+        if mirrored is not None:
+            return self._shell(subject, t, kind, mirrored)
         party_kind = "customers" if kind == "invoices" else "vendors"
         parties = self._ledger.parties(t.tenant_id, party_kind)
         perms, _role = self._perms_role(subject, t.tenant_id)
         can_post = self._policy is None or Permission.POST_JOURNAL in perms
-        counts = self._ledger.attachment_counts(
-            t.tenant_id, "invoice" if kind == "invoices" else "bill",
-        )
         counts = self._ledger.attachment_counts(
             t.tenant_id, "invoice" if kind == "invoices" else "bill",
         )
@@ -2234,6 +2235,68 @@ class WebApp:
             message=query.get("ok", ""), error=query.get("err", ""),
         )
         return self._shell(subject, t, kind, body)
+
+    def _mirrored_open_items(self, t: _Tenant, kind: str, docs: Mapping[str, object]) -> "str | None":
+        """QuickBooks' open invoices or bills, when the books have none of their own.
+
+        A QuickBooks mirror carries the A/R and A/P balances without documents, so
+        the books' list is empty while QuickBooks has items open. Then the copy
+        taken at the last Refresh is shown, read-only, tied out to the books.
+        None means "show the books' own list" (they have documents, or there is
+        no QuickBooks copy to show).
+        """
+        own = docs.get("documents")
+        if isinstance(own, list) and own:
+            return None
+        # Only during the parallel run: after cutover the owner enters their own
+        # (the create form is on the books' list), and the copy is history.
+        if not self._parallel_run(t):
+            return None
+        items = read_open_items(self._ledger, t.tenant_id, t.config.currency)
+        if items is None or items.empty:
+            return None
+        rows = items.invoices if kind == "invoices" else items.bills
+        total = items.invoice_total if kind == "invoices" else items.bill_total
+        books = self._control_balance(
+            t, "ACCOUNTS_RECEIVABLE" if kind == "invoices" else "ACCOUNTS_PAYABLE")
+        # A/P is a credit balance: shown as the positive amount owed.
+        if books is not None and kind == "bills":
+            books = -books
+        return render_open_items(kind, rows, as_of=items.as_of,
+                                 total_minor=total.minor_units, books_minor=books)
+
+    def _control_balance(self, t: _Tenant, subtype: str) -> "int | None":
+        """The books' balance (debit-positive, minor units) across the accounts
+        of one subtype, or None when the books can't be read."""
+        if self._ledger is None:
+            return None
+        accounts = self._ledger.accounts(t.tenant_id)
+        tb = self._ledger.trial_balance(t.tenant_id)
+        if not accounts.ok or not tb.ok:
+            return None
+        raw_accounts = accounts.body.get("accounts")
+        codes = {str(a.get("code")) for a in (raw_accounts if isinstance(raw_accounts, list) else [])
+                 if isinstance(a, dict) and a.get("subtype") == subtype}
+        raw_rows = tb.body.get("rows")
+        total = 0
+        for r in raw_rows if isinstance(raw_rows, list) else []:
+            if isinstance(r, dict) and str(r.get("code")) in codes:
+                total += int(str(r.get("debit_minor") or 0)) - int(str(r.get("credit_minor") or 0))
+        return total
+
+    def _store_open_items(self, t: _Tenant, client: object, as_of: date) -> str:
+        """Copy what QuickBooks has open into the ledger; "" or what went wrong.
+
+        A failure here never fails the Refresh: the books are still level with
+        QuickBooks, only the list behind A/R and A/P is out of date."""
+        if self._ledger is None:
+            return ""
+        try:
+            snapshot = snapshot_from_quickbooks(client, as_of)
+        except Exception as exc:  # noqa: BLE001 - a live API failure, said plainly
+            return f"open invoices and bills weren't updated: {plain_qbo_error(exc)}"
+        res = self._ledger.save_open_items(t.tenant_id, snapshot)
+        return "" if res.ok else f"open invoices and bills weren't updated: {res.error()}"
 
     def _arap_create(self, t: _Tenant, kind: str, body: str) -> Response:
         """Create an invoice or a bill from the owner form."""
@@ -5770,7 +5833,17 @@ class WebApp:
 
     def _receivables_page(self, subject: str, t: _Tenant) -> Response:
         report, chase, nudges = self._ar_data(t)
-        body = render_ar_body(t.tenant_id, t.name, report, chase, nudges)
+        # When these are QuickBooks' open invoices (a parallel run), say how they
+        # tie to A/R in the books, the same line the Invoices screen shows.
+        tie_out = ""
+        facts = self._ledger_facts.get(t.tenant_id)
+        if facts is not None and any(
+                i.provenance is not None and i.provenance.source_system == "quickbooks"
+                for i in facts.invoices):
+            qbo_total = sum(i.open_amount.minor_units for i in facts.invoices)
+            tie_out = tie_out_line("invoices", qbo_total,
+                                   self._control_balance(t, "ACCOUNTS_RECEIVABLE"))
+        body = render_ar_body(t.tenant_id, t.name, report, chase, nudges, tie_out=tie_out)
         return self._shell(subject, t, "receivables", body)
 
     def _receivables_json(self, t: _Tenant) -> Response:
@@ -6315,6 +6388,10 @@ class WebApp:
             detail = mirror.describe()
             if mirror.mismatches:
                 detail += ": " + "; ".join(mirror.mismatches[:3])
+            if mirror.ok:
+                problem = self._store_open_items(t, client, as_of)
+                if problem:
+                    detail += f" ({problem})"
             if self._audit is not None:
                 self._audit.record(subject, "qbo.mirror_refreshed", self._session_clock(),
                                    tenant_id=t.tenant_id, detail=detail)
@@ -6358,6 +6435,10 @@ class WebApp:
                 message += f" (couldn't pin the QuickBooks company yet: {problem})"
             mirror = refresh_mirror(client, self._ledger, t.tenant_id, as_of=today.isoformat())
             message += f" (opening balances as of {cutover}); then {mirror.describe()}"
+            if mirror.ok:
+                problem = self._store_open_items(t, client, today)
+                if problem:
+                    message += f" ({problem})"
             if not mirror.ok:
                 return self._connect_result(t, "migrate", False, message)
         if self._audit is not None:

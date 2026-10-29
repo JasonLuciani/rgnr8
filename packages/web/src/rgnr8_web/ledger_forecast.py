@@ -44,6 +44,8 @@ from rgnr8_forecast import (
 )
 
 from .ledger_client import LedgerClient, LedgerResponse
+from .open_items import as_forecast_items, read_open_items
+from .qbo_sync import quickbooks_bill
 
 LEDGER = "ledger"
 ASSUMPTION = "assumption"
@@ -190,6 +192,15 @@ def _open_documents(
     return out, ""
 
 
+def in_parallel_run(ledger: LedgerClient, tenant: str) -> bool:
+    """Whether QuickBooks is this tenant's book of record, per the ledger."""
+    if not hasattr(ledger, "settings"):
+        return False
+    res = ledger.settings(tenant)
+    raw = res.body.get("settings") if res.ok else None
+    return isinstance(raw, dict) and raw.get("book_of_record") == "quickbooks"
+
+
 def read_ledger_facts(
     ledger: LedgerClient, tenant: str, as_of: date, currency: str = "USD"
 ) -> LedgerFacts:
@@ -202,6 +213,7 @@ def read_ledger_facts(
 
     invoices: list[Invoice] = []
     raw_invoices, problem = _open_documents(ledger, tenant, "invoices", as_of)
+    docs_read = not problem
     if problem:
         problems.append(problem)
     for d in raw_invoices:
@@ -217,6 +229,7 @@ def read_ledger_facts(
 
     bills: list[Bill] = []
     raw_bills, problem = _open_documents(ledger, tenant, "bills", as_of)
+    docs_read = docs_read and not problem
     if problem:
         problems.append(problem)
     for d in raw_bills:
@@ -228,6 +241,19 @@ def read_ledger_facts(
             amount=_money(d.get("open_minor"), currency),
             provenance=Provenance(LEDGER, "bill", doc_id),
         ))
+
+    # A QuickBooks mirror has A/R and A/P balances but no documents behind them,
+    # so the books alone say "nothing is owed" while QuickBooks has invoices open.
+    # Then the open items QuickBooks reported at the last Refresh stand in, as
+    # facts from QuickBooks. Real documents always win: after cutover they exist.
+    # Only while QuickBooks IS the book of record (after cutover a stale copy
+    # must never come back once the real invoices are paid), and only when the
+    # books were actually read (a failed read is not "nothing is owed").
+    if docs_read and not raw_invoices and not raw_bills and in_parallel_run(ledger, tenant):
+        snapshot = read_open_items(ledger, tenant, currency)
+        if snapshot is not None and not snapshot.empty:
+            qbo_invoices, qbo_bills = as_forecast_items(snapshot, as_of, currency)
+            invoices, bills = list(qbo_invoices), list(qbo_bills)
 
     # Payroll liabilities are money already owed on work already done — as much
     # a fact as an unpaid bill, and one businesses routinely forget is coming.
@@ -299,6 +325,11 @@ def merge_forecast_inputs(
         item for item in assumptions.one_time
         if not (item.provenance and item.provenance.source_type == "payroll-liability")
     )
+    # A QuickBooks Refresh also records each open bill as a one-time payment in
+    # the owner's inputs. When the bills come from the books (or the QuickBooks
+    # copy behind them), those would count every bill twice.
+    if facts.bills:
+        one_time = tuple(i for i in one_time if not quickbooks_bill(i))
     if facts.payroll_liability.minor_units > 0:
         from rgnr8_forecast import Category, Direction, OneTimeItem
 

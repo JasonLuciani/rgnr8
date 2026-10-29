@@ -959,6 +959,14 @@ class LedgerClient:
     def save_settings(self, tenant: str, patch: Mapping[str, object]) -> LedgerResponse:
         return self._call("POST", f"/t/{tenant}/settings", dict(patch))
 
+    def open_items(self, tenant: str) -> LedgerResponse:
+        """QuickBooks' open invoices and bills as last refreshed (non-posting)."""
+        return self._call("GET", f"/t/{tenant}/mirror/open-items")
+
+    def save_open_items(self, tenant: str, snapshot: Mapping[str, object]) -> LedgerResponse:
+        """Replace that snapshot: {as_of, invoices: [...], bills: [...]}."""
+        return self._call("POST", f"/t/{tenant}/mirror/open-items", dict(snapshot))
+
     def entity_groups(self, tenant: str) -> LedgerResponse:
         return self._call("GET", f"/t/{tenant}/consolidation/groups")
 

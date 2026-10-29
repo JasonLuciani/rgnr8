@@ -730,6 +730,8 @@ def render_ar_body(
     report: ARReport,
     chase: Sequence[ChaseItem],
     nudges: Sequence[CollectionNudge],
+    *,
+    tie_out: str = "",
 ) -> str:
     """The receivables / collections screen inside the shell: the aging summary,
     the prioritized chase list (worst-first), and the per-invoice nudge drafts
@@ -778,6 +780,7 @@ def render_ar_body(
     drafts_block = (f'<h2>Reminder drafts</h2>{drafts}' if drafts else "")
     return f"""<h1>Receivables &amp; collections</h1>
     <p class="sub">{escape(display_name)} · open AR as of {escape(report.as_of.isoformat())}{dso} · get paid faster</p>
+    {tie_out}
     <div class="banner {'warn' if report.overdue_total.is_positive else 'good'}">
       {escape(_money(report.overdue_total))} overdue of {escape(_money(report.total_ar))} total AR.</div>
     <h2>Aging</h2>

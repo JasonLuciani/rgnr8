@@ -320,3 +320,65 @@ def render_aging(tenant: str, side: str, data: Mapping[str, object],
     )
     title = f"{'Receivables' if is_ar else 'Payables'} Aging — as of {_esc(data.get('as_of'))}"
     return _card(title, table, back)
+
+
+def tie_out_line(kind: str, quickbooks_minor: int, books_minor: "int | None") -> str:
+    """How QuickBooks' open items compare with the control account in the books.
+
+    During a parallel run the books' A/R (or A/P) is a balance the mirror keeps
+    level with QuickBooks, and these items are what QuickBooks says makes it
+    up. They should agree; when they don't, the owner should see by how much
+    and what usually causes it, not two numbers that silently differ.
+    """
+    account = "Accounts Receivable" if kind == "invoices" else "Accounts Payable"
+    items = "invoices" if kind == "invoices" else "bills"
+    if books_minor is None:
+        return _banner("warn", f"Couldn't read {account} from your books to compare with "
+                               f"QuickBooks' open {items}.")
+    diff = quickbooks_minor - books_minor
+    if diff == 0:
+        return _banner("good", f"Ties out: QuickBooks' open {items} ({money(quickbooks_minor)}) "
+                               f"match {account} in your books.")
+    more = "more" if diff > 0 else "less"
+    return _banner("warn", (
+        f"QuickBooks shows {money(quickbooks_minor)} on open {items}; {account} in your "
+        f"books is {money(books_minor)}, {money(abs(diff))} {more} on QuickBooks' side. "
+        "After a Refresh these usually match. A gap that stays is something in QuickBooks "
+        f"that isn't on an open {items[:-1]}: an unapplied payment or credit, or a journal "
+        f"entry straight to {account}."))
+
+
+def render_open_items(
+    kind: str,
+    rows: "tuple[Mapping[str, object], ...]",
+    *,
+    as_of: str,
+    total_minor: int,
+    books_minor: "int | None",
+) -> str:
+    """QuickBooks' open invoices or bills during a parallel run: read-only, dated,
+    labelled imported, with the tie-out to the books above them."""
+    is_ar = kind == "invoices"
+    title = "Invoices" if is_ar else "Bills"
+    who = "Customer" if is_ar else "Vendor"
+    head = (f'<h1>{title}</h1><p class="sub">Open in QuickBooks as of {_esc(as_of)}, copied at each '
+            "Refresh. While QuickBooks is your book of record, add and change them there.</p>")
+    body_rows = "".join(
+        "<tr>"
+        f'<td>{_esc(r.get("number") or "")}</td>'
+        f'<td>{_esc(r.get("party") or "")}</td>'
+        f'<td>{_esc(r.get("date") or "")}</td>'
+        f'<td>{_esc(r.get("due_date") or "")}</td>'
+        f'{_num(r.get("open_minor"))}'
+        f"<td>{prov_badge(Provenance.IMPORTED)}</td>"
+        "</tr>"
+        for r in rows
+    )
+    table = (
+        f'<table><thead><tr><th>{"Invoice" if is_ar else "Ref"}</th><th>{who}</th><th>Date</th>'
+        '<th>Due</th><th class="num">Open</th><th></th></tr></thead>'
+        f"<tbody>{body_rows}</tbody>"
+        f'<tfoot><tr><td colspan="4">Total open</td>{_num(total_minor)}<td></td></tr></tfoot></table>'
+    )
+    return head + tie_out_line(kind, total_minor, books_minor) + _card(
+        f"Open in QuickBooks ({len(rows)})", table)

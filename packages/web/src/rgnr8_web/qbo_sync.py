@@ -128,7 +128,7 @@ def build_inputs_from_qbo(
     return inputs, summary
 
 
-def _from_quickbooks(item: OneTimeItem) -> bool:
+def quickbooks_bill(item: OneTimeItem) -> bool:
     """A one-time item a QuickBooks refresh put there: an open bill, recorded."""
     return item.category is Category.VENDOR_PAYMENT and item.confidence is Confidence.RECORDED
 
@@ -142,7 +142,7 @@ def merge_refresh(current: ForecastInputs, fresh: ForecastInputs) -> ForecastInp
     only those are replaced: last refresh's bills give way to this one's, and
     everything the owner entered stays as they left it.
     """
-    owners_one_time = tuple(i for i in current.one_time if not _from_quickbooks(i))
+    owners_one_time = tuple(i for i in current.one_time if not quickbooks_bill(i))
     return replace(
         current,
         opening=fresh.opening,

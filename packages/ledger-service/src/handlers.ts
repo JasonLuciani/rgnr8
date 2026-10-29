@@ -55,6 +55,7 @@ import {
 } from "@rgnr8/close";
 import type { LedgerBackend } from "./backend.js";
 import { LEDGER_SCHEMA_VERSION } from "./migrations.js";
+import { OpenItemsError, snapshotFromJson, snapshotJson } from "./openItems.js";
 import {
   BookOfRecordError,
   MIRROR_KEY_PREFIX,
@@ -507,6 +508,19 @@ export class LedgerService {
     }
 
     try {
+      // --- QuickBooks open items (a non-posting copy) ----------------------
+      if (rest[0] === "mirror" && rest[1] === "open-items" && rest.length === 2) {
+        const store = this.backend.openItems();
+        if (req.method === "GET") return ok(snapshotJson(String(tenant), await store.get(String(tenant))));
+        if (req.method === "POST") {
+          const data = parseJson(req.body);
+          if (!data) return bad("invalid JSON body");
+          const snapshot = snapshotFromJson(data);
+          await store.replace(String(tenant), snapshot);
+          return ok(snapshotJson(String(tenant), snapshot));
+        }
+      }
+
       // --- per-account settings -------------------------------------------
       if (rest[0] === "settings" && rest.length === 1) {
         const store = this.backend.settings();
@@ -1707,6 +1721,7 @@ export class LedgerService {
       if (err instanceof CrmError) return bad(err.message);
       if (err instanceof ConsolidationServiceError) return bad(err.message);
       if (err instanceof SettingsError) return bad(err.message);
+      if (err instanceof OpenItemsError) return bad(err.message);
       if (err instanceof DebtError) return bad(err.message);
       if (err instanceof FixedAssetError) return bad(err.message);
       if (err instanceof RatiosError) return bad(err.message);
