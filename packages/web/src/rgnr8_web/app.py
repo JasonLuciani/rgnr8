@@ -2248,6 +2248,10 @@ class WebApp:
         own = docs.get("documents")
         if isinstance(own, list) and own:
             return None
+        # Only during the parallel run: after cutover the owner enters their own
+        # (the create form is on the books' list), and the copy is history.
+        if not self._parallel_run(t):
+            return None
         items = read_open_items(self._ledger, t.tenant_id, t.config.currency)
         if items is None or items.empty:
             return None

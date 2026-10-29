@@ -165,6 +165,22 @@ function controlCode(chart: ChartOfAccounts, subtype: AccountSubtype, fallback: 
   return [...matches].sort((a, b) => a.code.localeCompare(b.code))[0]!.code;
 }
 
+/**
+ * Money moving in or out has to land in the account it really went through.
+ * With several bank accounts and none of them RGNR8's default, "the first one"
+ * would be a guess (checking, savings, PayPal...), so the caller must say which.
+ */
+function assertBankChosen(chart: ChartOfAccounts, explicit: string | undefined): void {
+  if (explicit) return;
+  const banks = chart.listActive().filter((a) => a.subtype === AccountSubtype.BANK);
+  if (banks.length > 1 && !banks.some((a) => a.code === DEFAULT_CONTROLS.bankCode)) {
+    throw new ArApError(
+      `this chart has ${banks.length} bank accounts; say which one the money went through `
+      + `(bank_code: ${banks.map((a) => a.code).join(", ")})`,
+    );
+  }
+}
+
 function controls(chart: ChartOfAccounts, overrides: Partial<ControlAccounts> | undefined): ControlAccounts {
   return {
     arCode: overrides?.arCode
@@ -425,6 +441,7 @@ export async function recordPayment(
     );
   }
 
+  assertBankChosen(ctx.chart, req.bank_code ?? accounts?.bankCode);
   const ctrl = controls(ctx.chart, { ...accounts, ...(req.bank_code ? { bankCode: req.bank_code } : {}) });
   const bank = idFor(ctx.chart, ctrl.bankCode, "bank");
   const control = idFor(
@@ -737,6 +754,7 @@ export async function issueRefund(
   }
 
   const ctrl = controls(ctx.chart, req.accounts);
+  assertBankChosen(ctx.chart, String(req.bank_code ?? "").trim() || req.accounts?.bankCode);
   const bankCode = String(req.bank_code ?? "").trim() || ctrl.bankCode;
   const accountCode = primaryAccountOf(doc, req.account_code);
   const memo = String(req.memo ?? "").trim() || `Refund of ${docId}`;

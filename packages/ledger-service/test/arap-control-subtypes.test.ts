@@ -70,3 +70,21 @@ test("an explicit control account still wins", async () => {
   });
   assert.equal(await balance(s, "84"), 700n);
 });
+
+test("with several bank accounts, money in or out must say which one it went through", async () => {
+  const s = await quickbooksChart();
+  await call(s, "POST", "/t/acme/accounts", { code: "11", name: "Savings", type: "ASSET", subtype: "BANK" });
+  // Creating the invoice needs no bank account, so it still works.
+  assert.equal((await call(s, "POST", "/t/acme/invoices", {
+    id: "INV-1", party_id: "c1", date: "2026-10-01", lines: [{ unit_amount_minor: "50000", account_code: "1" }],
+  })).status, 201);
+  const guessed = await call(s, "POST", "/t/acme/invoices/INV-1/payments", { date: "2026-10-10", amount_minor: "50000" });
+  assert.equal(guessed.status, 400);
+  assert.match(String((guessed.body as Record<string, unknown>)["error"]), /2 bank accounts.*bank_code: 10, 11/);
+  assert.equal(await balance(s, "84"), 50000n, "nothing posted");
+  const chosen = await call(s, "POST", "/t/acme/invoices/INV-1/payments", {
+    date: "2026-10-10", amount_minor: "50000", bank_code: "11",
+  });
+  assert.equal(chosen.status, 201);
+  assert.equal(await balance(s, "11"), 50000n);
+});

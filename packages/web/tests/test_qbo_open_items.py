@@ -39,14 +39,21 @@ class _MirrorLedger:
     """A QuickBooks mirror as the ledger serves it: balances, no documents."""
 
     def __init__(self, *, documents: "list[dict[str, Any]] | None" = None,
-                 snapshot: "dict[str, Any] | None" = None, ar_minor: int = 37320) -> None:
+                 snapshot: "dict[str, Any] | None" = None, ar_minor: int = 37320,
+                 book: str = "quickbooks", documents_fail: bool = False) -> None:
         self.documents = documents or []
+        self.book = book
+        self.documents_fail = documents_fail
         self.snapshot = snapshot if snapshot is not None else SNAPSHOT
         self.ar_minor = ar_minor
         self.saved: list[dict[str, Any]] = []
 
     def request(self, method: str, path: str, body: str, headers: Any) -> LedgerResponse:
         route = path.split("?")[0]
+        if route == "/t/acme/settings":
+            return LedgerResponse(200, {"settings": {"book_of_record": self.book}})
+        if route in ("/t/acme/invoices", "/t/acme/bills") and self.documents_fail:
+            return LedgerResponse(503, {"error": "ledger service did not answer"})
         if route == "/t/acme/mirror/open-items":
             if method == "POST":
                 self.saved.append(json.loads(body))
@@ -160,3 +167,37 @@ def test_storing_the_snapshot_never_fails_a_refresh() -> None:
     good = SimpleNamespace(open_invoices=lambda: [], open_bills=lambda: [])
     assert app._store_open_items(t, good, date(2026, 10, 29)) == ""
     assert ledger.saved == [{"as_of": "2026-10-29", "invoices": [], "bills": []}]
+
+
+# --- review fixes: no double count, no stale copy -------------------------------
+
+
+def test_quickbooks_bills_are_counted_once_not_twice() -> None:
+    # Refresh also records each open QuickBooks bill as a one-time payment in the
+    # owner's inputs; with the bills coming from the QuickBooks copy, those go.
+    from rgnr8_forecast import Category, Confidence, Direction, ForecastInputs, Money, OneTimeItem
+
+    app = _app(_MirrorLedger())
+    t = app._tenants["acme"]
+    refreshed_bill = OneTimeItem(label="Copyshop", category=Category.VENDOR_PAYMENT,
+                                 direction=Direction.OUTFLOW, amount=Money(4500),
+                                 on_date=date(2026, 11, 9), confidence=Confidence.RECORDED)
+    t.inputs = ForecastInputs(opening=t.inputs.opening, one_time=(refreshed_bill,))
+    inputs = app._effective_inputs(t)
+    assert [b.amount.minor_units for b in inputs.bills] == [4500]
+    assert refreshed_bill not in inputs.one_time
+
+
+def test_after_cutover_the_copy_is_history() -> None:
+    # RGNR8 is the book of record again: the owner's own (empty) list and its
+    # create form, and a forecast that no longer revives QuickBooks' old items.
+    app = _app(_MirrorLedger(book="rgnr8"))
+    page = _get(app, "/t/acme/invoices")
+    assert "Open in QuickBooks" not in page
+    assert app._effective_inputs(app._tenants["acme"]).invoices == ()
+
+
+def test_a_failed_read_of_the_books_is_not_answered_with_the_copy() -> None:
+    app = _app(_MirrorLedger(documents_fail=True))
+    invoices = app._effective_inputs(app._tenants["acme"]).invoices
+    assert all(i.provenance is None or i.provenance.source_system != "quickbooks" for i in invoices)
