@@ -122,6 +122,21 @@ class RateLimiter:
         self._key_func = key_func
         # key -> (tokens, last_refill_epoch_seconds)
         self._buckets: dict[str, tuple[float, float]] = {}
+        # One bucket per client key (an IP when forwarded-for is trusted) would
+        # otherwise accumulate for the life of the worker. A bucket that has
+        # refilled to capacity is indistinguishable from a missing one, so those
+        # are dropped whenever the table outgrows this threshold.
+        self._prune_at = self._PRUNE_FLOOR
+
+    _PRUNE_FLOOR = 1024
+
+    def _prune(self, now: float) -> None:
+        self._buckets = {
+            k: (tokens, last) for k, (tokens, last) in self._buckets.items()
+            if tokens + (now - last) * self._refill < self._capacity
+        }
+        # Amortize: the next sweep waits until the table doubles again.
+        self._prune_at = max(self._PRUNE_FLOOR, 2 * len(self._buckets))
 
     def _refresh(self, key: str) -> tuple[float, float]:
         now = self._clock()
@@ -133,11 +148,11 @@ class RateLimiter:
     def check(self, key: str) -> bool:
         """Consume one token for ``key``; return True if it was available."""
         tokens, now = self._refresh(key)
-        if tokens >= 1.0:
-            self._buckets[key] = (tokens - 1.0, now)
-            return True
-        self._buckets[key] = (tokens, now)
-        return False
+        allowed = tokens >= 1.0
+        self._buckets[key] = (tokens - 1.0, now) if allowed else (tokens, now)
+        if len(self._buckets) > self._prune_at:
+            self._prune(now)
+        return allowed
 
     def retry_after(self, key: str) -> int:
         """Whole seconds until at least one token is available for ``key`` (>= 1)."""

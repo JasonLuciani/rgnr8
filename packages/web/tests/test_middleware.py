@@ -73,6 +73,29 @@ def test_rate_limiter_keys_are_independent() -> None:
     assert rl.check("a") is False
 
 
+def test_rate_limiter_forgets_refilled_buckets_so_memory_stays_flat() -> None:
+    clock = _Clock()
+    rl = RateLimiter(capacity=2, refill_per_second=1.0, clock=clock)
+    # Many distinct clients, each seen once, spread over time.
+    for i in range(20_000):
+        clock.t += 0.01
+        assert rl.check(f"10.0.{i}") is True
+    # Only clients whose bucket has not yet refilled (seen in the last ~1s) can
+    # matter; everything else has been swept.
+    assert len(rl._buckets) <= 2 * RateLimiter._PRUNE_FLOOR
+
+
+def test_rate_limiter_pruning_never_forgives_a_client_still_over_budget() -> None:
+    clock = _Clock()
+    rl = RateLimiter(capacity=2, refill_per_second=0.001, clock=clock)
+    assert rl.check("abuser") and rl.check("abuser")
+    assert rl.check("abuser") is False
+    # Flood with other keys to force several sweeps.
+    for i in range(5_000):
+        rl.check(f"other-{i}")
+    assert rl.check("abuser") is False  # its empty bucket survived the sweeps
+
+
 def test_limited_returns_429_with_retry_after() -> None:
     clock = _Clock()
     rl = RateLimiter(capacity=1, refill_per_second=0.5, clock=clock)

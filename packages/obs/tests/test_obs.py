@@ -277,3 +277,46 @@ def test_redact_fields_copies_without_mutating_input() -> None:
     redacted = redact_fields(original)
     assert redacted == {"password": "***", "user": "u"}
     assert original["password"] == "p"  # input untouched
+
+
+# --- bounded in-memory sinks (long-lived processes) -------------------------
+
+
+def test_metrics_sink_is_unbounded_by_default() -> None:
+    sink = InMemoryMetricsSink()
+    reg = MetricsRegistry(clock=lambda: FIXED, sink=sink)
+    for _ in range(5000):
+        reg.counter("hits").inc()
+    assert len(sink.emissions) == 5000
+    assert sink.emissions == [("counter", "hits", 1, ())] * 5000
+
+
+def test_metrics_sink_bound_keeps_only_the_most_recent() -> None:
+    sink = InMemoryMetricsSink(max_emissions=3)
+    reg = MetricsRegistry(clock=lambda: FIXED, sink=sink)
+    for i in range(10):
+        reg.gauge("depth").set(i)
+    assert [value for _, _, value, _ in sink.emissions] == [7, 8, 9]
+
+
+def test_metrics_sink_bound_must_be_positive() -> None:
+    import pytest
+
+    with pytest.raises(ValueError):
+        InMemoryMetricsSink(max_emissions=0)
+
+
+def test_error_reporter_bound_drops_old_captures_but_ids_stay_unique() -> None:
+    reporter = InMemoryErrorReporter(max_retained=2)
+    ids = [reporter.capture(RuntimeError(str(i)), context={}) for i in range(5)]
+    assert ids == ["err_0", "err_1", "err_2", "err_3", "err_4"]
+    assert [c.id for c in reporter.captured] == ["err_3", "err_4"]
+    assert str(reporter.captured[-1].exc) == "4"
+
+
+def test_error_reporter_unbounded_by_default() -> None:
+    reporter = InMemoryErrorReporter()
+    for i in range(300):
+        reporter.capture(RuntimeError(str(i)), context={})
+    assert len(reporter.captured) == 300
+    assert reporter.captured[0].id == "err_0"

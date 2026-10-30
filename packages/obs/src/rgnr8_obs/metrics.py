@@ -15,6 +15,7 @@ stable sorted tuple so identical tag sets compare and format identically.
 
 from __future__ import annotations
 
+from collections import deque
 from types import TracebackType
 from typing import Callable, Protocol
 
@@ -30,11 +31,25 @@ class MetricsSink(Protocol):
     def emit(self, kind: str, name: str, value: float, tags: Tags) -> None: ...
 
 
-class InMemoryMetricsSink:
-    """Records every emission as a tuple for assertions (tests/local)."""
+Emission = tuple[str, str, float, Tags]
 
-    def __init__(self) -> None:
-        self.emissions: list[tuple[str, str, float, Tags]] = []
+
+class InMemoryMetricsSink:
+    """Records emissions as tuples for assertions (tests/local).
+
+    By default it keeps every emission, which is what tests want. A long-lived
+    process must pass ``max_emissions``: the served web app emits two tuples per
+    request (counter + latency timer), so an unbounded sink grows for the life of
+    the worker (that was the slow RSS climb on rgnr8-web). With a bound, only the
+    most recent ``max_emissions`` are kept.
+    """
+
+    def __init__(self, *, max_emissions: int | None = None) -> None:
+        if max_emissions is not None and max_emissions < 1:
+            raise ValueError("max_emissions must be positive")
+        self.emissions: list[Emission] | deque[Emission] = (
+            [] if max_emissions is None else deque(maxlen=max_emissions)
+        )
 
     def emit(self, kind: str, name: str, value: float, tags: Tags) -> None:
         self.emissions.append((kind, name, value, tags))
