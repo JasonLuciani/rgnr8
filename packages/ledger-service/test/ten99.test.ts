@@ -102,9 +102,9 @@ test("only flagged vendors appear, and only what was actually paid", async () =>
 test("a partial payment counts what was paid, not what was billed", async () => {
   const s = await ready();
   await vendor(s, "dana", "Dana", { is_1099: true, tax_id: "1" });
-  await billAndPay(s, "dana", "B-1", "2026-03-10", "400000", "150000");
+  await billAndPay(s, "dana", "B-1", "2026-03-10", "500000", "250000");
   const rows = obj(await report(s))["rows"] as Row[];
-  assert.equal(rows[0]!["amount_minor"], "150000");
+  assert.equal(rows[0]!["amount_minor"], "250000");
 });
 
 test("the year is a boundary, not a suggestion", async () => {
@@ -134,27 +134,59 @@ test("a contractor over the threshold with no tax id is called out", async () =>
 test("a contractor under the threshold is tracked with how far short they are", async () => {
   const s = await ready();
   await vendor(s, "sam", "Sam Okonkwo", { is_1099: true, tax_id: "9" });
-  await billAndPay(s, "sam", "B-1", "2026-05-01", "54000");   // $540
+  await billAndPay(s, "sam", "B-1", "2026-05-01", "194000");   // $1,940 under the $2,000 line
 
   const r = await report(s);
   assert.equal((obj(r)["rows"] as Row[]).length, 0, "no form is filed yet");
   const below = obj(r)["below_threshold"] as Row[];
   assert.equal(below.length, 1);
   assert.equal(below[0]!["vendor_name"], "Sam Okonkwo");
-  assert.equal(below[0]!["amount_minor"], "54000");
+  assert.equal(below[0]!["amount_minor"], "194000");
   assert.equal(below[0]!["short_by_minor"], "6000", "$60 from needing a form");
 });
 
 test("crossing the threshold moves a vendor from tracked to reportable", async () => {
   const s = await ready();
   await vendor(s, "sam", "Sam", { is_1099: true, tax_id: "9" });
-  await billAndPay(s, "sam", "B-1", "2026-05-01", "54000");
+  await billAndPay(s, "sam", "B-1", "2026-05-01", "194000");
   assert.equal((obj(await report(s))["below_threshold"] as Row[]).length, 1);
 
   await billAndPay(s, "sam", "B-2", "2026-06-01", "10000");
   const r = await report(s);
   assert.equal((obj(r)["below_threshold"] as Row[]).length, 0);
-  assert.equal((obj(r)["rows"] as Row[])[0]!["amount_minor"], "64000");
+  assert.equal((obj(r)["rows"] as Row[])[0]!["amount_minor"], "204000");
+});
+
+test("2026 boundary: $1,999.99 is only tracked, $2,000.00 is filed", async () => {
+  const s = await ready();
+  await vendor(s, "under", "Under Line", { is_1099: true, tax_id: "1" });
+  await vendor(s, "at", "At Line", { is_1099: true, tax_id: "2" });
+  await billAndPay(s, "under", "B-1", "2026-04-01", "199999");
+  await billAndPay(s, "at", "B-2", "2026-04-01", "200000");
+
+  const r = obj(await report(s, "2026"));
+  const rows = r["rows"] as Row[];
+  assert.deepEqual(rows.map((x) => x["vendor_name"]), ["At Line"]);
+  const below = r["below_threshold"] as Row[];
+  assert.equal(below[0]!["vendor_name"], "Under Line");
+  assert.equal(below[0]!["short_by_minor"], "1", "one cent short of a form");
+});
+
+test("the threshold is set by the year reported: $600 files for 2025, not for 2026", async () => {
+  const s = await ready();
+  await vendor(s, "dana", "Dana", { is_1099: true, tax_id: "1" });
+  await billAndPay(s, "dana", "B-1", "2025-06-01", "60000");
+  await billAndPay(s, "dana", "B-2", "2026-06-01", "60000");
+
+  const r25 = obj(await report(s, "2025"));
+  assert.equal(r25["threshold_minor"], "60000");
+  assert.equal((r25["rows"] as Row[]).length, 1, "$600 is reportable for 2025");
+
+  const r26 = obj(await report(s, "2026"));
+  assert.equal(r26["threshold_minor"], "200000");
+  assert.equal((r26["rows"] as Row[]).length, 0, "$600 is not reportable for 2026");
+  const below = r26["below_threshold"] as Row[];
+  assert.equal(below[0]!["short_by_minor"], "140000", "$1,400 from needing a form");
 });
 
 test("a bank payment to a contractor that never went through a bill is flagged", async () => {

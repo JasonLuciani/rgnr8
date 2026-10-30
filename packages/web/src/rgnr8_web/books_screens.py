@@ -13,7 +13,7 @@ never through a float.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from .components import card
 from .csp import script_open
@@ -113,7 +113,41 @@ def account_label(code: object, name: object,
     return f"{number} — {named}" if number else named
 
 
-_TYPE_RANK = {"ASSET": 0, "LIABILITY": 1, "EQUITY": 2, "REVENUE": 3, "EXPENSE": 4}
+# Statement order, the one sort every account list uses (chart of accounts,
+# trial balance, the Ledger's accounts card): the order a balance sheet and then
+# a P&L read in. Each account ranks by its subtype (the detail type); an account
+# with no known subtype falls back to the place its type takes.
+_STATEMENT_ORDER: dict[str, int] = {
+    "BANK": 10, "ACCOUNTS_RECEIVABLE": 20,
+    "UNDEPOSITED_FUNDS": 30, "INVENTORY": 30, "OTHER_CURRENT_ASSET": 30,
+    "FIXED_ASSET": 40, "ACCUMULATED_DEPRECIATION": 40,
+    "OTHER_ASSET": 50,
+    "ACCOUNTS_PAYABLE": 60, "CREDIT_CARD": 70,
+    "SALES_TAX_PAYABLE": 80, "OTHER_CURRENT_LIABILITY": 80,
+    "LONG_TERM_LIABILITY": 90,
+    "EQUITY": 100, "RETAINED_EARNINGS": 100,
+    "INCOME": 110, "COST_OF_GOODS_SOLD": 120, "EXPENSE": 130,
+    "OTHER_INCOME": 140, "OTHER_EXPENSE": 150,
+}
+_TYPE_FALLBACK: dict[str, int] = {
+    "ASSET": 30, "LIABILITY": 80, "EQUITY": 100, "REVENUE": 110, "EXPENSE": 130,
+}
+_TYPE_LABEL = {"ASSET": "Asset", "LIABILITY": "Liability", "EQUITY": "Equity",
+               "REVENUE": "Income", "EXPENSE": "Expense"}
+
+
+def statement_rank(type_: object, subtype: object = None) -> int:
+    """Where an account's subtype puts it in statement order (see _STATEMENT_ORDER)."""
+    key = str(subtype or "")
+    if key in _STATEMENT_ORDER:
+        return _STATEMENT_ORDER[key]
+    return _TYPE_FALLBACK.get(str(type_ or ""), len(_STATEMENT_ORDER) * 10)
+
+
+def detail_type_label(subtype: object) -> str:
+    """A subtype as a person reads it: "ACCOUNTS_RECEIVABLE" is "Accounts receivable"."""
+    text = str(subtype or "").replace("_", " ").strip().lower()
+    return text[:1].upper() + text[1:]
 
 
 def _link_text(a: Mapping[str, object], id_codes: frozenset[str]) -> str:
@@ -123,17 +157,57 @@ def _link_text(a: Mapping[str, object], id_codes: frozenset[str]) -> str:
 
 
 def account_order(code: object, name: object, type_: object,
-                  id_codes: frozenset[str] = frozenset()) -> tuple[object, ...]:
-    """Sort key for accounts on screen. A fully numbered chart sorts by number,
-    as it always has. Where some codes are QuickBooks ids, the number can't
-    carry the order, so accounts go by type (assets, liabilities, equity,
-    income, expenses), numbered ones first by number, then the rest by name."""
-    if not id_codes:
-        return (0, 0, code_order(code), "")
-    rank = _TYPE_RANK.get(str(type_ or ""), len(_TYPE_RANK))
-    if str(code if code is not None else "") in id_codes:
-        return (rank, 1, (), str(name or "").lower())
-    return (rank, 0, code_order(code), "")
+                  id_codes: frozenset[str] = frozenset(), *,
+                  subtype: object = None) -> tuple[object, ...]:
+    """The one sort key for accounts on screen: statement order first (by subtype,
+    see _STATEMENT_ORDER), then an account's real number, numerically, before one
+    with no number, then its name. A number is shown only when it is not one of
+    `id_codes` (QuickBooks' internal ids), so an id never orders as a number."""
+    rank = statement_rank(type_, subtype)
+    if account_number(code, id_codes):
+        return (rank, 0, code_order(code), str(name or "").lower())
+    return (rank, 1, (), str(name or "").lower())
+
+
+def arrange_accounts(rows: "Sequence[Mapping[str, object]]",
+                     id_codes: frozenset[str] = frozenset(),
+                     ) -> "list[tuple[int, Mapping[str, object]]]":
+    """Accounts in screen order as (depth, account). A sub-account sits directly
+    under its parent, one level in (depth 1, and so on), where the parent is in
+    `rows` and carries a `parent_code`. A parent not in `rows` (say, one with no
+    balance in a trial balance) leaves its sub-accounts at the top level."""
+    ordered = sorted(rows, key=lambda a: account_order(
+        a.get("code"), a.get("name"), a.get("type"), id_codes, subtype=a.get("subtype")))
+    present = {str(a.get("code")) for a in ordered}
+    children: dict[str, list[Mapping[str, object]]] = {}
+    roots: list[Mapping[str, object]] = []
+    for a in ordered:
+        parent = a.get("parent_code")
+        if parent is not None and str(parent) in present and str(parent) != str(a.get("code")):
+            children.setdefault(str(parent), []).append(a)
+        else:
+            roots.append(a)
+    out: list[tuple[int, Mapping[str, object]]] = []
+    seen: set[str] = set()
+
+    def walk(a: Mapping[str, object], depth: int) -> None:
+        code = str(a.get("code"))
+        if code in seen:
+            return
+        seen.add(code)
+        out.append((depth, a))
+        for child in children.get(code, []):
+            walk(child, depth + 1)
+
+    for a in roots:
+        walk(a, 0)
+    for a in ordered:  # anything a parent cycle would otherwise hide
+        walk(a, 0)
+    return out
+
+
+def _indent(depth: int) -> str:
+    return f' style="padding-left:{depth * 1.5}em"' if depth else ""
 
 
 def _listed(accounts: Mapping[str, object], id_codes: frozenset[str],
@@ -141,7 +215,7 @@ def _listed(accounts: Mapping[str, object], id_codes: frozenset[str],
     return sorted((a for a in _seq(accounts.get("accounts")) if isinstance(a, Mapping)
                    and (not types or str(a.get("type")) in types)),
                   key=lambda a: account_order(a.get("code"), a.get("name"), a.get("type"),
-                                              id_codes))
+                                              id_codes, subtype=a.get("subtype")))
 
 
 def account_options(accounts: Mapping[str, object],
@@ -188,37 +262,62 @@ def account_select(
             f"{account_options(accounts, id_codes, selected=selected, types=types)}</select>")
 
 
+def _signed_balances(tb: Mapping[str, object]) -> dict[str, int]:
+    """Each account's balance as debit minus credit, in minor units, by code."""
+    out: dict[str, int] = {}
+    for r in _seq(tb.get("rows")):
+        if isinstance(r, Mapping):
+            out[str(r.get("code"))] = (_minor(r.get("debit_minor")) or 0) - (
+                _minor(r.get("credit_minor")) or 0)
+    return out
+
+
 def render_chart_of_accounts(tenant: str, data: Mapping[str, object], *,
-                             id_codes: frozenset[str] = frozenset()) -> str:
-    accounts = sorted((a for a in _seq(data.get("accounts")) if isinstance(a, Mapping)),
-                      key=lambda a: account_order(a.get("code"), a.get("name"), a.get("type"),
-                                                  id_codes))
+                             id_codes: frozenset[str] = frozenset(),
+                             tb: "Mapping[str, object] | None" = None) -> str:
+    """The chart in statement order, sub-accounts indented under their parent.
+    `tb` is the trial balance the balance column reads; without it the column
+    says "—" rather than a balance it doesn't have."""
+    listed = [a for a in _seq(data.get("accounts")) if isinstance(a, Mapping)]
+    arranged = arrange_accounts(listed, id_codes)
+    balances = _signed_balances(tb) if tb is not None else None
+    ccy = str(tb.get("currency", "USD")) if tb is not None else "USD"
+    sign = {kind: s for kind, _heading, s in _TYPE_ORDER}
     # A chart with no real numbers at all drops the column rather than show it empty.
-    numbers = not accounts or any(account_number(a.get("code"), id_codes) for a in accounts)
+    numbers = not listed or any(account_number(a.get("code"), id_codes) for a in listed)
     rows = []
-    for a in accounts:
+    for depth, a in arranged:
         code = _esc(a.get("code"))
-        sub = a.get("subtype") or a.get("type")
         number = (f'<td class="muted">{_esc(account_number(a.get("code"), id_codes))}</td>'
                   if numbers else "")
+        if balances is None:
+            amount = '<td class="num muted">—</td>'
+        else:
+            amount = _num(sign.get(str(a.get("type")), 1)
+                          * balances.get(str(a.get("code")), 0), ccy)
         rows.append(
-            f'<tr>{number}'
-            f'<td><a href="/t/{_esc(tenant)}/books/accounts/{code}">{_esc(_link_text(a, id_codes))}</a></td>'
-            f"<td>{_esc(a.get('type'))}</td>"
-            f'<td class="muted">{_esc(sub)}</td></tr>'
+            f"<tr>{number}"
+            f'<td{_indent(depth)}><a href="/t/{_esc(tenant)}/books/accounts/{code}">'
+            f"{_esc(_link_text(a, id_codes))}</a></td>"
+            f"<td>{_esc(_TYPE_LABEL.get(str(a.get('type')), a.get('type')))}</td>"
+            f'<td class="muted">{_esc(detail_type_label(a.get("subtype")))}</td>'
+            f"{amount}</tr>"
         )
+    cols = 4 + (1 if numbers else 0) + 1
     empty = (
-        '<tr><td colspan="4" class="empty">'
+        f'<tr><td colspan="{cols}" class="empty">'
         "No accounts yet — this business's chart hasn't been set up.</td></tr>"
     )
     table = (
         '<div class="table-scroll"><table><thead><tr>'
         + ("<th>No.</th>" if numbers else "")
-        + "<th>Account</th><th>Type</th><th>Detail type</th></tr></thead><tbody>"
+        + '<th>Account</th><th>Type</th><th>Detail type</th><th class="num">Balance</th>'
+        "</tr></thead><tbody>"
         + ("".join(rows) or empty)
         + "</tbody></table></div>"
     )
-    return _card(f"Chart of Accounts ({len(rows)})", table)
+    return _card(f"Chart of Accounts ({len(rows)})", table,
+                 provenance=Provenance.POSTED if balances is not None else None)
 
 
 # --- trial balance + post-entry form -----------------------------------------
@@ -272,30 +371,25 @@ def render_accounts_by_type(
     numbers in numeric order, and a total per type. An account with no real
     number sorts by name with its number left blank; a chart with no numbers at
     all drops the column."""
-    balances: dict[str, int] = {}
-    for r in _seq(tb.get("rows")):
-        if isinstance(r, Mapping):
-            balances[str(r.get("code"))] = (_minor(r.get("debit_minor")) or 0) - (
-                _minor(r.get("credit_minor")) or 0)
+    balances = _signed_balances(tb)
     listed = [a for a in _seq(accounts.get("accounts")) if isinstance(a, Mapping)]
     numbers = any(account_number(a.get("code"), id_codes) for a in listed)
     cols = 3 if numbers else 2
     sections = []
     for kind, heading, sign in _TYPE_ORDER:
-        mine = sorted((a for a in listed if str(a.get("type")) == kind),
-                      key=lambda a: account_order(a.get("code"), a.get("name"), kind, id_codes))
+        mine = [a for a in listed if str(a.get("type")) == kind]
         if not mine:
             continue
         total = 0
         body = []
-        for a in mine:
+        for depth, a in arrange_accounts(mine, id_codes):
             code = _esc(a.get("code"))
             amount = sign * balances.get(str(a.get("code")), 0)
             total += amount
             number = (f'<td class="muted">{_esc(account_number(a.get("code"), id_codes))}</td>'
                       if numbers else "")
             body.append(
-                f'<tr><td><a href="/t/{_esc(tenant)}/books/accounts/{code}">{_esc(_link_text(a, id_codes))}</a></td>'
+                f'<tr><td{_indent(depth)}><a href="/t/{_esc(tenant)}/books/accounts/{code}">{_esc(_link_text(a, id_codes))}</a></td>'
                 f"{number}{_num(amount, ccy)}</tr>"
             )
         sections.append(
@@ -321,17 +415,16 @@ def render_trial_balance(tenant: str, tb: Mapping[str, object], *,
     """Every account's debit or credit balance, and that the two sides agree."""
     ccy = str(tb.get("currency", "USD"))
     rows = []
-    ordered = sorted((r for r in _seq(tb.get("rows")) if isinstance(r, Mapping)),
-                     key=lambda r: account_order(r.get("code"), r.get("name"), r.get("type"),
-                                                 id_codes))
-    numbers = not ordered or any(account_number(r.get("code"), id_codes) for r in ordered)
-    for r in ordered:
+    listed = [r for r in _seq(tb.get("rows")) if isinstance(r, Mapping)]
+    arranged = arrange_accounts(listed, id_codes)
+    numbers = not arranged or any(account_number(r.get("code"), id_codes) for _d, r in arranged)
+    for depth, r in arranged:
         code = _esc(r.get("code"))
         number = (f'<td class="muted">{_esc(account_number(r.get("code"), id_codes))}</td>'
                   if numbers else "")
         rows.append(
             f"<tr>{number}"
-            f'<td><a href="/t/{_esc(tenant)}/books/accounts/{code}">{_esc(_link_text(r, id_codes))}</a></td>'
+            f'<td{_indent(depth)}><a href="/t/{_esc(tenant)}/books/accounts/{code}">{_esc(_link_text(r, id_codes))}</a></td>'
             f"{_num(r.get('debit_minor'), ccy)}{_num(r.get('credit_minor'), ccy)}</tr>"
         )
     empty = (
@@ -520,11 +613,13 @@ def render_books_statements(
     )
 
     if isinstance(income, Mapping):
+        # financial-statements/1 lines are {label, amount_minor}: no account code,
+        # so the number cell stays empty.
         def lines(key: str) -> str:
             return "".join(
-                f"<tr><td>{_esc(account_number(l.get('code'), id_codes))}</td>"
-                f"<td>{_esc(l.get('name'))}</td>"
-                f"{_num(_cents(l.get('amount')), ccy)}</tr>"
+                f"<tr><td></td>"
+                f"<td>{_esc(l.get('label'))}</td>"
+                f"{_num(_cents(l.get('amount_minor')), ccy)}</tr>"
                 for l in _seq(income.get(key))
                 if isinstance(l, Mapping)
             )
@@ -552,9 +647,9 @@ def render_books_statements(
         )
         def section(key: str, label: str) -> str:
             body = "".join(
-                f"<tr><td>{_esc(account_number(l.get('code'), id_codes))}</td>"
-                f"<td>{_esc(l.get('name'))}</td>"
-                f"{_num(_cents(l.get('amount')), ccy)}</tr>"
+                f"<tr><td></td>"
+                f"<td>{_esc(l.get('label'))}</td>"
+                f"{_num(_cents(l.get('amount_minor')), ccy)}</tr>"
                 for l in _seq(bs.get(key))
                 if isinstance(l, Mapping)
             )

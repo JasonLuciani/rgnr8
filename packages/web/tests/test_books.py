@@ -69,13 +69,13 @@ REGISTER = {
 STATEMENTS = {
     "contract": "financial-statements/1", "period": "2026-08-01..2026-08-31", "currency": "USD",
     "income_statement": {
-        "revenue": [{"code": "4000", "name": "Services Income", "amount": 500000}],
-        "expenses": [{"code": "6300", "name": "Rent & Lease", "amount": 200000}],
+        "revenue": [{"label": "Services Income", "amount_minor": 500000}],
+        "expenses": [{"label": "Rent & Lease", "amount_minor": 200000}],
         "total_revenue": 500000, "total_expenses": 200000, "net_income": 300000,
     },
     "balance_sheet": {
-        "assets": [{"code": "1000", "name": "Business Checking", "amount": 300000}],
-        "liabilities": [], "equity": [{"code": "3900", "name": "Retained Earnings", "amount": 300000}],
+        "assets": [{"label": "Business Checking", "amount_minor": 300000}],
+        "liabilities": [], "equity": [{"label": "Retained Earnings", "amount_minor": 300000}],
         "total_assets": 300000, "total_liabilities": 0, "total_equity": 300000, "balanced": True,
     },
     "cash_flow": {"operating": [], "investing": [], "financing": [],
