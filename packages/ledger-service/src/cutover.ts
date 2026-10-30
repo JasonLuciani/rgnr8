@@ -217,10 +217,14 @@ function plannedDoc(i: OpenItem): PlannedDoc {
 }
 
 /** What a cutover at `cutoverDate` would do, and whether it may. Writes nothing. */
-export async function planCutover(ctx: CutoverContext, cutoverDate: string): Promise<CutoverPlan> {
+export async function planCutover(
+  ctx: CutoverContext, cutoverDate: string, todayOverride = "",
+): Promise<CutoverPlan> {
   const tenant = String(ctx.tenant);
   const blockers: string[] = [];
-  const today = ctx.now().slice(0, 10);
+  // The business's working date, from the web app's company time zone; the
+  // server's UTC date is only the fallback.
+  const today = /^\d{4}-\d{2}-\d{2}$/.test(todayOverride) ? todayOverride : ctx.now().slice(0, 10);
   const settings = await ctx.backend.settings().get(tenant);
   const previous = await ctx.backend.cutovers().get(tenant);
   if (previous?.state === "executing") {
@@ -312,6 +316,8 @@ export interface ExecuteRequest {
   readonly reportHash: string;
   /** The signer saw the tie-out differences in the report and accepts them. */
   readonly acceptDifferences: boolean;
+  /** The business's working date (YYYY-MM-DD); must match the one the plan was shown with. */
+  readonly today?: string;
 }
 
 /** Cut over. Refuses unless the plan is clean and is the one that was signed. */
@@ -322,7 +328,7 @@ export async function executeCutover(
   if (!req.signedBy.trim()) {
     throw new CutoverError("cutover needs the name of the person who signed the report");
   }
-  const plan = await planCutover(ctx, req.cutoverDate);
+  const plan = await planCutover(ctx, req.cutoverDate, req.today ?? "");
   if (plan.blockers.length) throw new CutoverError(plan.blockers.join("; "));
   if (plan.hash !== req.reportHash) {
     throw new CutoverError("the books changed after the report was signed: review the new report");

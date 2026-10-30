@@ -50,6 +50,10 @@ class TenantState:
     # The month this business's fiscal year starts (1 = January), from
     # QuickBooks on Refresh or set in Settings; None means January.
     fiscal_year_start_month: int | None = None
+    # The company's IANA time zone (e.g. "America/Denver"), which decides what
+    # "today" means for its business dates. None means the default zone; see
+    # `company_time.DEFAULT_COMPANY_TIMEZONE`.
+    timezone: str | None = None
 
     @property
     def min_cash_override(self) -> Money | None:
@@ -69,6 +73,7 @@ class TenantState:
             "modules": self.modules,
             "qbo_id_codes": self.qbo_id_codes,
             "fiscal_year_start_month": self.fiscal_year_start_month,
+            "timezone": self.timezone,
         }
 
     @staticmethod
@@ -80,6 +85,7 @@ class TenantState:
         modules = d.get("modules")
         id_codes = d.get("qbo_id_codes")
         fy_month = d.get("fiscal_year_start_month")
+        tz_name = d.get("timezone")
         payment_overrides: dict[str, int] = {}
         if isinstance(overrides_obj, dict):
             payment_overrides = {str(k): int(v) for k, v in overrides_obj.items()}
@@ -96,6 +102,7 @@ class TenantState:
             fiscal_year_start_month=(fy_month if isinstance(fy_month, int)
                                      and not isinstance(fy_month, bool) and 1 <= fy_month <= 12
                                      else None),
+            timezone=tz_name if isinstance(tz_name, str) and tz_name.strip() else None,
         )
 
 
