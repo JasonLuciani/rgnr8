@@ -114,6 +114,14 @@ def test_the_year_defaults_to_the_one_just_ended() -> None:
     assert any("/1099/2025" in c[1] for c in transport.calls)
 
 
+def test_the_threshold_quoted_on_screen_is_the_one_for_the_year_shown() -> None:
+    routes = dict(DEFAULT_ROUTES)
+    routes["GET /t/acme/1099/2026"] = (200, dict(REPORT, year=2026, threshold_minor="200000"))
+    app, _t, _a = _app(routes)
+    assert "A form is required above $600.00" in _req(app, "/t/acme/books/1099?year=2025").body
+    assert "A form is required above $2,000.00" in _req(app, "/t/acme/books/1099?year=2026").body
+
+
 def test_a_missing_w9_leads_the_page_with_why_it_matters_now() -> None:
     app, _t, _a = _app()
     r = _req(app, "/t/acme/books/1099?year=2025")

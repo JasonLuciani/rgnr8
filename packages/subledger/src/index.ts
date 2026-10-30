@@ -109,7 +109,7 @@ export {
 } from "./payroll.js";
 export {
   build1099Report,
-  DEFAULT_1099_THRESHOLD_MINOR,
+  threshold1099ForTaxYear,
   type VendorPayment,
   type Form1099Row,
   type Form1099Report,

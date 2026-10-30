@@ -1,6 +1,6 @@
 import { Money, type Currency, type TenantId } from "@rgnr8/ledger-kernel";
 import {
-  DEFAULT_1099_THRESHOLD_MINOR,
+  threshold1099ForTaxYear,
   build1099Report,
   type VendorPayment,
 } from "@rgnr8/subledger";
@@ -10,7 +10,7 @@ import type { LedgerBackend } from "./backend.js";
  * 1099-NEC — what you paid contractors, and what the IRS wants to know about it.
  *
  * The mechanics are simple: a vendor flagged as a contractor, everything paid to
- * them in a calendar year, and a $600 threshold above which a form must be
+ * them in a calendar year, and a threshold above which a form must be
  * filed. What makes this worth building carefully is *when* it goes wrong.
  *
  * It goes wrong in January. The threshold is crossed in March, the W-9 is never
@@ -124,6 +124,7 @@ export async function ten99Report(
     year,
     ctx.currency,
   );
+  const threshold = threshold1099ForTaxYear(year);
 
   const paidByVendor = new Map<string, bigint>();
   for (const p of payments) {
@@ -140,7 +141,7 @@ export async function ten99Report(
   // warning reads as bureaucracy instead of "you owe this person a form for
   // $4,000 and cannot file it".
   const rows = [...paidByVendor.entries()]
-    .filter(([, paid]) => paid >= DEFAULT_1099_THRESHOLD_MINOR)
+    .filter(([, paid]) => paid >= threshold)
     .map(([vendorId, paid]) => {
       const v = byId.get(vendorId);
       return {
@@ -155,14 +156,14 @@ export async function ten99Report(
   const total = rows.reduce((acc, r) => acc + BigInt(r.amount_minor), 0n);
 
   // What each below-threshold vendor was paid, and how far short they are —
-  // "$540, $60 short" is actionable in a way that "below threshold" is not.
+  // "$1,940, $60 short" is actionable in a way that "below threshold" is not.
   const belowThreshold = report.belowThreshold.map((vendorId) => {
     const paid = paidByVendor.get(vendorId) ?? 0n;
     return {
       vendor_id: vendorId,
       vendor_name: byId.get(vendorId)?.name ?? vendorId,
       amount_minor: paid.toString(),
-      short_by_minor: (DEFAULT_1099_THRESHOLD_MINOR - paid).toString(),
+      short_by_minor: (threshold - paid).toString(),
     };
   });
 
@@ -190,7 +191,7 @@ export async function ten99Report(
     contract: "form-1099/1",
     year,
     currency: ctx.currency.code,
-    threshold_minor: DEFAULT_1099_THRESHOLD_MINOR.toString(),
+    threshold_minor: threshold.toString(),
     rows,
     total_minor: total.toString(),
     missing_tax_id: report.missingTaxId,
