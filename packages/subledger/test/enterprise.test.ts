@@ -6,6 +6,7 @@ import {
   AttachmentStore,
   AuditLog,
   build1099Report,
+  threshold1099ForTaxYear,
   discountDeadlineFor,
   discountMinor,
   documentTotal,
@@ -55,6 +56,49 @@ test("1099 report files only 1099 vendors over the threshold with a tax id", () 
   assert.deepEqual([...report.belowThreshold], ["v2"]);
   assert.deepEqual([...report.missingTaxId], ["v3"]);
   assert.equal(report.total.toDecimalString(), "6500.00");
+});
+
+test("1099 threshold is $600 through 2025 and $2,000 from 2026", () => {
+  assert.equal(threshold1099ForTaxYear(2025), 60000n);
+  assert.equal(threshold1099ForTaxYear(2024), 60000n);
+  assert.equal(threshold1099ForTaxYear(2026), 200000n);
+  assert.equal(threshold1099ForTaxYear(2027), 200000n);
+});
+
+test("2025 boundary: $600.00 is reportable, $599.99 is not", () => {
+  const vendors: Vendor[] = [
+    { id: "at", name: "At Line", is1099: true, taxId: "12-3456789" },
+    { id: "under", name: "Under Line", is1099: true, taxId: "98-7654321" },
+  ];
+  const payments = [
+    { vendorId: "at", date: "2025-07-01", amount: usd("600.00") },
+    { vendorId: "under", date: "2025-07-01", amount: usd("599.99") },
+  ];
+  const report = build1099Report(vendors, payments, 2025, USD);
+  assert.deepEqual(report.rows.map((r) => r.vendorId), ["at"]);
+  assert.deepEqual([...report.belowThreshold], ["under"]);
+});
+
+test("2026 boundary: $1,999.99 is not reportable, $2,000.00 is", () => {
+  const vendors: Vendor[] = [
+    { id: "at", name: "At Line", is1099: true, taxId: "12-3456789" },
+    { id: "under", name: "Under Line", is1099: true, taxId: "98-7654321" },
+  ];
+  const payments = [
+    { vendorId: "at", date: "2026-07-01", amount: usd("2000.00") },
+    { vendorId: "under", date: "2026-07-01", amount: usd("1999.99") },
+  ];
+  const report = build1099Report(vendors, payments, 2026, USD);
+  assert.deepEqual(report.rows.map((r) => r.vendorId), ["at"]);
+  assert.deepEqual([...report.belowThreshold], ["under"]);
+});
+
+test("a $600 payment is reportable for 2025 but not for 2026", () => {
+  const vendors: Vendor[] = [{ id: "v1", name: "Freelance Dev", is1099: true, taxId: "12-3456789" }];
+  const payments = [{ vendorId: "v1", date: "2026-03-01", amount: usd("600.00") }];
+  assert.equal(build1099Report(vendors, payments, 2026, USD).rows.length, 0);
+  const prior = [{ vendorId: "v1", date: "2025-03-01", amount: usd("600.00") }];
+  assert.equal(build1099Report(vendors, prior, 2025, USD).rows.length, 1);
 });
 
 // --- recurring --------------------------------------------------------------

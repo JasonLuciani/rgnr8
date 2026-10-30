@@ -5,11 +5,11 @@ import type { Vendor } from "./masterdata.js";
  * 1099-NEC tracking and generation.
  *
  * A service business must issue a 1099-NEC to each unincorporated contractor it
- * paid $600 or more in nonemployee compensation during the calendar year. This
- * aggregates the year's payments per vendor, keeps only the vendors flagged as
- * 1099 with a tax id, applies the $600 threshold, and emits the filing rows
- * (box 1). Amounts are exact `Money`; the threshold and totals never touch a
- * float.
+ * paid the year's threshold or more in nonemployee compensation ($600 through
+ * 2025, $2,000 from 2026). This aggregates the year's payments per vendor, keeps
+ * only the vendors flagged as 1099 with a tax id, applies that threshold, and
+ * emits the filing rows (box 1). Amounts are exact `Money`; the threshold and
+ * totals never touch a float.
  */
 
 /** A cash payment to a vendor (already filtered to the reportable ones). */
@@ -19,8 +19,14 @@ export interface VendorPayment {
   readonly amount: Money; // positive amount paid
 }
 
-/** The default IRS 1099-NEC reporting threshold. */
-export const DEFAULT_1099_THRESHOLD_MINOR = 60000n; // $600.00
+/**
+ * The IRS 1099-NEC reporting threshold for a calendar tax year: $600.00 for 2025
+ * and earlier, $2,000.00 for 2026 onward. Keyed on the year being reported, not
+ * on today's date.
+ */
+export function threshold1099ForTaxYear(year: number): bigint {
+  return year >= 2026 ? 200000n : 60000n;
+}
 
 export interface Form1099Row {
   readonly vendorId: string;
@@ -56,7 +62,7 @@ export function build1099Report(
   payments: readonly VendorPayment[],
   year: number,
   currency: Currency,
-  thresholdMinor: bigint = DEFAULT_1099_THRESHOLD_MINOR,
+  thresholdMinor: bigint = threshold1099ForTaxYear(year),
 ): Form1099Report {
   const vendorById = new Map(vendors.map((v) => [v.id, v]));
 
