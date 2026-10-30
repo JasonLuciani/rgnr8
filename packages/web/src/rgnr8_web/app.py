@@ -2471,6 +2471,7 @@ class WebApp:
             today=self._today(t), can_post=can_post,
             attachment_counts=raw_counts if isinstance(raw_counts, dict) else None,
             message=query.get("ok", ""), error=query.get("err", ""), banks=banks,
+            query=query,
             # (code, label): the label reads "4000 — Sales", or "Sales" for an
             # account QuickBooks has no number for.
             credit_accounts=tuple((str(a.get("code")),
