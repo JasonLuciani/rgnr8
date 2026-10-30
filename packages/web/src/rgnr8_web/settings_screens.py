@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from .books_screens import _card, _esc
+from .company_time import COMMON_TIMEZONES, DEFAULT_COMPANY_TIMEZONE
 from .health_screens import month_name
 from .modules import OPTIONAL_MODULES
 
@@ -47,6 +48,25 @@ def _modules_form(tenant: str, on: frozenset[str]) -> str:
     )
 
 
+def _timezone_fields(current: str, disabled: str) -> str:
+    """The company's time zone: "today" for every business date is read in it.
+    A common US zone, or Other and a typed IANA name."""
+    listed = {value for value, _label in COMMON_TIMEZONES}
+    is_other = current not in listed
+    choices = [(value, label) for value, label in COMMON_TIMEZONES] + [("other", "Other (type it below)")]
+    return (
+        "<label>Time zone"
+        f'<select name="timezone"{disabled}>'
+        + _options(choices, "other" if is_other else current)
+        + "</select></label>"
+        "<label>Other time zone (IANA name)"
+        f'<input name="timezone_other" value="{_esc(current if is_other else "")}" '
+        f'placeholder="e.g. Europe/Dublin"{disabled}></label>'
+        '<p class="muted wide">Dates on forms and reports, and what counts as today, '
+        "follow this zone, so an entry made late in the evening lands on your day.</p>"
+    )
+
+
 def render_settings(
     tenant: str,
     settings: Mapping[str, object],
@@ -56,6 +76,7 @@ def render_settings(
     can_erase: bool,
     modules_on: frozenset[str] = frozenset(),
     fiscal_year_start_month: int = 1,
+    timezone_name: str = DEFAULT_COMPANY_TIMEZONE,
     mirrors_quickbooks: bool = False,
     done: str = "",
     error: str = "",
@@ -98,6 +119,7 @@ def render_settings(
         f'<select name="fiscal_year_start_month"{disabled}>'
         + _options([(str(i), month_name(i)) for i in range(1, 13)], str(fiscal_year_start_month))
         + "</select></label>"
+        + _timezone_fields(timezone_name, disabled)
         + ('<p class="muted wide">Year-to-date figures, such as revenue on Business health, '
            "count from the first of this month. While your books mirror QuickBooks, each "
            "successful Refresh sets it to the month QuickBooks has, when QuickBooks has "

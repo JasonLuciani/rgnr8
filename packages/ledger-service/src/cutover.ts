@@ -216,11 +216,26 @@ function plannedDoc(i: OpenItem): PlannedDoc {
   };
 }
 
+/**
+ * The business's working date: `claimed` (from the web app's company time zone)
+ * when it is a real date within a day of the server's UTC date, which every time
+ * zone is; otherwise the server's UTC date. The bound stops a caller from
+ * moving "today" into a month that hasn't ended.
+ */
+export function businessToday(claimed: string, nowIso: string): string {
+  const utc = nowIso.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(claimed)) return utc;
+  const days = (Date.parse(`${claimed}T00:00:00Z`) - Date.parse(`${utc}T00:00:00Z`)) / 86_400_000;
+  return Number.isFinite(days) && Math.abs(days) <= 1 ? claimed : utc;
+}
+
 /** What a cutover at `cutoverDate` would do, and whether it may. Writes nothing. */
-export async function planCutover(ctx: CutoverContext, cutoverDate: string): Promise<CutoverPlan> {
+export async function planCutover(
+  ctx: CutoverContext, cutoverDate: string, todayOverride = "",
+): Promise<CutoverPlan> {
   const tenant = String(ctx.tenant);
   const blockers: string[] = [];
-  const today = ctx.now().slice(0, 10);
+  const today = businessToday(todayOverride, ctx.now());
   const settings = await ctx.backend.settings().get(tenant);
   const previous = await ctx.backend.cutovers().get(tenant);
   if (previous?.state === "executing") {
@@ -312,6 +327,8 @@ export interface ExecuteRequest {
   readonly reportHash: string;
   /** The signer saw the tie-out differences in the report and accepts them. */
   readonly acceptDifferences: boolean;
+  /** The business's working date (YYYY-MM-DD); must match the one the plan was shown with. */
+  readonly today?: string;
 }
 
 /** Cut over. Refuses unless the plan is clean and is the one that was signed. */
@@ -322,7 +339,7 @@ export async function executeCutover(
   if (!req.signedBy.trim()) {
     throw new CutoverError("cutover needs the name of the person who signed the report");
   }
-  const plan = await planCutover(ctx, req.cutoverDate);
+  const plan = await planCutover(ctx, req.cutoverDate, req.today ?? "");
   if (plan.blockers.length) throw new CutoverError(plan.blockers.join("; "));
   if (plan.hash !== req.reportHash) {
     throw new CutoverError("the books changed after the report was signed: review the new report");

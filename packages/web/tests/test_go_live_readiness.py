@@ -24,7 +24,7 @@ the suite â€” which, between them, they had sailed past for two months.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 from factory import _inputs, usd
 
@@ -68,8 +68,13 @@ class _MigratedFromQuickBooks:
         return LedgerResponse(200, {})
 
 
-def _app(transport, *, business_date=lambda: TODAY) -> WebApp:
-    app = WebApp(business_date=business_date)
+def _noon_utc(day: date) -> datetime:
+    """A wall-clock instant on `day` that is the same calendar day in every US zone."""
+    return datetime(day.year, day.month, day.day, 18, 0, tzinfo=timezone.utc)
+
+
+def _app(transport, *, business_clock=lambda: _noon_utc(TODAY)) -> WebApp:
+    app = WebApp(business_clock=business_clock)
     app.add_tenant("acme", "Acme Co", _inputs("20000.00"),
                    ForecastConfig(minimum_cash=usd("10000.00")), token="tok-acme")
     app.set_ledger(LedgerClient(transport, token="t"))
@@ -108,7 +113,7 @@ def test_the_outlook_starts_today_not_on_the_tenants_creation_date() -> None:
 def test_without_books_the_owners_saved_date_still_anchors_the_outlook() -> None:
     """An assumptions-only tenant's opening balance is true on the day they
     said it was; moving it to today would quietly re-date their figure."""
-    app = WebApp(business_date=lambda: TODAY)
+    app = WebApp(business_clock=lambda: _noon_utc(TODAY))
     app.add_tenant("acme", "Acme Co", _inputs("20000.00"),
                    ForecastConfig(minimum_cash=usd("10000.00")), token="tok-acme")
     body = _get(app, "/t/acme")
@@ -119,7 +124,7 @@ def test_with_no_clock_wired_behaviour_is_unchanged() -> None:
     """The default keeps every existing fixture meaningful; production wires
     the real date at the composition root."""
     t = _MigratedFromQuickBooks()
-    _get(_app(t, business_date=None), "/t/acme")
+    _get(_app(t, business_clock=None), "/t/acme")
     assert any(f"to={SAVED.isoformat()}" in p for p in t.paths if "/trial-balance" in p)
 
 

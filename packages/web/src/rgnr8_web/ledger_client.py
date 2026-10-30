@@ -351,9 +351,11 @@ class LedgerClient:
     def ten99(self, tenant: str, year: str) -> LedgerResponse:
         return self._call("GET", f"/t/{tenant}/1099/{urllib.parse.quote(year)}")
 
-    def documents(self, tenant: str, kind: str) -> LedgerResponse:
-        """kind: "invoices" or "bills"."""
-        return self._call("GET", f"/t/{tenant}/{kind}")
+    def documents(self, tenant: str, kind: str, *, today: str = "") -> LedgerResponse:
+        """kind: "invoices" or "bills". `today` is the business's working date
+        (YYYY-MM-DD) for the overdue check; the ledger falls back to UTC if unset."""
+        query = "?" + urllib.parse.urlencode({"today": today}) if today else ""
+        return self._call("GET", f"/t/{tenant}/{kind}{query}")
 
     def document(self, tenant: str, kind: str, doc_id: str) -> LedgerResponse:
         return self._call("GET", f"/t/{tenant}/{kind}/{doc_id}")
@@ -985,18 +987,25 @@ class LedgerClient:
         """The cutover record (if any) and why a backout couldn't happen now."""
         return self._call("GET", f"/t/{tenant}/cutover")
 
-    def cutover_plan(self, tenant: str, cutover_date: str) -> LedgerResponse:
-        """What a cutover on that month-end would do; writes nothing."""
-        return self._call("POST", f"/t/{tenant}/cutover/plan", {"cutover_date": cutover_date})
+    def cutover_plan(self, tenant: str, cutover_date: str, *, today: str = "") -> LedgerResponse:
+        """What a cutover on that month-end would do; writes nothing. `today` is the
+        business's working date; plan and execute must be given the same one."""
+        payload: dict[str, object] = {"cutover_date": cutover_date}
+        if today:
+            payload["today"] = today
+        return self._call("POST", f"/t/{tenant}/cutover/plan", payload)
 
     def cutover_execute(
         self, tenant: str, *, cutover_date: str, signed_by: str, report_hash: str,
-        accept_differences: bool,
+        accept_differences: bool, today: str = "",
     ) -> LedgerResponse:
-        return self._call("POST", f"/t/{tenant}/cutover/execute", {
+        payload: dict[str, object] = {
             "cutover_date": cutover_date, "signed_by": signed_by,
             "report_hash": report_hash, "accept_differences": accept_differences,
-        })
+        }
+        if today:
+            payload["today"] = today
+        return self._call("POST", f"/t/{tenant}/cutover/execute", payload)
 
     def cutover_backout(self, tenant: str) -> LedgerResponse:
         return self._call("POST", f"/t/{tenant}/cutover/backout")
