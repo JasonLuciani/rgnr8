@@ -2689,8 +2689,12 @@ class WebApp:
         res = self._ledger.accounts(t.tenant_id)
         if not res.ok:
             return self._shell(subject, t, "books", render_books_unavailable(res.error()))
+        # The balance column reads the trial balance; if that can't be read the
+        # column says so rather than the page failing.
+        tb = self._ledger.trial_balance(t.tenant_id)
         return self._shell(subject, t, "books", render_chart_of_accounts(
-            t.tenant_id, res.body, id_codes=self._id_codes(t)))
+            t.tenant_id, res.body, id_codes=self._id_codes(t),
+            tb=tb.body if tb.ok else None))
 
     def _books_register_page(self, subject: str, t: _Tenant, code: str) -> Response:
         if self._ledger is None:
