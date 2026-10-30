@@ -64,6 +64,7 @@ import {
   CutoverError,
   backOutCutover,
   backoutBlocker,
+  businessToday,
   executeCutover,
   planCutover,
   planJson,
@@ -549,7 +550,10 @@ export class LedgerService {
         if (rest.length === 2 && req.method === "POST") {
           const data = parseJson(req.body) ?? {};
           if (rest[1] === "plan") {
-            return ok({ tenant, plan: planJson(await planCutover(ctx, str(data["cutover_date"]).trim())) });
+            return ok({
+              tenant,
+              plan: planJson(await planCutover(ctx, str(data["cutover_date"]).trim(), str(data["today"]).trim())),
+            });
           }
           if (rest[1] === "execute") {
             const { record, plan } = await executeCutover(ctx, {
@@ -557,6 +561,7 @@ export class LedgerService {
               signedBy: str(data["signed_by"]),
               reportHash: str(data["report_hash"]).trim(),
               acceptDifferences: data["accept_differences"] === true,
+              today: str(data["today"]).trim(),
             });
             return ok({ tenant, record: recordJson(record), plan: planJson(plan) });
           }
@@ -731,7 +736,9 @@ export class LedgerService {
       }
       if (rest[0] === "invoices" || rest[0] === "bills") {
         const docKind: DocKind = rest[0] === "invoices" ? "invoice" : "bill";
-        if (rest.length === 1 && req.method === "GET") return await this.listDocs(tenant, docKind);
+        if (rest.length === 1 && req.method === "GET") {
+          return await this.listDocs(tenant, docKind, str(req.query["today"]).trim());
+        }
         if (rest.length === 1 && req.method === "POST") {
           return await this.createDoc(tenant, docKind, req.body);
         }
@@ -2699,15 +2706,17 @@ export class LedgerService {
     };
   }
 
-  private async listDocs(tenant: TenantId, kind: DocKind): Promise<ServiceResponse> {
+  private async listDocs(tenant: TenantId, kind: DocKind, today = ""): Promise<ServiceResponse> {
     const docs = await this.backend.documents().listDocs(String(tenant), kind);
     let openTotal = 0n;
     let overdueTotal = 0n;
-    const today = this.opts.now().slice(0, 10);
+    // The business's working date comes from the web app (its company time
+    // zone). Without it the server's UTC date is the only one there is.
+    const asOf = businessToday(today, this.opts.now());
     for (const d of docs) {
       const open = BigInt(d.openMinor);
       openTotal += open;
-      if (open > 0n && d.dueDate < today) overdueTotal += open;
+      if (open > 0n && d.dueDate < asOf) overdueTotal += open;
     }
     return ok({
       tenant,

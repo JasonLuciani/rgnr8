@@ -216,6 +216,11 @@ from .parallel_run import (
 )
 from .debt_screens import render_debt, render_debt_unavailable, render_loan_detail
 from .asset_screens import render_asset_detail, render_assets, render_assets_unavailable
+from .company_time import (
+    DEFAULT_COMPANY_TIMEZONE,
+    company_today,
+    validate_timezone,
+)
 from .health_screens import fiscal_year_start, render_health, render_health_unavailable
 from .ask_screens import render_ask, render_ask_unavailable
 from .copilot_bridge import AskService, LedgerReaderAdapter, copilot_scopes
@@ -702,7 +707,7 @@ class WebApp:
         emailer: "Callable[[str, str, str], None] | None" = None,
         saved_reports: SavedReportStore | None = None,
         report_clock: "Callable[[], datetime] | None" = None,
-        business_date: "Callable[[], date] | None" = None,
+        business_clock: "Callable[[], datetime] | None" = None,
         qbo: QboConnectService | None = None,
         webhooks: "WebhookEndpointStore | None" = None,
         webhook_outbox: "WebhookOutbox | None" = None,
@@ -820,7 +825,9 @@ class WebApp:
         # None keeps the old behaviour of anchoring everything to the owner's
         # saved opening date, which is what an assumptions-only tenant wants
         # and what every fixture in the suite was written against. See `_as_of`.
-        self._business_date = business_date
+        # The instant "now" for a deployment whose books are read live. The
+        # calendar date is taken in each company's own time zone (see `_as_of`).
+        self._business_clock = business_clock
         self._report_clock: Callable[[], datetime] = (
             report_clock if report_clock is not None else (lambda: datetime.now(timezone.utc))
         )
@@ -2416,19 +2423,29 @@ class WebApp:
         and started the 13-week outlook two months in the past — a confident,
         wrong figure of exactly the kind this product exists not to show.
         """
-        if self._ledger is not None and self._business_date is not None:
-            return self._business_date()
+        if self._ledger is not None and self._business_clock is not None:
+            return company_today(t.state.timezone, self._business_clock())
         return t.inputs.opening.as_of
 
     def _today(self, t: _Tenant) -> str:
         """The business's working date, which every screen agrees on."""
         return self._as_of(t).isoformat()
 
+    def _company_today_now(self, t: _Tenant) -> date:
+        """The real business date today, in the company's time zone. Used where
+        the ledger needs the calendar date itself (overdue checks, the cutover
+        month-end rule, go-live and bank-history defaults), not the books'
+        as-of date, which an assumptions-only tenant anchors to its saved day.
+        Reads the production clock, or the session clock when none is wired."""
+        now = self._business_clock() if self._business_clock is not None else (
+            datetime.fromtimestamp(self._session_clock(), timezone.utc))
+        return company_today(t.state.timezone, now)
+
     def _arap_page(self, subject: str, t: _Tenant, kind: str, query: "dict[str, str]") -> Response:
         if self._ledger is None:
             return self._shell(subject, t, kind, render_books_unavailable(
                 "No ledger service is configured for this deployment."))
-        docs = self._ledger.documents(t.tenant_id, kind)
+        docs = self._ledger.documents(t.tenant_id, kind, today=self._company_today_now(t).isoformat())
         if not docs.ok:
             return self._shell(subject, t, kind, render_books_unavailable(docs.error()))
         mirrored = self._mirrored_open_items(t, kind, docs.body)
@@ -3181,7 +3198,7 @@ class WebApp:
         client = self._qbo.api_client(t.tenant_id)
         if client is None:
             return _redirect(f"/t/{t.tenant_id}/connect")
-        today = date.fromtimestamp(self._session_clock())
+        today = self._company_today_now(t)
         result = bring_over_history(
             client, self._ledger, t.tenant_id, today,
             imported_at=datetime.fromtimestamp(self._session_clock(), timezone.utc).isoformat())
@@ -5592,6 +5609,7 @@ class WebApp:
                     t.tenant_id, current,
                     modules_on=enabled_modules(state.modules),
                     fiscal_year_start_month=state.fiscal_year_start_month or 1,
+                    timezone_name=state.timezone or DEFAULT_COMPANY_TIMEZONE,
                     mirrors_quickbooks=str(current.get("book_of_record") or "") == "quickbooks",
                     can_manage_settings=can_settings,
                     can_manage_retention=can_retention,
@@ -5630,6 +5648,17 @@ class WebApp:
                 return _redirect(f"{back}?err=Choose+the+month+your+fiscal+year+starts+in")
             # Unset reads as January, so choosing January then changes nothing.
             fiscal_changed = (self._store.load(t.tenant_id).fiscal_year_start_month or 1) != int(raw_month)
+        # The company's time zone is saved here with the other local settings.
+        tz_name = ""
+        choice = str(data.get("timezone", "")).strip()
+        if choice:
+            typed = str(data.get("timezone_other", "")).strip() if choice == "other" else choice
+            try:
+                tz_name = validate_timezone(typed)
+            except ValueError as exc:
+                return _redirect(f"{back}?err={_qs_escape(str(exc))}")
+        tz_changed = bool(tz_name) and tz_name != (self._store.load(t.tenant_id).timezone
+                                                   or DEFAULT_COMPANY_TIMEZONE)
         patch: dict[str, object] = {}
         for key in ("inventory_costing_method", "base_currency", "multi_currency_enabled"):
             if str(data.get(key, "")).strip():
@@ -5644,24 +5673,30 @@ class WebApp:
                 if not may_retention:
                     return _redirect(f"{back}?err=Changing+retention+needs+the+Manage+data+retention+permission")
                 patch[key] = str(data.get(key, "")).strip()
-        if not patch and not fiscal_changed:
+        if not patch and not fiscal_changed and not tz_changed:
             return _redirect(f"{back}?done=Nothing+to+change")
         # The month is saved first: if that fails nothing has changed anywhere,
         # rather than the ledger's half saved and a 500 for the rest.
         saved = sorted(patch.keys())
-        if fiscal_changed:
-            def set_month(state: TenantState) -> None:
-                state.fiscal_year_start_month = int(raw_month)
+        if fiscal_changed or tz_changed:
+            def set_local(state: TenantState) -> None:
+                if fiscal_changed:
+                    state.fiscal_year_start_month = int(raw_month)
+                if tz_changed:
+                    state.timezone = tz_name
 
             try:
-                t.state = update_state(self._store, t.tenant_id, set_month)
+                t.state = update_state(self._store, t.tenant_id, set_local)
             except Exception:  # noqa: BLE001 - a store failure, said plainly
-                return _redirect(f"{back}?err=Couldn%27t+save+the+fiscal+year+start%3B+nothing+was+changed")
-            saved.append("fiscal_year_start_month")
+                return _redirect(f"{back}?err=Couldn%27t+save+these+settings%3B+nothing+was+changed")
+            if fiscal_changed:
+                saved.append("fiscal_year_start_month")
+            if tz_changed:
+                saved.append("timezone")
         if patch:
             res = self._ledger.save_settings(t.tenant_id, patch)
             if not res.ok:
-                done = " (the fiscal year start was saved)" if fiscal_changed else ""
+                done = " (the time zone and fiscal year changes were saved)" if (fiscal_changed or tz_changed) else ""
                 return _redirect(f"{back}?err={_qs_escape(res.error() + done)}")
         if self._audit is not None:
             self._audit.record(subject, "settings.saved", self._session_clock(),
@@ -5684,7 +5719,8 @@ class WebApp:
     def _debt_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
         if self._ledger is None:
             return self._shell(subject, t, "debt", render_debt_unavailable("No ledger service is configured."))
-        res = self._ledger.debt_dashboard(t.tenant_id, as_of=query.get("as_of", ""))
+        res = self._ledger.debt_dashboard(
+            t.tenant_id, as_of=query.get("as_of", "") or self._company_today_now(t).isoformat())
         if not res.ok:
             return self._shell(subject, t, "debt", render_debt_unavailable(res.error()))
         can_write = self._can_post(subject, t)
@@ -5864,7 +5900,8 @@ class WebApp:
     def _health_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
         if self._ledger is None:
             return self._shell(subject, t, "health", render_health_unavailable("No ledger service is configured."))
-        res = self._ledger.ratios(t.tenant_id, as_of=query.get("as_of", ""))
+        res = self._ledger.ratios(
+            t.tenant_id, as_of=query.get("as_of", "") or self._company_today_now(t).isoformat())
         if not res.ok:
             return self._shell(subject, t, "health", render_health_unavailable(res.error()))
         return self._shell(subject, t, "health", render_health(
@@ -6742,7 +6779,7 @@ class WebApp:
         client = self._qbo.api_client(t.tenant_id) if self._qbo is not None else None
         if client is None:
             return None, "connect QuickBooks first: the baseline is read from your spending there"
-        today = date.fromtimestamp(self._session_clock())
+        today = self._company_today_now(t)
         try:
             baseline = baseline_from_quickbooks(client, today, t.config.currency)
         except Exception as exc:  # noqa: BLE001 - a live API failure, said plainly
@@ -6804,12 +6841,12 @@ class WebApp:
         chosen = query.get("date", "")
         plan = None
         if chosen:
-            res = self._ledger.cutover_plan(t.tenant_id, chosen)
+            res = self._ledger.cutover_plan(t.tenant_id, chosen, today=self._company_today_now(t).isoformat())
             raw = res.body.get("plan") if res.ok else None
             plan = raw if isinstance(raw, dict) else None
         body = render_cutover(
             t.tenant_id, status=status.body, plan=plan,
-            cutover_date=chosen or self._last_month_end(date.fromtimestamp(self._session_clock())),
+            cutover_date=chosen or self._last_month_end(self._company_today_now(t)),
             message=query.get("ok", ""), error=query.get("err", ""))
         return self._shell(subject, t, "connect", body)
 
@@ -6827,6 +6864,7 @@ class WebApp:
             t.tenant_id, cutover_date=cutover_date, signed_by=signed_by,
             report_hash=str(data.get("report_hash", "")).strip(),
             accept_differences=str(data.get("accept_differences", "")) in ("on", "true", "1"),
+            today=self._company_today_now(t).isoformat(),
         )
         if not res.ok:
             return _redirect(f"{back}?date={cutover_date}&err={_qs_escape(res.error())}")
@@ -7232,7 +7270,7 @@ class WebApp:
                     self._audit.record(subject, "qbo.refresh_refused", self._session_clock(),
                                        tenant_id=t.tenant_id, detail=refusal)
                 return self._connect_result(t, "migrate", False, refusal)
-        as_of = date.fromtimestamp(self._session_clock())
+        as_of = self._company_today_now(t)
         try:
             inputs, summary = build_inputs_from_qbo(client, as_of=as_of, currency=t.config.currency)
         except Exception:
@@ -7310,7 +7348,7 @@ class WebApp:
         # used to lock today's whole month — go-live freezes the cutover month and
         # everything before it — so nothing could be posted for the rest of it,
         # including the catch-ups that keep a parallel-run mirror current.
-        today = date.fromtimestamp(self._session_clock())
+        today = self._company_today_now(t)
         cutover = (today.replace(day=1) - timedelta(days=1)).isoformat()
         result = migrate_qbo_to_ledger(
             client, self._ledger, t.tenant_id,
