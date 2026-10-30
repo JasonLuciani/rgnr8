@@ -1,0 +1,67 @@
+{
+  "contract": "financial-statements/1",
+  "period": "2026-08-01..2026-08-31",
+  "currency": "USD",
+  "income_statement": {
+    "revenue": [
+      {
+        "label": "Services Income",
+        "amount_minor": 500000
+      }
+    ],
+    "expenses": [
+      {
+        "label": "Rent & Lease",
+        "amount_minor": 800000
+      }
+    ],
+    "total_revenue": 500000,
+    "cost_of_goods_sold": 0,
+    "gross_profit": 500000,
+    "gross_margin": 1,
+    "operating_expenses": 800000,
+    "total_expenses": 800000,
+    "net_income": -300000
+  },
+  "balance_sheet": {
+    "assets": [
+      {
+        "label": "Business Checking",
+        "amount_minor": -300000
+      }
+    ],
+    "liabilities": [],
+    "equity": [
+      {
+        "label": "Current-period net income",
+        "amount_minor": -300000
+      }
+    ],
+    "total_assets": -300000,
+    "total_liabilities": 0,
+    "total_equity": -300000,
+    "balanced": true
+  },
+  "cash_flow": {
+    "operating": [
+      {
+        "label": "Operating activities",
+        "amount_minor": -300000
+      }
+    ],
+    "investing": [
+      {
+        "label": "Investing activities",
+        "amount_minor": 0
+      }
+    ],
+    "financing": [
+      {
+        "label": "Financing activities",
+        "amount_minor": 0
+      }
+    ],
+    "net_change": -300000,
+    "ending_cash": -300000
+  }
+}

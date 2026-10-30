@@ -551,11 +551,13 @@ def render_books_statements(
     )
 
     if isinstance(income, Mapping):
+        # financial-statements/1 lines are {label, amount_minor}: no account code,
+        # so the number cell stays empty.
         def lines(key: str) -> str:
             return "".join(
-                f"<tr><td>{_esc(account_number(l.get('code'), id_codes))}</td>"
-                f"<td>{_esc(l.get('name'))}</td>"
-                f"{_num(_cents(l.get('amount')), ccy)}</tr>"
+                f"<tr><td></td>"
+                f"<td>{_esc(l.get('label'))}</td>"
+                f"{_num(_cents(l.get('amount_minor')), ccy)}</tr>"
                 for l in _seq(income.get(key))
                 if isinstance(l, Mapping)
             )
@@ -583,9 +585,9 @@ def render_books_statements(
         )
         def section(key: str, label: str) -> str:
             body = "".join(
-                f"<tr><td>{_esc(account_number(l.get('code'), id_codes))}</td>"
-                f"<td>{_esc(l.get('name'))}</td>"
-                f"{_num(_cents(l.get('amount')), ccy)}</tr>"
+                f"<tr><td></td>"
+                f"<td>{_esc(l.get('label'))}</td>"
+                f"{_num(_cents(l.get('amount_minor')), ccy)}</tr>"
                 for l in _seq(bs.get(key))
                 if isinstance(l, Mapping)
             )

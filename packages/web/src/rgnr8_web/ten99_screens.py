@@ -1,7 +1,7 @@
 """1099-NEC — what you paid contractors, and who you can't file for.
 
-The mechanics are simple. The timing is what hurts: the $600 threshold is
-crossed in March, the W-9 is never collected, and it surfaces in January when
+The mechanics are simple. The timing is what hurts: the threshold (set per tax
+year by the ledger service) is crossed in March, the W-9 is never collected, and it surfaces in January when
 the contractor has moved on and the business is filing without a TIN.
 
 So this screen is built around the warnings rather than the totals. Who is over
