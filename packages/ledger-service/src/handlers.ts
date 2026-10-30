@@ -45,6 +45,7 @@ import {
   approveReopen,
   buildFinancialPackage,
   closeStateJson,
+  isOverridableCheck,
   publishClose,
   requestReopen,
   type ControlLike,
@@ -2231,6 +2232,14 @@ export class LedgerService {
     if (!publishedBy) return bad("published_by is required");
     const preparedBy = str(data["prepared_by"]).trim();
     const period = str(data["period"]).trim() || to.slice(0, 7);
+    // Gate override: the web tier has already checked that the caller holds the
+    // override permission. Here the reason is required, and the service records
+    // exactly which failed checks it let through (never the trial balance).
+    const wantsOverride = data["override"] === true;
+    const overrideReason = str(data["override_reason"]).trim();
+    if (wantsOverride && !overrideReason) {
+      return bad("a gate override must state a reason (override_reason)");
+    }
     const now = this.opts.now();
 
     const input = await this.buildPackageInput(tenant, from, to, period);
@@ -2257,13 +2266,28 @@ export class LedgerService {
         inputs,
         pkg,
         ...(preparedBy ? { preparedBy } : {}),
+        ...(wantsOverride ? { override: { reason: overrideReason } } : {}),
         publishedBy,
         at: now,
       });
       return ok(closeStateJson(state));
     } catch (err) {
+      if (err instanceof CloseGateError) {
+        // Return the failed checks too, so the UI can offer an override of exactly these.
+        return {
+          status: 409,
+          body: {
+            error: err.message,
+            checks: err.failed.map((t) => ({
+              id: t.id,
+              label: t.label,
+              detail: t.detail,
+              overridable: isOverridableCheck(t.id),
+            })),
+          },
+        };
+      }
       if (
-        err instanceof CloseGateError ||
         err instanceof SeparationOfDutiesError ||
         err instanceof PackagePublishedError ||
         err instanceof CloseStateError

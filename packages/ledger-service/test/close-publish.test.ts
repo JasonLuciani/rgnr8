@@ -165,3 +165,60 @@ test("reopen is two-step and separation-of-duties gated; evidence is preserved",
   const history = obj(approved)["history"] as Array<{ action: string }>;
   assert.deepEqual(history.map((h) => h.action), ["PUBLISH", "REQUEST_REOPEN", "APPROVE_REOPEN"]);
 });
+
+/** The gate override, through the service: only with a reason, recorded, never for the trial balance. */
+test("an override seals over an unreconciled bank and records who/when/reason/checks", async () => {
+  const s = svc();
+  await books(s); // cash has activity but is NOT reconciled through period end
+  const blocked = await call(s, "POST", "/t/acme/close/publish", {
+    from: "2026-08-01", to: "2026-08-31", published_by: "sam",
+  });
+  assert.equal(blocked.status, 409);
+  const checks = (obj(blocked)["checks"] as Array<{ id: string; overridable: boolean }>);
+  assert.deepEqual(checks.map((c) => [c.id, c.overridable]), [["bank_reconciliations", true]]);
+
+  const res = await call(s, "POST", "/t/acme/close/publish", {
+    from: "2026-08-01", to: "2026-08-31", published_by: "sam",
+    override: true, override_reason: "Cash statement arrives next week; bank confirmed balance",
+  });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  const override = obj(res)["override"] as { by: string; at: string; reason: string; checks: Array<{ id: string }> };
+  assert.equal(override.by, "sam");
+  assert.equal(override.at, NOW);
+  assert.equal(override.reason, "Cash statement arrives next week; bank confirmed balance");
+  assert.deepEqual(override.checks.map((c) => c.id), ["bank_reconciliations"]);
+
+  const state = await call(s, "GET", "/t/acme/close/state", "", { period: "2026-08" });
+  assert.equal((obj(state)["override"] as { by: string }).by, "sam");
+});
+
+test("an override with no reason is refused and seals nothing", async () => {
+  const s = svc();
+  await books(s);
+  const res = await call(s, "POST", "/t/acme/close/publish", {
+    from: "2026-08-01", to: "2026-08-31", published_by: "sam", override: true, override_reason: "   ",
+  });
+  assert.equal(res.status, 400, JSON.stringify(res.body));
+  const state = await call(s, "GET", "/t/acme/close/state", "", { period: "2026-08" });
+  assert.equal(state.status, 404);
+});
+
+test("an override can cover a subledger tie failure, and a clean close records no override", async () => {
+  const s = svc();
+  await books(s);
+  await reconcileCash(s);
+  await call(s, "POST", "/t/acme/entries", {
+    date: "2026-08-07", memo: "orphan AR",
+    lines: [
+      { code: "1200", side: "DEBIT", amount_minor: "9000" },
+      { code: "4000", side: "CREDIT", amount_minor: "9000" },
+    ],
+  });
+  const res = await call(s, "POST", "/t/acme/close/publish", {
+    from: "2026-08-01", to: "2026-08-31", published_by: "sam",
+    override: true, override_reason: "AR subledger rebuilt in Q4; tie-out tracked separately",
+  });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  const override = obj(res)["override"] as { checks: Array<{ id: string }> };
+  assert.deepEqual(override.checks.map((c) => c.id), ["control_accounts"]);
+});

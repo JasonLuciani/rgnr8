@@ -172,7 +172,7 @@ from .payroll_screens import (
     render_payroll_unavailable,
 )
 from .qbo_sync import QboSyncSummary, build_inputs_from_qbo, merge_refresh
-from .rbac import AccessPolicy, Permission, Role, User, UserDirectory
+from .rbac import AccessPolicy, Permission, Role, User, UserDirectory, role_permissions
 from .reconcile_screens import (
     render_import_result,
     render_pick_account,
@@ -262,6 +262,8 @@ from .attention import Signals as AttentionSignals
 from .attention import gather as attention_gather
 from .screens import (
     CloseBoard,
+    CloseOverrideRecord,
+    GateCheck,
     default_close_board,
     render_ar_body,
     render_briefing_body,
@@ -592,6 +594,15 @@ def _signed_out_page(req: Request) -> "Response | None":
 
 def _json(status: int, payload: object) -> Response:
     return Response(status, json.dumps(payload), "application/json")
+
+
+def _roles_with(permission: Permission) -> str:
+    """The tenant roles that hold `permission` by default, as readable text
+    ("owner or controller"), for telling a blocked user who can override."""
+    names = [r.value for r in Role if not r.is_platform and permission in role_permissions(r)]
+    if not names:
+        return "no role"
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " or " + names[-1]
 
 
 def _month_bounds(period: str) -> "tuple[str, str]":
@@ -2075,7 +2086,7 @@ class WebApp:
         if (len(parts) == 4 and parts[0] == "api" and parts[2] == "close"
                 and parts[3] == "publish" and req.method == "POST"):
             return self._require(subject, token_tenant, parts[1], P.PUBLISH_CLOSE,
-                                 lambda t: self._close_publish(subject, t))
+                                 lambda t: self._close_publish(subject, t, req.body))
 
         # /api/<tenant>/packages/<period>  -> published package JSON (verified)
         if len(parts) == 4 and parts[0] == "api" and parts[2] == "packages" and req.method == "GET":
@@ -6384,8 +6395,11 @@ class WebApp:
         perms, _role = self._perms_role(subject, t.tenant_id)
         can_manage = self._policy is None or Permission.MANAGE_CLOSE in perms
         can_publish = self._policy is None or Permission.PUBLISH_CLOSE in perms
+        can_override = Permission.OVERRIDE_CLOSE_GATE in perms
         body = render_close_body(self._close_board(t), t.tenant_id,
-                                 can_manage=can_manage, can_publish=can_publish)
+                                 can_manage=can_manage, can_publish=can_publish,
+                                 can_override=can_override,
+                                 override_roles=_roles_with(Permission.OVERRIDE_CLOSE_GATE))
         return self._shell(subject, t, "close", body)
 
     # --- scenario planning (what-if) ----------------------------------------
@@ -7358,13 +7372,19 @@ class WebApp:
         board = board.with_task_status(key, status)
         # Record who prepared the close so the authoritative publish can enforce
         # separation of duties (the preparer may not also publish).
-        board = dataclasses.replace(board, prepared_by=subject or board.prepared_by)
+        # A refused gate reflects the tasks as they were; advancing one makes it stale.
+        board = dataclasses.replace(board, prepared_by=subject or board.prepared_by, gate_failures=())
         self._close[t.tenant_id] = board
         return _json(200, {"id": key, "status": status, "done": board.done, "total": board.total,
                            "complete": board.complete})
 
-    def _close_publish(self, subject: str, t: _Tenant) -> Response:
+    def _close_publish(self, subject: str, t: _Tenant, body: str = "") -> Response:
         """Seal the period once every task is done (the publish gate).
+
+        `{"override": true, "override_reason": "..."}` seals over failed checks
+        that are empty or unreconciled. That needs OVERRIDE_CLOSE_GATE, checked
+        here on the server, and a reason; the ledger refuses the trial balance
+        regardless. Every override is recorded on the period and in the audit log.
 
         When a ledger service is wired, this DELEGATES to its authoritative close
         state machine — which builds the package from the books, runs the gate,
@@ -7372,6 +7392,27 @@ class WebApp:
         package. The local board flag is then a mirror of that authoritative
         state, not the source of truth. With no ledger (pure-forecast dev mode)
         it falls back to the local board seal so the screen still works."""
+        try:
+            data = json.loads(body) if body.strip() else {}
+        except json.JSONDecodeError:
+            return _json(400, {"error": "invalid JSON body"})
+        if not isinstance(data, dict):
+            return _json(400, {"error": "invalid JSON body"})
+        wants_override = data.get("override") is True
+        override_reason = str(data.get("override_reason") or "").strip()
+        if wants_override:
+            # Overriding a failed gate needs its own permission, enforced here on
+            # the server: a hidden button or a bare publish permission is not enough.
+            perms, _role = self._perms_role(subject, t.tenant_id)
+            if Permission.OVERRIDE_CLOSE_GATE not in perms:
+                return _json(403, {"error": "insufficient role",
+                                   "need": Permission.OVERRIDE_CLOSE_GATE.value})
+            if not override_reason:
+                return _json(400, {"error": "an override must state a reason"})
+            if self._ledger is None:
+                return _json(400, {"error": "a gate override needs the ledger service, "
+                                            "which runs the checks it overrides"})
+
         board = self._close_board(t)
         if board.sealed:
             return _json(200, {"period": board.period, "sealed": True})
@@ -7379,6 +7420,7 @@ class WebApp:
             return _json(409, {"error": "every close task must be done before sealing",
                                "done": board.done, "total": board.total})
 
+        override: CloseOverrideRecord | None = None
         if self._ledger is not None:
             frm, to = _month_bounds(board.period)
             # The board's completeness is a local UX pre-gate; the AUTHORITATIVE
@@ -7392,16 +7434,40 @@ class WebApp:
                     # Separation of duties: whoever prepared the close (advanced
                     # the tasks) may not also publish it.
                     prepared_by=board.prepared_by,
+                    override_reason=override_reason if wants_override else None,
                 )
             except LedgerUnavailable:
                 return _json(503, {"error": "the ledger service is unreachable; try again"})
             if not res.ok:
                 # Surface the authoritative gate/SoD/balance error to the UI.
-                return _json(res.status or 409, dict(res.body) if res.body
-                             else {"error": "close was refused by the ledger"})
+                refused = dict(res.body) if res.body else {"error": "close was refused by the ledger"}
+                checks = refused.get("checks")
+                if isinstance(checks, list):
+                    # Remember which checks failed, so the close page can show them
+                    # and offer an override to someone who may give one.
+                    failures = tuple(
+                        GateCheck(str(c.get("id", "")), str(c.get("label", "")),
+                                  str(c.get("detail", "")), bool(c.get("overridable")))
+                        for c in checks if isinstance(c, dict))
+                    self._close[t.tenant_id] = dataclasses.replace(board, gate_failures=failures)
+                return _json(res.status or 409, refused)
+            ov = res.body.get("override") if res.body else None
+            if isinstance(ov, dict):
+                ov_checks = ov.get("checks")
+                override = CloseOverrideRecord(
+                    by=str(ov.get("by", "")), at=str(ov.get("at", "")),
+                    reason=str(ov.get("reason", "")),
+                    checks=tuple(str(c.get("label", "")) for c in ov_checks
+                                 if isinstance(c, dict)) if isinstance(ov_checks, list) else (),
+                )
 
-        board = dataclasses.replace(board, sealed=True)
+        board = dataclasses.replace(board, sealed=True, gate_failures=(), override=override)
         self._close[t.tenant_id] = board
+        if override is not None and self._audit is not None:
+            # Who overrode, when, why, and over which checks: append-only evidence.
+            self._audit.record(subject, "close.gate_overridden", self._session_clock(),
+                               tenant_id=t.tenant_id, target=board.period,
+                               detail=f"{override.reason} | checks: {'; '.join(override.checks)}")
         def sealed(state: TenantState) -> None:
             state.decisions.append({"id": len(state.decisions) + 1, "kind": "close",
                                     "label": f"Sealed {board.period}"})
@@ -7409,6 +7475,10 @@ class WebApp:
         t.state = update_state(self._store, t.tenant_id, sealed)
         # Fan the event out to any registered webhook endpoints, durably.
         self._emit_event(t.tenant_id, "close.sealed", {"period": board.period})
+        if override is not None:
+            return _json(200, {"period": board.period, "sealed": True, "override": {
+                "by": override.by, "at": override.at, "reason": override.reason,
+                "checks": list(override.checks)}})
         return _json(200, {"period": board.period, "sealed": True})
 
     def _emit_event(self, tenant_id: str, event_type: str, data: "dict[str, object]") -> int:

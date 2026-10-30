@@ -208,3 +208,79 @@ test("cannot reopen a period that was never published, or approve with no pendin
     CloseStateError,
   );
 });
+
+// --- gate override: a role-holder may seal over empty/unreconciled checks -----
+
+const EMPTY_RECON: CloseGateInputs = { ...cleanGate, reconciliations: [] };
+
+test("override seals despite empty reconciliations and records who/when/reason/checks", async () => {
+  const d = deps();
+  const p = await pkg();
+  const state = await publishClose(d, {
+    tenantId: "acme", inputs: EMPTY_RECON, pkg: p,
+    preparedBy: "alex", publishedBy: "sam", at: "2026-09-01T17:00:00Z",
+    override: { reason: "  no bank accounts carry a balance this period  " },
+  });
+  assert.equal(state.status, "PUBLISHED");
+  assert.equal(await d.periods.status(TENANT, AUG), "LOCKED");
+  assert.ok(await d.packages.get("acme", "2026-08"));
+  assert.ok(state.override);
+  assert.equal(state.override.by, "sam");
+  assert.equal(state.override.at, "2026-09-01T17:00:00Z");
+  assert.equal(state.override.reason, "no bank accounts carry a balance this period");
+  assert.deepEqual(state.override.checks.map((t) => t.id), ["bank_reconciliations"]);
+  assert.equal(state.checklist.find((t) => t.id === "bank_reconciliations")?.status, "FAILED");
+  assert.match(state.history[0]?.note ?? "", /gate overridden.*no bank accounts/);
+});
+
+test("override is refused without a reason, and nothing is locked", async () => {
+  const d = deps();
+  const p = await pkg();
+  await assert.rejects(
+    () => publishClose(d, {
+      tenantId: "acme", inputs: EMPTY_RECON, pkg: p, publishedBy: "sam", at: META.closedAt,
+      override: { reason: "   " },
+    }),
+    CloseStateError,
+  );
+  assert.equal(await d.periods.status(TENANT, AUG), "OPEN");
+  assert.equal(await d.states.get("acme", "2026-08"), null);
+});
+
+test("an override never lets an unbalanced trial balance through", async () => {
+  const d = deps();
+  const p = await pkg();
+  const unbalanced: CloseGateInputs = { ...EMPTY_RECON, trialBalanceBalanced: false };
+  await assert.rejects(
+    () => publishClose(d, {
+      tenantId: "acme", inputs: unbalanced, pkg: p, publishedBy: "sam", at: META.closedAt,
+      override: { reason: "close it anyway" },
+    }),
+    (err: unknown) => err instanceof CloseGateError && /cannot be overridden/.test(err.message)
+      && err.failed.some((t) => t.id === "trial_balance"),
+  );
+  assert.equal(await d.periods.status(TENANT, AUG), "OPEN");
+  assert.equal(await d.packages.get("acme", "2026-08"), null);
+});
+
+test("without an override, failed checks still block the close", async () => {
+  const d = deps();
+  const p = await pkg();
+  await assert.rejects(
+    () => publishClose(d, { tenantId: "acme", inputs: EMPTY_RECON, pkg: p, publishedBy: "sam", at: META.closedAt }),
+    (err: unknown) => err instanceof CloseGateError && err.failed.length === 1
+      && err.failed[0]?.id === "bank_reconciliations",
+  );
+  assert.equal(await d.periods.status(TENANT, AUG), "OPEN");
+});
+
+test("an override that is not needed records no override", async () => {
+  const d = deps();
+  const p = await pkg();
+  const state = await publishClose(d, {
+    tenantId: "acme", inputs: cleanGate, pkg: p, publishedBy: "sam", at: META.closedAt,
+    override: { reason: "belt and braces" },
+  });
+  assert.equal(state.status, "PUBLISHED");
+  assert.equal(state.override, undefined);
+});

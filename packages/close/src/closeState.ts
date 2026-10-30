@@ -5,7 +5,12 @@ import {
   type PeriodStore,
 } from "@rgnr8/ledger-kernel";
 import type { Migration, SqlExecutor } from "@rgnr8/migrations";
-import { buildCloseChecklist, type CloseGateInputs, type CloseTask } from "./close.js";
+import {
+  buildCloseChecklist,
+  isOverridableCheck,
+  type CloseGateInputs,
+  type CloseTask,
+} from "./close.js";
 import type { FinancialPackage } from "./financialPackage.js";
 import type { FinancialPackageStore } from "./packageStore.js";
 
@@ -44,6 +49,19 @@ export interface CloseTransition {
   readonly note?: string;
 }
 
+/**
+ * A gate override recorded at publish time: a person sealed the period although
+ * some checks had failed for being empty or unreconciled. `checks` is the
+ * evidence of exactly which checks were let through. Never present for an
+ * unbalanced trial balance, which cannot be overridden.
+ */
+export interface CloseOverride {
+  readonly by: string;
+  readonly at: string;
+  readonly reason: string;
+  readonly checks: readonly CloseTask[];
+}
+
 /** The durable, authoritative close state for one (tenant, period). */
 export interface CloseState {
   readonly tenantId: string;
@@ -53,6 +71,8 @@ export interface CloseState {
   readonly checklist: readonly CloseTask[];
   readonly publishedBy?: string;
   readonly publishedAt?: string;
+  /** Present only when the period was sealed over failed (overridable) checks. */
+  readonly override?: CloseOverride;
   /** Fingerprint of the sealed package (its record stays in the package store). */
   readonly packageFingerprint?: string;
   readonly reopenRequestedBy?: string;
@@ -64,11 +84,18 @@ export interface CloseState {
 export class CloseStateError extends Error {
   override readonly name: string = "CloseStateError";
 }
-/** The close gate failed — some control did not pass. Carries the blockers. */
+/**
+ * The close gate failed — some control did not pass. Carries the blocker labels
+ * and the failed checks themselves (so a caller can show what to override).
+ */
 export class CloseGateError extends CloseStateError {
   override readonly name = "CloseGateError";
-  constructor(readonly blockers: readonly string[]) {
-    super(`close is blocked: ${blockers.join("; ")}`);
+  constructor(
+    readonly blockers: readonly string[],
+    readonly failed: readonly CloseTask[] = [],
+    note?: string,
+  ) {
+    super(`close is blocked: ${blockers.join("; ")}${note ? ` (${note})` : ""}`);
   }
 }
 /** A single person tried to perform two roles that must be separated. */
@@ -177,6 +204,12 @@ export interface PublishCloseInput {
   readonly preparedBy?: string;
   readonly publishedBy: string;
   readonly at: string;
+  /**
+   * Seal over failed checks. Honoured only for failures in the overridable set
+   * (see `isOverridableCheck`); the publisher is recorded as the overrider.
+   * A non-empty reason is always required when this is given.
+   */
+  readonly override?: { readonly reason: string };
 }
 
 function brand(tenantId: string, periodKey: string): { tenant: ReturnType<typeof asTenantId>; period: PeriodKey } {
@@ -201,8 +234,27 @@ export async function publishClose(deps: CloseEngineDeps, input: PublishCloseInp
 
   // Gate on REAL control results — not an in-memory "done" flag.
   const checklist = buildCloseChecklist(input.inputs);
-  const blockers = checklist.filter((t) => t.status === "FAILED").map((t) => t.label);
-  if (blockers.length > 0) throw new CloseGateError(blockers);
+  const failed = checklist.filter((t) => t.status === "FAILED");
+  let override: CloseOverride | undefined;
+  if (input.override) {
+    // An override request must always say why, even if nothing ends up overridden.
+    const reason = input.override.reason.trim();
+    if (!reason) throw new CloseStateError("a gate override must state a reason");
+    if (failed.length > 0) {
+      // The trial balance (and anything else not in the overridable set) is absolute.
+      const refused = failed.filter((t) => !isOverridableCheck(t.id));
+      if (refused.length > 0) {
+        throw new CloseGateError(
+          failed.map((t) => t.label),
+          failed,
+          `${refused.map((t) => t.label).join("; ")} cannot be overridden`,
+        );
+      }
+      override = { by: input.publishedBy, at: input.at, reason, checks: failed };
+    }
+  } else if (failed.length > 0) {
+    throw new CloseGateError(failed.map((t) => t.label), failed);
+  }
 
   // Separation of duties: the publisher may not have prepared the close.
   if (input.preparedBy && input.preparedBy === input.publishedBy) {
@@ -225,9 +277,15 @@ export async function publishClose(deps: CloseEngineDeps, input: PublishCloseInp
     publishedBy: input.publishedBy,
     publishedAt: input.at,
     packageFingerprint: input.pkg.fingerprint,
+    ...(override ? { override } : {}),
     history: [
       ...(existing?.history ?? []),
-      { action: "PUBLISH", by: input.publishedBy, at: input.at },
+      {
+        action: "PUBLISH",
+        by: input.publishedBy,
+        at: input.at,
+        ...(override ? { note: `gate overridden (${override.checks.map((t) => t.label).join("; ")}): ${override.reason}` } : {}),
+      },
     ],
   };
   await deps.states.put(state);
@@ -327,6 +385,16 @@ export function closeStateJson(state: CloseState): Record<string, unknown> {
     })),
     ...(state.publishedBy ? { published_by: state.publishedBy } : {}),
     ...(state.publishedAt ? { published_at: state.publishedAt } : {}),
+    ...(state.override
+      ? {
+          override: {
+            by: state.override.by,
+            at: state.override.at,
+            reason: state.override.reason,
+            checks: state.override.checks.map((t) => ({ id: t.id, label: t.label, detail: t.detail })),
+          },
+        }
+      : {}),
     ...(state.packageFingerprint ? { package_fingerprint: state.packageFingerprint } : {}),
     ...(state.reopenRequestedBy ? { reopen_requested_by: state.reopenRequestedBy } : {}),
     ...(state.reopenReason ? { reopen_reason: state.reopenReason } : {}),

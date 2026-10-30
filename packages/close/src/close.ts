@@ -39,6 +39,22 @@ export interface ClosePackage {
   readonly blockers: readonly string[];
 }
 
+/**
+ * The checks an authorized person may override when they failed for being
+ * empty or unreconciled (no reconciliations or control accounts on record, an
+ * out-of-balance account, or a subledger that does not tie). The trial balance
+ * is deliberately absent: an unbalanced ledger is never a judgment call.
+ */
+export const OVERRIDABLE_CHECK_IDS: readonly string[] = [
+  "bank_reconciliations",
+  "reconciliation_signoff",
+  "control_accounts",
+];
+
+export function isOverridableCheck(id: string): boolean {
+  return OVERRIDABLE_CHECK_IDS.includes(id);
+}
+
 /** Build the close checklist from the period's control results. */
 export function buildCloseChecklist(inputs: CloseGateInputs): CloseTask[] {
   const tasks: CloseTask[] = [];
