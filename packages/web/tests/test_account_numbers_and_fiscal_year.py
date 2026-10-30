@@ -36,7 +36,7 @@ NOW = 1_760_000_000
 # A QuickBooks company with no account numbers: every code is QuickBooks' id.
 ID_ACCOUNTS = {"tenant": "acme", "accounts": [
     {"code": "57", "name": "Business Checking", "type": "ASSET", "subtype": "BANK"},
-    {"code": "9", "name": "Accounts Receivable", "type": "ASSET", "subtype": "RECEIVABLE"},
+    {"code": "9", "name": "Accounts Receivable", "type": "ASSET", "subtype": "ACCOUNTS_RECEIVABLE"},
     {"code": "1", "name": "Services", "type": "REVENUE", "subtype": "INCOME"},
     {"code": "103", "name": "Advertising", "type": "EXPENSE", "subtype": "EXPENSE"},
     {"code": "12", "name": "Rent", "type": "EXPENSE", "subtype": "EXPENSE"},
@@ -109,9 +109,10 @@ def test_ids_sort_by_type_then_name_and_numbers_numerically() -> None:
     ids = frozenset({"12", "103", "57", "9"})
     order = [c for c, n, t in sorted(accounts, key=lambda a: account_order(*a, ids))]
     assert order == ["9", "57", "600", "6500", "103", "12"]
-    # A fully numbered chart sorts by number alone, as it always has.
+    # A fully numbered chart still sorts by statement order first: assets before
+    # expenses, whatever their numbers, and by number within a type.
     assert [c for c, n, t in sorted(accounts, key=lambda a: account_order(*a))] == \
-        ["9", "12", "57", "103", "600", "6500"]
+        ["9", "57", "12", "103", "600", "6500"]
 
 
 # --- the Ledger screens ------------------------------------------------------------
@@ -124,7 +125,7 @@ def test_the_ledger_shows_an_id_coded_chart_by_name_in_type_then_name_order() ->
     for code in ID_CODES:
         assert f"|{code}|" not in shown, code     # no QuickBooks id shown as a number
     assert "<th>No.</th>" not in accounts          # nothing numbered: no number column
-    assert (accounts.index("Accounts Receivable") < accounts.index("Business Checking")
+    assert (accounts.index("Business Checking") < accounts.index("Accounts Receivable")
             < accounts.index(">Services<") < accounts.index("Advertising") < accounts.index(">Rent<"))
     # The link still goes by the stored code: that's how the books join QuickBooks.
     assert 'href="/t/acme/books/accounts/57">Business Checking</a>' in accounts
@@ -146,14 +147,15 @@ def test_the_trial_balance_and_chart_of_accounts_do_the_same() -> None:
     app, _ = _app(routes, state=TenantState(qbo_id_codes=list(ID_CODES)))
     chart = _main(_req(app, "/t/acme/books/accounts").body)
     names = re.findall(r'books/accounts/\d+">([^<]+)</a>', chart)
-    assert names == ["Accounts Receivable", "Business Checking", "Services", "Advertising", "Rent"]
+    assert names == ["Business Checking", "Accounts Receivable", "Services", "Advertising", "Rent"]
     assert not any(f"|{c}|" in _shown(chart) for c in ID_CODES)
     assert "<th>No.</th>" not in chart
 
 
 def test_a_numbered_chart_keeps_its_numbers_in_numeric_order() -> None:
     accounts = {"tenant": "acme", "accounts": [
-        *ACCOUNTS["accounts"], {"code": "900", "name": "Petty Cash", "type": "ASSET"}]}
+        *ACCOUNTS["accounts"], {"code": "900", "name": "Petty Cash", "type": "ASSET",
+                                "subtype": "BANK"}]}
     app, _ = _app({**DEFAULT_ROUTES, "GET /t/acme/accounts": (200, accounts)},
                   state=TenantState(qbo_id_codes=[]))
     main = _main(_req(app, "/t/acme/books").body)
