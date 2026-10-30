@@ -16,6 +16,7 @@ import re
 from collections.abc import Mapping, Sequence
 
 from .components import card
+from .csp import script_open
 from .parallel_run import form_label
 from .provenance_labels import Provenance, legend as prov_legend
 
@@ -450,6 +451,58 @@ def render_trial_balance(tenant: str, tb: Mapping[str, object], *,
     return _card("Trial balance", table, provenance=Provenance.POSTED)
 
 
+# Plain top-level functions in the page's own nonced script, so the dispatcher can
+# find them by name (data-action="jeAddLine" and so on). Rows are `[data-je-line]`
+# blocks whose inputs end in their index; a new row is a clone of the last one
+# renumbered. Pasted rows are tab-separated: account, debit, credit, memo, name.
+# Amounts go in as typed ("1,234.56"); the server parses them exactly.
+_JE_LINES_JS = r"""
+function jeRows(form){return Array.prototype.slice.call(form.querySelectorAll('[data-je-line]'));}
+function jeNextIndex(form){var n=0;jeRows(form).forEach(function(r){r.querySelectorAll('[name]').forEach(function(f){var m=/(\d+)$/.exec(f.name);if(m&&+m[1]>n)n=+m[1];});});return n+1;}
+function jeAddLine(el){
+  var form=el.form||el.closest('form'),rows=jeRows(form),src=rows[rows.length-1],row=src.cloneNode(true),n=jeNextIndex(form);
+  row.querySelectorAll('input,select').forEach(function(f){if(f.tagName==='SELECT')f.selectedIndex=0;else f.value='';f.name=f.name.replace(/\d+$/,n);});
+  src.parentNode.insertBefore(row,src.nextSibling);
+  return row;
+}
+function jeRemoveLine(el){
+  var row=el.closest('[data-je-line]'),form=row.closest('form');
+  if(jeRows(form).length>1){row.parentNode.removeChild(row);return;}
+  row.querySelectorAll('input').forEach(function(f){f.value='';});
+  row.querySelectorAll('select').forEach(function(f){f.selectedIndex=0;});
+}
+function jeParse(text){
+  var out=[];
+  String(text).split(/\r?\n/).forEach(function(s){
+    if(!s.trim())return;
+    var c=s.split('\t').map(function(x){return x.trim().replace(/^"(.*)"$/,'$1');});
+    if(/^account$/i.test(c[0]))return;
+    out.push({code:c[0]||'',debit:c[1]||'',credit:c[2]||'',memo:c[3]||'',name:c[4]||''});
+  });
+  return out;
+}
+function jeFilled(row){
+  return ['select[name^="code"]','input[name^="debit"]','input[name^="credit"]','input[name^="name"]','input[name^="memo"]']
+    .some(function(s){var f=row.querySelector(s);return f&&f.value;});
+}
+function jeFillFromPaste(el){
+  var form=el.form||el.closest('form'),status=form.querySelector('[data-je-status]'),rows=jeParse(form.elements.paste.value),problems=[];
+  if(!rows.length){status.textContent='Nothing to fill. Copy rows from the spreadsheet, then paste them here.';return;}
+  rows.forEach(function(r,k){
+    var row=jeRows(form).filter(function(x){return !jeFilled(x);})[0]||jeAddLine(el);
+    var code=row.querySelector('select[name^="code"]');
+    code.value=r.code;
+    if(r.code&&code.value!==r.code)problems.push('row '+(k+1)+': no account '+r.code+' in this chart');
+    row.querySelector('input[name^="debit"]').value=r.debit;
+    row.querySelector('input[name^="credit"]').value=r.credit;
+    row.querySelector('input[name^="name"]').value=r.name;
+    row.querySelector('input[name^="memo"]').value=r.memo;
+  });
+  status.textContent=problems.length?problems.join('; ')+'.':'Filled '+rows.length+' line'+(rows.length===1?'':'s')+'. Check them, then post.';
+}
+"""
+
+
 def _render_entry_form(
     tenant: str, accounts: Mapping[str, object],
     dimensions: Mapping[str, object] | None = None,
@@ -463,21 +516,22 @@ def _render_entry_form(
         )
     from .dimension_screens import dimension_selects
 
-    line = (
-        '<div class="grid3">'
-        '<div><label>Account</label><select name="{sel}">{opts}</select></div>'
-        '<div><label>Debit</label><input name="{dr}" placeholder="0.00" inputmode="decimal"></div>'
-        '<div><label>Credit</label><input name="{cr}" placeholder="0.00" inputmode="decimal"></div>'
-        "</div>{dims}"
-    )
+    # Lines are numbered from 1 and the POST handler reads whatever indexes it
+    # finds, so "Add line" can keep going: it clones the last row under a new index.
     lines = "".join(
-        line.format(
-            sel=f"code{i}", dr=f"debit{i}", cr=f"credit{i}", opts=opts,
-            dims=(
-                f'<div class="grid3">{dimension_selects(dimensions or {}, suffix=str(i))}</div>'
-                if dimension_selects(dimensions or {}) else ""
-            ),
-        )
+        '<div data-je-line>'
+        '<div class="grid3">'
+        f'<div><label>Account</label><select name="code{i}">{opts}</select></div>'
+        f'<div><label>Debit</label><input name="debit{i}" placeholder="0.00" inputmode="decimal"></div>'
+        f'<div><label>Credit</label><input name="credit{i}" placeholder="0.00" inputmode="decimal"></div>'
+        "</div>"
+        '<div class="grid3">'
+        f'<div><label>Name</label><input name="name{i}" placeholder="Customer or vendor"></div>'
+        f'<div><label>Line memo</label><input name="memo{i}" placeholder="Optional"></div>'
+        f"{dimension_selects(dimensions or {}, suffix=str(i))}"
+        "</div>"
+        '<button type="button" class="btn-link" data-action="jeRemoveLine" data-self>'
+        "Remove line</button></div>"
         for i in range(1, 5)
     )
     return _card(
@@ -490,12 +544,20 @@ def _render_entry_form(
         '<div><label>Memo</label><input name="memo" placeholder="What was this?"></div>'
         "</div>"
         f"{lines}"
+        '<p><button type="button" data-action="jeAddLine" data-self>+ Add line</button></p>'
+        '<div><label>Paste from a spreadsheet (optional)</label>'
+        '<textarea name="paste" rows="3" placeholder="Account, Debit, Credit, Memo, Name, '
+        'one line per row, tab-separated (copy the rows from Excel or Sheets)"></textarea></div>'
+        '<p><button type="button" data-action="jeFillFromPaste" data-self>Fill lines from paste</button></p>'
+        '<p class="note" data-je-status></p>'
         '<div><label>Attach a file (optional)</label>'
         '<input type="file" name="file" accept="image/*,application/pdf"></div>'
         '<p class="note">Enter an amount in either Debit or Credit on each line. '
         "Total debits must equal total credits — the ledger refuses anything else. "
+        "A line's name is kept in front of its memo. "
         "A file you attach stays with the entry, behind its paperclip.</p>"
-        '<button class="btn" type="submit">Post entry</button>'
+        + script_open() + _JE_LINES_JS + "</script>"
+        + '<button class="btn" type="submit">Post entry</button>'
         "</form>",
     )
 

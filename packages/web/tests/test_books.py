@@ -204,8 +204,9 @@ def test_a_rejected_entry_surfaces_the_ledgers_reason() -> None:
     routes = dict(DEFAULT_ROUTES)
     routes["POST /t/acme/entries"] = (400, {"error": "entry does not balance"})
     app, _t, _a = _app(routes)
+    # Balanced on our side, so the refusal comes from the ledger.
     r = _req(app, "/t/acme/books/entries", method="POST",
-             body="date=2026-08-15&code1=1000&debit1=10&code2=4000&credit2=9")
+             body="date=2026-08-15&code1=1000&debit1=10&code2=4000&credit2=10")
     assert r.status == 302
     assert "err=" in str(r.headers.get("Location", ""))
     assert "balance" in str(r.headers.get("Location", ""))

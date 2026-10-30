@@ -497,6 +497,42 @@ def _suggested_code(suggestion: object) -> str:
     return ""
 
 
+_JE_LINE_FIELD = re.compile(r"(?:code|debit|credit|name|memo)([1-9]\d*)")
+
+
+def _line_indexes(data: "Mapping[str, object]") -> list[int]:
+    """The line numbers a journal-entry form carried, in order. Rows can be added
+    and removed on the page, so they need not run 1..n."""
+    found = {int(m.group(1)) for k in data if (m := _JE_LINE_FIELD.fullmatch(str(k)))}
+    return sorted(found)
+
+
+def _dimensions_by_line(data: "Mapping[str, object]", indexes: list[int]) -> dict[int, dict[str, str]]:
+    """Group `dim_<key><n>` fields by line n. A dimension key may itself end in
+    digits, so a field belongs to the largest line number its name ends with."""
+    out: dict[int, dict[str, str]] = {}
+    for form_key, raw in data.items():
+        name = str(form_key)
+        if not name.startswith("dim_"):
+            continue
+        name = name[len("dim_"):]
+        owners = [i for i in indexes if name.endswith(str(i)) and len(name) > len(str(i))]
+        value = str(raw).strip()
+        if owners and value:
+            owner = max(owners)
+            out.setdefault(owner, {})[name[: -len(str(owner))]] = value
+    return out
+
+
+def _line_memo(name: str, memo: str) -> str:
+    """The ledger's line has a memo but no party field, so a line's name is carried
+    in front of its memo: "Acme Corp: Consulting"."""
+    name, memo = name.strip(), memo.strip()
+    if name and memo:
+        return f"{name}: {memo}"
+    return name or memo
+
+
 def _qs_escape(text: str) -> str:
     """Percent-encode a short message for a redirect query string."""
     from urllib.parse import quote
@@ -4840,28 +4876,44 @@ class WebApp:
         date = str(data.get("date", "")).strip()
         memo = str(data.get("memo", "")).strip()
         lines: list[dict[str, object]] = []
+        totals = {"DEBIT": 0, "CREDIT": 0}
+        indexes = _line_indexes(data)
+        dims_by_line = _dimensions_by_line(data, indexes)
         try:
-            for i in range(1, 5):
+            for pos, i in enumerate(indexes, 1):
                 code = str(data.get(f"code{i}", "")).strip()
-                if not code:
-                    continue
                 debit = self._amount_to_minor(str(data.get(f"debit{i}", "")))
                 credit = self._amount_to_minor(str(data.get(f"credit{i}", "")))
+                if not code:
+                    # An amount on a row with no account would otherwise vanish silently.
+                    if debit or credit:
+                        raise ValueError(f"line {pos}: choose an account")
+                    continue
                 if debit and credit:
-                    raise ValueError(f"line {i}: enter a debit or a credit, not both")
-                dims = self._dimensions_of(data, suffix=str(i))
+                    raise ValueError(f"line {pos}: enter a debit or a credit, not both")
                 line: dict[str, object] = {"code": code}
+                line_memo = _line_memo(str(data.get(f"name{i}", "")), str(data.get(f"memo{i}", "")))
+                if line_memo:
+                    line["memo"] = line_memo
+                dims = dims_by_line.get(i)
                 if dims:
                     line["dimensions"] = dims
                 if debit:
                     lines.append({**line, "side": "DEBIT", "amount_minor": str(debit)})
+                    totals["DEBIT"] += debit
                 elif credit:
                     lines.append({**line, "side": "CREDIT", "amount_minor": str(credit)})
+                    totals["CREDIT"] += credit
         except ValueError as exc:
             return _redirect(f"/t/{t.tenant_id}/books?err={_qs_escape(str(exc))}")
         if len(lines) < 2:
             return _redirect(
                 f"/t/{t.tenant_id}/books?err={_qs_escape('An entry needs at least two lines')}")
+        if totals["DEBIT"] != totals["CREDIT"]:
+            # Checked here as well as by the ledger, so the owner sees both totals.
+            unbalanced = (f"Debits {_dollars(totals['DEBIT'])} must equal "
+                          f"credits {_dollars(totals['CREDIT'])}")
+            return _redirect(f"/t/{t.tenant_id}/books?err={_qs_escape(unbalanced)}")
 
         res = self._ledger.post_entry(t.tenant_id, date, lines, memo=memo, source="owner")
         if not res.ok:
