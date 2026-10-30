@@ -52,7 +52,7 @@ def _statements() -> dict[str, object]:
     return {
         "currency": "USD",
         "income_statement": {
-            "revenue": [{"code": "4000", "name": "Sales", "amount": "100000"}],
+            "revenue": [{"label": "Sales", "amount_minor": "100000"}],
             "expenses": [],
             "total_revenue": "100000", "total_expenses": "0", "net_income": "100000",
         },
