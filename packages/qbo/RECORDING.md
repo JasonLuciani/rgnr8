@@ -26,7 +26,7 @@ py -m rgnr8_qbo.recorder --tenant <tenant-id> --out <dir> [--since 2025-01-01]
 - `--since` is the first month of the monthly TrialBalance and ProfitAndLoss reports
   (default `2025-01-01`).
 - Environment, read at runtime only (never printed, never written):
-  - `DATABASE_URL`: where the connection rows live (`postgres://` or `sqlite://`).
+  - `RGNR8_DATABASE_URL` (or `DATABASE_URL`): where the connection rows live (`postgres://` or `sqlite://`). On the Render web service it is already set.
   - `RGNR8_SECRET_KEY`: the Fernet key that decrypts the stored tokens.
   - `RGNR8_QBO_CLIENT_ID`, `RGNR8_QBO_CLIENT_SECRET`, `RGNR8_QBO_ENVIRONMENT`: needed to
     refresh an expired access token, as the app does.

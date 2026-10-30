@@ -299,7 +299,7 @@ def test_run_recording_builds_the_connection_like_the_app(tmp_path: Path) -> Non
     fake = RefreshingFake({"Account": accounts(2)})
     out = tmp_path / "out"
     env = {
-        "DATABASE_URL": f"sqlite://{db}",
+        "RGNR8_DATABASE_URL": f"sqlite://{db}",
         "RGNR8_QBO_CLIENT_ID": "client-id-not-real",
         "RGNR8_QBO_CLIENT_SECRET": "client-secret-not-real",
         "RGNR8_QBO_ENVIRONMENT": "sandbox",

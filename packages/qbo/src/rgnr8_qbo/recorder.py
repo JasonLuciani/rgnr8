@@ -308,13 +308,15 @@ def run_recording(
 ) -> dict[str, Any]:
     """Build the tenant's connection from ``env`` the way the app does, then record.
 
-    Reads ``DATABASE_URL`` (where the connection rows live), ``RGNR8_SECRET_KEY``
+    Reads ``RGNR8_DATABASE_URL`` (where the connection rows live, as the web
+    service names it; ``DATABASE_URL`` is the fallback), ``RGNR8_SECRET_KEY``
     (decrypts them), and ``RGNR8_QBO_CLIENT_ID`` / ``RGNR8_QBO_CLIENT_SECRET`` /
     ``RGNR8_QBO_ENVIRONMENT`` (needed to refresh an expired access token). ``http``
     is the network seam; the default is the real one, and tests pass a fake."""
-    database_url = env.get("DATABASE_URL", "").strip()
+    database_url = (env.get("RGNR8_DATABASE_URL", "").strip()
+                    or env.get("DATABASE_URL", "").strip())
     if not database_url:
-        raise RecorderError("DATABASE_URL is not set")
+        raise RecorderError("RGNR8_DATABASE_URL (or DATABASE_URL) is not set")
     client_id = env.get("RGNR8_QBO_CLIENT_ID", "").strip()
     client_secret = env.get("RGNR8_QBO_CLIENT_SECRET", "").strip()
     if not client_id or not client_secret:
