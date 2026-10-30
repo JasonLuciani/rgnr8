@@ -2,6 +2,7 @@ import type { ChartOfAccounts } from "./chartOfAccounts.js";
 import type { JournalLineInput, PostedLine } from "./types.js";
 import {
   EmptyEntryError,
+  InactiveAccountError,
   LineCurrencyError,
   NonPositiveAmountError,
   UnbalancedEntryError,
@@ -30,6 +31,7 @@ export function validateAndBuildLines(
   for (const line of lines) {
     const account = coa.get(line.accountId);
     if (!account) throw new UnknownAccountError(line.accountId);
+    if (account.active === false) throw new InactiveAccountError(line.accountId, account.code);
 
     if (line.amount.currency.code !== currency.code) {
       throw new LineCurrencyError(

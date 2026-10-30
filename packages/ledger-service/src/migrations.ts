@@ -23,7 +23,7 @@
 
 import { runMigrations, type Migration, type SqlExecutor } from "@rgnr8/migrations";
 import { CLOSE_STATE_MIGRATIONS, FINANCIAL_PACKAGE_MIGRATIONS } from "@rgnr8/close";
-import { ACCOUNT_DDL, CORE_DDL } from "@rgnr8/ledger-postgres";
+import { ACCOUNT_DDL, ACCOUNT_ORIGIN_DDL, CORE_DDL } from "@rgnr8/ledger-postgres";
 import { DOCUMENT_DDL } from "./documents.js";
 import { RECON_DDL } from "./reconcile.js";
 import { FEED_DDL } from "./feed.js";
@@ -48,6 +48,22 @@ import { rlsDdl } from "./security.js";
 import { OPEN_ITEMS_DDL } from "./openItems.js";
 import { BANK_HISTORY_DDL } from "./bankHistory.js";
 import { CUTOVER_DDL } from "./cutover.js";
+
+/**
+ * Accounts brought over from QuickBooks at go-live are marked `quickbooks`. The
+ * go-live that did the bringing-over is identified by its opening entry, which
+ * carries QuickBooks provenance and the `cutover:opening:` key. Every account of
+ * such a tenant, as it stood when this migration ran, is marked. That is
+ * conservative: an account RGNR8 created during the parallel run is also locked
+ * until cutover, and no account is ever locked after cutover.
+ */
+const ACCOUNT_ORIGIN_BACKFILL = `
+UPDATE account SET origin = 'quickbooks'
+ WHERE tenant_id IN (
+   SELECT tenant_id FROM journal_entry
+    WHERE prov_source_system = 'quickbooks' AND idempotency_key LIKE 'cutover:opening:%'
+ );
+`;
 
 /**
  * The ordered schema migrations. Dependency order: core ledger + chart first,
@@ -90,6 +106,9 @@ export function ledgerMigrations(opts: { enforceRls: boolean }): Migration[] {
     { version: 26, name: "mirror_open_items", sql: OPEN_ITEMS_DDL },
     { version: 27, name: "cutover_record", sql: CUTOVER_DDL },
     { version: 28, name: "mirror_bank_history", sql: BANK_HISTORY_DDL },
+    // Account origin (rgnr8 | quickbooks), which locks QuickBooks' chart while
+    // QuickBooks is the book of record. Adds the column, then backfills it.
+    { version: 29, name: "account_origin", sql: ACCOUNT_ORIGIN_DDL + ACCOUNT_ORIGIN_BACKFILL },
   ];
   // RLS policies key on every tenant table, so they migrate last.
   if (opts.enforceRls) {

@@ -1,16 +1,27 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { SettingsError, mergeSettings, settingsJson } from "./settings.js";
 import {
+  ChartEditError,
+  netByAccount,
+  planAccountEdit,
+  planNewAccount,
+  postedAccountIds,
+  lockedBy,
+  type AccountChanges,
+  type ChartEditContext,
+} from "./chartEdit.js";
+import {
   AccountSubtype,
   AccountType,
   BusinessCategory,
   ChartOfAccounts,
+  InactiveAccountError,
   Money,
   PeriodClosedError,
+  isSystemAccount,
   PostingEngine,
   USD,
-  accountTypeOfSubtype,
-  asAccountId,
+  type AccountId,
   asIdempotencyKey,
   asPeriodKey,
   asTenantId,
@@ -403,6 +414,48 @@ function str(v: unknown): string {
   return typeof v === "string" ? v : "";
 }
 
+/**
+ * The account fields a request may set, read from its JSON body. A field that is
+ * absent stays `undefined` (unchanged). `subtype` and `parent_code` may be `null`
+ * (or empty) to clear them. Throws a 400 ChartEditError on a wrong type or value.
+ */
+function parseAccountFields(data: Record<string, unknown>): AccountChanges {
+  const out: { -readonly [K in keyof AccountChanges]: AccountChanges[K] } = {};
+  const text = (key: string): string => {
+    const v = data[key];
+    if (typeof v !== "string") throw new ChartEditError(400, `${key} must be text`);
+    return v;
+  };
+  if (data["name"] !== undefined) out.name = text("name");
+  if (data["number"] !== undefined) out.number = text("number");
+  if (data["type"] !== undefined) {
+    const t = text("type").trim();
+    if (!(Object.values(AccountType) as string[]).includes(t)) {
+      throw new ChartEditError(400, `unknown type ${t}`);
+    }
+    out.type = t as AccountType;
+  }
+  if (data["subtype"] !== undefined) {
+    const s = data["subtype"] === null ? "" : text("subtype").trim();
+    if (!s) {
+      out.subtype = null;
+    } else if (!(Object.values(AccountSubtype) as string[]).includes(s)) {
+      throw new ChartEditError(400, `unknown subtype ${s}`);
+    } else {
+      out.subtype = s as AccountSubtype;
+    }
+  }
+  if (data["parent_code"] !== undefined) {
+    const p = data["parent_code"] === null ? "" : text("parent_code").trim();
+    out.parentCode = p || null;
+  }
+  if (data["active"] !== undefined) {
+    if (typeof data["active"] !== "boolean") throw new ChartEditError(400, "active must be true or false");
+    out.active = data["active"];
+  }
+  return out;
+}
+
 /** Day before an ISO date, computed purely (no Date parsing / DST surprises). */
 function previousDay(iso: string): string {
   const y = Number(iso.slice(0, 4));
@@ -438,7 +491,9 @@ function provenanceFor(source: string, date: string, at: string): Provenance {
   };
 }
 
-function accountJson(a: Account, parentCode: string | null = null): Record<string, unknown> {
+function accountJson(
+  a: Account, parentCode: string | null = null, locked: "quickbooks" | "system" | null = null,
+): Record<string, unknown> {
   return {
     code: a.code,
     name: a.name,
@@ -448,6 +503,11 @@ function accountJson(a: Account, parentCode: string | null = null): Record<strin
     active: a.active !== false,
     // The parent account's code, when this is a sub-account: the screens nest on it.
     parent_code: parentCode,
+    origin: a.origin ?? "rgnr8",
+    system: isSystemAccount(a),
+    // Why the account can't be edited (null when it can): the QuickBooks chart
+    // while QuickBooks is the book of record, or a system account.
+    locked_by: locked,
   };
 }
 
@@ -651,6 +711,9 @@ export class LedgerService {
       if (rest[0] === "accounts" && rest.length === 1) {
         if (req.method === "GET") return await this.listAccounts(tenant);
         if (req.method === "POST") return await this.createAccount(tenant, req.body);
+      }
+      if (rest[0] === "accounts" && rest.length === 2 && rest[1] !== "seed" && req.method === "PATCH") {
+        return await this.editAccount(tenant, rest[1]!, req.body);
       }
       if (rest[0] === "accounts" && rest[1] === "seed" && req.method === "POST") {
         return await this.seedAccounts(tenant, req.body);
@@ -1812,6 +1875,7 @@ export class LedgerService {
         return { status: 409, body: { error: err.message, code: err.code } };
       }
       if (err instanceof PeriodClosedError) return conflict(err.message);
+      if (err instanceof InactiveAccountError) return conflict(err.message);
       if (err instanceof ArApError) return bad(err.message);
       if (err instanceof ReconcileError) return bad(err.message);
       if (err instanceof InboxError) return bad(err.message);
@@ -1847,8 +1911,33 @@ export class LedgerService {
 
   private async listAccounts(tenant: TenantId): Promise<ServiceResponse> {
     const chart = await this.backend.chart(tenant);
+    const qbo = await inParallelRun(this.backend, tenant);
     const accounts = [...chart.list()].sort((a, b) => a.code.localeCompare(b.code));
-    return ok({ tenant, accounts: accounts.map((a) => accountJson(a, parentCodeOf(chart, a))) });
+    return ok({
+      tenant,
+      accounts: accounts.map((a) => accountJson(a, parentCodeOf(chart, a), lockedBy(a, qbo))),
+    });
+  }
+
+  /** The rules' view of the chart: what each check needs, read on first use. */
+  private async chartEditContext(tenant: TenantId, chart: ChartOfAccounts): Promise<ChartEditContext> {
+    const store = this.backend.store(tenant);
+    let posted: Set<AccountId> | undefined;
+    let net: Map<AccountId, bigint> | undefined;
+    return {
+      tenant,
+      chart,
+      currency: this.currency,
+      quickBooksOfRecord: await inParallelRun(this.backend, tenant),
+      hasPostings: async (a) => {
+        posted ??= await postedAccountIds(store, tenant);
+        return posted.has(a.id);
+      },
+      balanceMinor: async (a) => {
+        net ??= await netByAccount(store, tenant);
+        return net.get(a.id) ?? 0n;
+      },
+    };
   }
 
   private async createAccount(tenant: TenantId, body: string): Promise<ServiceResponse> {
@@ -1857,41 +1946,54 @@ export class LedgerService {
     const code = str(data["code"]).trim();
     const name = str(data["name"]).trim();
     if (!code || !name) return bad("code and name are required");
-
-    const subtypeRaw = str(data["subtype"]).trim();
-    const typeRaw = str(data["type"]).trim();
-    let type: AccountType;
-    let subtype: AccountSubtype | undefined;
-    if (subtypeRaw) {
-      if (!(Object.values(AccountSubtype) as string[]).includes(subtypeRaw)) {
-        return bad(`unknown subtype ${subtypeRaw}`);
+    try {
+      const fields = parseAccountFields(data);
+      if (fields.type === undefined && !fields.subtype) {
+        return bad("an account needs a subtype or a type");
       }
-      subtype = subtypeRaw as AccountSubtype;
-      type = accountTypeOfSubtype(subtype);
-    } else if (typeRaw) {
-      if (!(Object.values(AccountType) as string[]).includes(typeRaw)) {
-        return bad(`unknown type ${typeRaw}`);
-      }
-      type = typeRaw as AccountType;
-    } else {
-      return bad("an account needs a subtype or a type");
+      const chart = await this.backend.chart(tenant);
+      const account = planNewAccount({
+        code,
+        name,
+        ...(fields.type !== undefined ? { type: fields.type } : {}),
+        ...(fields.subtype ? { subtype: fields.subtype } : {}),
+        ...(fields.parentCode !== undefined ? { parentCode: fields.parentCode } : {}),
+      }, await this.chartEditContext(tenant, chart));
+      await this.backend.saveAccount(tenant, account);
+      return created({
+        tenant,
+        account: accountJson(account, parentCodeOf(chart, account), lockedBy(account, false)),
+      });
+    } catch (err) {
+      if (err instanceof ChartEditError) return err.status === 409 ? conflict(err.message) : bad(err.message);
+      throw err;
     }
+  }
 
+  /**
+   * PATCH /t/<tenant>/accounts/<code>: change an account's name, number, type,
+   * detail type, parent, or whether it is active. Only the fields sent change.
+   * The rules are in chartEdit.ts.
+   */
+  private async editAccount(tenant: TenantId, code: string, body: string): Promise<ServiceResponse> {
+    const data = parseJson(body);
+    if (!data) return bad("invalid JSON body");
     const chart = await this.backend.chart(tenant);
-    if (chart.getByCode(code)) return conflict(`account ${code} already exists`);
-
-    const account: Account = {
-      id: asAccountId(`acct:${code}`),
-      code,
-      name,
-      type,
-      currency: this.currency,
-      ...(subtype ? { subtype } : {}),
-      active: true,
-    };
-    new ChartOfAccounts([...chart.list(), account]); // kernel-validate before persisting
-    await this.backend.saveAccount(tenant, account);
-    return created({ tenant, account: accountJson(account) });
+    const current = chart.getByCode(code);
+    if (!current) return notFound(`unknown account ${code}`);
+    try {
+      const changes = parseAccountFields(data);
+      const ctx = await this.chartEditContext(tenant, chart);
+      const next = await planAccountEdit(current, changes, ctx);
+      if (next !== current) await this.backend.saveAccount(tenant, next);
+      return ok({
+        tenant,
+        account: accountJson(next, parentCodeOf(chart, next), lockedBy(next, ctx.quickBooksOfRecord)),
+      });
+    } catch (err) {
+      if (err instanceof ChartEditError) return err.status === 409 ? conflict(err.message) : bad(err.message);
+      throw err;
+    }
   }
 
   private async seedAccounts(tenant: TenantId, body: string): Promise<ServiceResponse> {

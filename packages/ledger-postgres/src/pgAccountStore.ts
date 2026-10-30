@@ -4,14 +4,16 @@ import {
   ChartOfAccounts,
   USD,
   getCurrency,
+  parentsFirst,
   templateAccounts,
   type Account,
   type AccountId,
+  type AccountOrigin,
   type BusinessCategory,
   type Currency,
   type TenantId,
 } from "@rgnr8/ledger-kernel";
-import { ACCOUNT_DDL } from "./accountSchema.js";
+import { ACCOUNT_DDL, ACCOUNT_ORIGIN_DDL } from "./accountSchema.js";
 import type { Pool, Queryable } from "./pgLedgerStore.js";
 
 /**
@@ -30,6 +32,7 @@ export class PgAccountStore {
   /** Create the account table if absent. Safe to run repeatedly. */
   async migrate(): Promise<void> {
     await this.pool.query(ACCOUNT_DDL);
+    await this.pool.query(ACCOUNT_ORIGIN_DDL);
   }
 
   private async withTenant<T>(tenant: TenantId, fn: (db: Queryable) => Promise<T>): Promise<T> {
@@ -90,17 +93,20 @@ export class PgAccountStore {
   async listAccounts(tenant: TenantId): Promise<Account[]> {
     return this.withTenant(tenant, async (db) => {
       const res = await db.query(
-        "SELECT id, code, name, type, currency_code, subtype, parent_id, active FROM account WHERE tenant_id = $1",
+        "SELECT id, code, name, type, currency_code, subtype, parent_id, active, origin FROM account WHERE tenant_id = $1",
         [tenant],
       );
       return res.rows.map((r) => rowToAccount(r));
     });
   }
 
-  /** Rehydrate a validated ChartOfAccounts for a tenant. */
+  /**
+   * Rehydrate a validated ChartOfAccounts for a tenant. Rows come back in no
+   * particular order (an update moves a row), so parents are registered first.
+   */
   async loadChart(tenant: TenantId): Promise<ChartOfAccounts> {
     const accounts = await this.listAccounts(tenant);
-    return new ChartOfAccounts(accounts);
+    return new ChartOfAccounts(parentsFirst(accounts));
   }
 
   /** Soft-deactivate an account (keeps history; hidden from active pickers). */
@@ -114,12 +120,12 @@ export class PgAccountStore {
 /** Upsert one account on an already-open (tenant-bound) connection. */
 async function upsertOne(db: Queryable, tenant: TenantId, account: Account): Promise<void> {
   await db.query(
-    `INSERT INTO account (tenant_id, id, code, name, type, currency_code, subtype, parent_id, active)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+    `INSERT INTO account (tenant_id, id, code, name, type, currency_code, subtype, parent_id, active, origin)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
      ON CONFLICT (tenant_id, id) DO UPDATE SET
        code = EXCLUDED.code, name = EXCLUDED.name, type = EXCLUDED.type,
        currency_code = EXCLUDED.currency_code, subtype = EXCLUDED.subtype,
-       parent_id = EXCLUDED.parent_id, active = EXCLUDED.active`,
+       parent_id = EXCLUDED.parent_id, active = EXCLUDED.active, origin = EXCLUDED.origin`,
     [
       tenant,
       account.id,
@@ -130,6 +136,7 @@ async function upsertOne(db: Queryable, tenant: TenantId, account: Account): Pro
       account.subtype ?? null,
       account.parentId ?? null,
       account.active ?? true,
+      account.origin ?? "rgnr8",
     ],
   );
 }
@@ -146,5 +153,6 @@ function rowToAccount(r: Record<string, unknown>): Account {
     ...(subtype ? { subtype: subtype as AccountSubtype } : {}),
     ...(parentId ? { parentId: parentId as AccountId } : {}),
     active: r["active"] === undefined || r["active"] === null ? true : Boolean(r["active"]),
+    origin: (r["origin"] === "quickbooks" ? "quickbooks" : "rgnr8") as AccountOrigin,
   };
 }

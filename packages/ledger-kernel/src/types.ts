@@ -101,6 +101,41 @@ export function accountTypeOfSubtype(subtype: AccountSubtype): AccountType {
   return SUBTYPE_TYPE[subtype];
 }
 
+/**
+ * Where an account came from. `quickbooks` marks an account brought over at
+ * go-live from QuickBooks, whose chart is the system of record until cutover.
+ * Absent means RGNR8 made it.
+ */
+export type AccountOrigin = "rgnr8" | "quickbooks";
+
+/**
+ * The detail subtypes whose accounts the books depend on: the control accounts
+ * the AR/AP and payment flows post to, the sales-tax liability, undeposited funds
+ * and retained earnings. A system account can be renamed but not inactivated and
+ * not retyped (see {@link isSystemAccount}).
+ */
+export const SYSTEM_SUBTYPES: readonly AccountSubtype[] = [
+  AccountSubtype.ACCOUNTS_RECEIVABLE,
+  AccountSubtype.ACCOUNTS_PAYABLE,
+  AccountSubtype.UNDEPOSITED_FUNDS,
+  AccountSubtype.SALES_TAX_PAYABLE,
+  AccountSubtype.RETAINED_EARNINGS,
+];
+
+/** The name the go-live gives the account that absorbs the conversion residual. */
+export const OPENING_BALANCE_EQUITY_NAME = "Opening Balance Equity";
+
+/**
+ * Whether an account is a system account. There is no stored flag: an account is
+ * system when its subtype is in {@link SYSTEM_SUBTYPES}, or when it is the
+ * Opening Balance Equity account the go-live creates (matched by subtype EQUITY
+ * and that name). Renaming the Opening Balance Equity account drops this match.
+ */
+export function isSystemAccount(account: Pick<Account, "subtype" | "name">): boolean {
+  if (account.subtype !== undefined && SYSTEM_SUBTYPES.includes(account.subtype)) return true;
+  return account.subtype === AccountSubtype.EQUITY && account.name === OPENING_BALANCE_EQUITY_NAME;
+}
+
 export interface Account {
   readonly id: AccountId;
   readonly code: string;
@@ -112,6 +147,8 @@ export interface Account {
   readonly subtype?: AccountSubtype;
   /** Inactive accounts are hidden from pickers but keep their history. Default true. */
   readonly active?: boolean;
+  /** Where the account came from. Default `rgnr8`. */
+  readonly origin?: AccountOrigin;
 }
 
 export type EntrySide = "DEBIT" | "CREDIT";
