@@ -29,6 +29,7 @@ or, in one call::
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -42,9 +43,11 @@ from rgnr8_alerts import (
     Clock,
     FloorBreachWithinWeeks,
     InMemoryAlertStateStore,
+    Severity,
     evaluate,
 )
 from rgnr8_forecast import Money, run_forecast
+from rgnr8_qbo import QboConnection, QboStatus
 
 from .fleet import Fleet
 
@@ -59,6 +62,24 @@ def default_alert_rules(floor: Money, *, weeks: int = DEFAULT_BREACH_WEEKS) -> l
     `BalanceBelow` the owner's ``floor`` (WATCH — the projected trough dips under
     the floor even if no hard breach window is inside the horizon)."""
     return [FloorBreachWithinWeeks(weeks), BalanceBelow(floor)]
+
+
+def reconnect_alerts(connections: Iterable[QboConnection]) -> list[Alert]:
+    """One AT_RISK alert per QuickBooks connection Intuit has refused, so the owner
+    learns it has stopped syncing. The key is per tenant: the dispatcher delivers it
+    once, and it re-arms when the owner reconnects and the connection is usable again."""
+    return [
+        Alert(
+            key=f"qbo-reconnect:{conn.tenant_id}",
+            severity=Severity.AT_RISK,
+            title="QuickBooks needs reconnecting",
+            message=("RGNR8 has stopped syncing from QuickBooks because QuickBooks no longer "
+                     "accepts the connection. Reconnect QuickBooks on the Connections page."),
+            evidence={"tenant_id": conn.tenant_id, "realm_id": conn.realm_id},
+        )
+        for conn in connections
+        if conn.status is QboStatus.NEEDS_RECONNECT
+    ]
 
 
 def build_alert_dispatcher(
@@ -90,6 +111,8 @@ class AlertsJob:
     dispatcher: AlertDispatcher
     clock: Clock
     weeks: int = DEFAULT_BREACH_WEEKS
+    # Optional: the QuickBooks connections to check for needs-reconnect each tick.
+    connections: Callable[[], Iterable[QboConnection]] | None = None
 
     def due(self, now: datetime, last_run: datetime | None) -> bool:
         return True  # timely by design; the dispatcher dedupes so it stays quiet
@@ -112,6 +135,8 @@ class AlertsJob:
                         },
                     )
                 )
+        if self.connections is not None:
+            collected.extend(reconnect_alerts(self.connections()))
         delivered = self.dispatcher.dispatch(collected)
         return f"{len(delivered)} alert(s) dispatched"
 
@@ -124,10 +149,13 @@ def build_alerts_job(
     name: str = "alerts",
     weeks: int = DEFAULT_BREACH_WEEKS,
     store: AlertStateStore | None = None,
+    connections: Callable[[], Iterable[QboConnection]] | None = None,
 ) -> AlertsJob:
     """Job factory: build the dispatcher + `AlertsJob` in one call so the worker
     can register it alongside `BriefingDispatchJob`. ``sink`` is any `AlertSink`
     (wrap a delivery callable with `CallableAlertSink` to reuse the briefing
-    transport)."""
+    transport). ``connections`` lists the QuickBooks connections to watch for
+    needs-reconnect (e.g. ``conn_store.list_all``)."""
     dispatcher = build_alert_dispatcher(sink, clock=clock, store=store)
-    return AlertsJob(name=name, fleet=fleet, dispatcher=dispatcher, clock=clock, weeks=weeks)
+    return AlertsJob(name=name, fleet=fleet, dispatcher=dispatcher, clock=clock, weeks=weeks,
+                     connections=connections)

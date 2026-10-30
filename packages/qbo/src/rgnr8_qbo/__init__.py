@@ -27,8 +27,10 @@ from .client import (
     QboBill,
     QboCompany,
     QboInvoice,
+    RetryPolicy,
 )
 from .connection import (
+    REFRESH_SKEW_SECONDS,
     ConnectionStore,
     InMemoryConnectionStore,
     QboConnection,
@@ -45,6 +47,8 @@ from .oauth import (
     HttpClient,
     HttpResponse,
     QboEnvironment,
+    QboInvalidGrantError,
+    QboNetworkError,
     QboOAuthConfig,
     QboOAuthError,
     QboTokens,
@@ -80,6 +84,8 @@ __all__ = [
     "QboEnvironment",
     "QboTokens",
     "QboOAuthError",
+    "QboInvalidGrantError",
+    "QboNetworkError",
     "HttpClient",
     "HttpResponse",
     "UrllibHttpClient",
@@ -123,4 +129,6 @@ __all__ = [
     "QboBankTxn",
     "QboCompany",
     "MINOR_VERSION",
+    "RetryPolicy",
+    "REFRESH_SKEW_SECONDS",
 ]

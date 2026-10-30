@@ -40,6 +40,10 @@ export interface QboHttpClient {
   get(url: string, headers: Readonly<Record<string, string>>): Promise<QboHttpResponse>;
 }
 
+// The Accounting API minor version every request pins. Keep in step with
+// MINOR_VERSION in packages/qbo/src/rgnr8_qbo/client.py.
+export const QBO_MINOR_VERSION = 75;
+
 export interface QboApiOptions {
   readonly realmId: string;
   readonly accessToken: string;
@@ -180,7 +184,7 @@ export class QboApiClient {
     this.realm = opts.realmId;
     this.token = opts.accessToken;
     this.base = opts.baseUrl ?? "https://quickbooks.api.intuit.com";
-    this.mv = opts.minorVersion ?? 70;
+    this.mv = opts.minorVersion ?? QBO_MINOR_VERSION;
   }
 
   private headers(): Record<string, string> {

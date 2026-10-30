@@ -15,15 +15,23 @@ package stays dependency-free.
 
 from __future__ import annotations
 
+import email.utils
 import json
+import random
+import time
 import urllib.parse
-from dataclasses import dataclass
-from typing import Mapping
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Callable, Mapping
 
-from .oauth import JSON_CONTENT_TYPE, HttpClient, QboOAuthError
+from .oauth import JSON_CONTENT_TYPE, HttpClient, HttpResponse, QboNetworkError, QboOAuthError
 
-# The Accounting API minor version we pin (stable field shapes).
-MINOR_VERSION = "65"
+# The Accounting API minor version every request pins (stable field shapes). Intuit
+# retires old minor versions, so bump it here and nowhere else.
+MINOR_VERSION = "75"
+
+# Intuit allows 500 requests a minute per company.
+WINDOW_SECONDS = 60.0
 
 
 def _to_minor(v: object) -> int:
@@ -55,6 +63,81 @@ class QboApiError(QboOAuthError):
         super().__init__(message)
         self.status = status
         self.body = body
+
+
+@dataclass(frozen=True, slots=True)
+class RetryPolicy:
+    """How the Accounting API client paces and retries its requests.
+
+    A 429, a 5xx or a network failure is retried after exponential back-off with
+    jitter (``base_delay`` doubling per attempt, capped at ``max_delay``), or after
+    the server's ``Retry-After`` when it sends one. A call gives up after
+    ``max_attempts`` tries, or when its waits would pass ``max_total_wait``. Other
+    4xx answers are never retried. ``requests_per_minute`` is a client-side throttle
+    under Intuit's limit.
+
+    ``sleep``, ``clock`` and ``jitter`` are injected, so tests never really wait."""
+
+    max_attempts: int = 5
+    base_delay: float = 1.0
+    max_delay: float = 30.0
+    max_total_wait: float = 60.0
+    requests_per_minute: int = 500
+    sleep: Callable[[float], None] = time.sleep
+    clock: Callable[[], float] = time.monotonic
+    jitter: Callable[[], float] = random.random
+
+
+class _Throttle:
+    """A sliding one-minute window of request times. When it is full, the next
+    request waits until the oldest one has left it."""
+
+    def __init__(self, policy: RetryPolicy) -> None:
+        self._policy = policy
+        self._sent: deque[float] = deque()
+
+    def _expire(self, now: float) -> None:
+        while self._sent and now - self._sent[0] >= WINDOW_SECONDS:
+            self._sent.popleft()
+
+    def acquire(self) -> None:
+        policy = self._policy
+        now = policy.clock()
+        self._expire(now)
+        if len(self._sent) >= policy.requests_per_minute:
+            policy.sleep(WINDOW_SECONDS - (now - self._sent[0]))
+            now = policy.clock()
+            self._expire(now)
+        self._sent.append(now)
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    """A Retry-After header as seconds to wait: a number of seconds, or an HTTP date."""
+    if value is None or not value.strip():
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        when = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, when.timestamp() - time.time())
+
+
+def _next_wait(policy: RetryPolicy, attempt: int, waited: float,
+               retry_after: str | None) -> float | None:
+    """Seconds to wait before the attempt after ``attempt``, or None to give up."""
+    if attempt >= policy.max_attempts:
+        return None
+    delay = _retry_after_seconds(retry_after)
+    if delay is None:
+        backoff = min(policy.max_delay, policy.base_delay * 2 ** (attempt - 1))
+        delay = backoff * (0.5 + policy.jitter())
+    if waited + delay > policy.max_total_wait:
+        return None
+    return delay
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,17 +210,25 @@ class QboCompany:
     fiscal_year_start_month: int | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class QboApiClient:
     """Reads one connected company. ``api_base`` is the environment's host,
-    ``realm_id`` the company id, ``access_token`` a *currently valid* bearer token
-    (refresh via the service before building this)."""
+    ``realm_id`` the company id, ``access_token`` a bearer token (refresh via the
+    service before building this). ``refresh`` is called with the token Intuit
+    rejected (a 401) and returns a fresh one; the call is then retried once. ``retry``
+    sets how 429s, 5xx and network failures are retried and paced."""
 
     http: HttpClient
     api_base: str
     realm_id: str
     access_token: str
     minor_version: str = MINOR_VERSION
+    retry: RetryPolicy = field(default_factory=RetryPolicy)
+    refresh: Callable[[str], str] | None = None
+    _throttle: _Throttle = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._throttle = _Throttle(self.retry)
 
     def _headers(self) -> Mapping[str, str]:
         return {
@@ -145,11 +236,44 @@ class QboApiClient:
             "Accept": JSON_CONTENT_TYPE,
         }
 
+    def _get_with_retry(self, url: str) -> HttpResponse:
+        """One GET, retried while Intuit is busy or unreachable, within the policy.
+        A response still transient when the policy gives up is returned as is, so
+        the caller raises with Intuit's status."""
+        policy = self.retry
+        waited = 0.0
+        attempt = 1
+        while True:
+            self._throttle.acquire()
+            try:
+                resp = self.http.get(url, self._headers())
+            except QboNetworkError:
+                delay = _next_wait(policy, attempt, waited, None)
+                if delay is None:
+                    raise
+            else:
+                if resp.status != 429 and resp.status < 500:
+                    return resp
+                delay = _next_wait(policy, attempt, waited, resp.retry_after)
+                if delay is None:
+                    return resp
+            policy.sleep(delay)
+            waited += delay
+            attempt += 1
+
+    def _get(self, url: str) -> HttpResponse:
+        """GET with retries. A 401 refreshes the token once and retries once."""
+        resp = self._get_with_retry(url)
+        if resp.status == 401 and self.refresh is not None:
+            self.access_token = self.refresh(self.access_token)
+            resp = self._get_with_retry(url)
+        return resp
+
     def query(self, sql: str) -> dict[str, object]:
         """Run an Accounting API query; return the ``QueryResponse`` object."""
         q = urllib.parse.urlencode({"query": sql, "minorversion": self.minor_version})
         url = f"{self.api_base}/v3/company/{self.realm_id}/query?{q}"
-        resp = self.http.get(url, self._headers())
+        resp = self._get(url)
         if resp.status < 200 or resp.status >= 300:
             raise QboApiError(f"query returned {resp.status}: {resp.body[:300]}",
                               status=resp.status, body=resp.body)
@@ -331,7 +455,7 @@ class QboApiClient:
         q = dict(params or {})
         q["minorversion"] = self.minor_version
         url = f"{self.api_base}/v3/company/{self.realm_id}/reports/{name}?{urllib.parse.urlencode(q)}"
-        resp = self.http.get(url, self._headers())
+        resp = self._get(url)
         if resp.status < 200 or resp.status >= 300:
             raise QboApiError(f"report {name} returned {resp.status}: {resp.body[:300]}",
                               status=resp.status, body=resp.body)

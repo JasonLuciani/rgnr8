@@ -11,7 +11,8 @@ only has to call four methods:
   persist the :class:`~rgnr8_qbo.connection.QboConnection`.
 * :meth:`QboConnectService.ensure_fresh` — before a sync, refresh the access token
   if it's near expiry (rotating the refresh token); mark the connection expired if
-  the refresh token itself has lapsed.
+  the refresh token itself has lapsed, or needs-reconnect if Intuit refused it
+  (``invalid_grant``). A needs-reconnect connection makes no further calls.
 * :meth:`QboConnectService.disconnect` — revoke at Intuit (best-effort) and drop
   the stored connection.
 
@@ -25,16 +26,19 @@ credentials**.
 from __future__ import annotations
 
 import base64
+import dataclasses
 import hmac
 import secrets
+import threading
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from typing import Callable, Protocol
 
-from .client import QboApiClient
-from .connection import ConnectionStore, QboConnection, QboStatus
+from .client import QboApiClient, RetryPolicy
+from .connection import REFRESH_SKEW_SECONDS, ConnectionStore, QboConnection, QboStatus
 from .oauth import (
     HttpClient,
+    QboInvalidGrantError,
     QboOAuthConfig,
     QboTokens,
     authorize_url,
@@ -239,6 +243,8 @@ class QboConnectService:
         state_secret: str,
         clock: Clock | None = None,
         nonce_store: NonceStore | None = None,
+        retry: RetryPolicy | None = None,
+        on_needs_reconnect: Callable[[QboConnection], None] | None = None,
     ) -> None:
         self._config = config
         self._http = http
@@ -247,6 +253,18 @@ class QboConnectService:
         # `nonce_store` makes OAuth `state` single-use; inject a durable one in a
         # multi-worker production deploy (defaults to in-process — see NonceStore).
         self._signer = StateSigner(state_secret, clock=self._clock, nonce_store=nonce_store)
+        self._retry = retry if retry is not None else RetryPolicy()
+        # Called once, when a connection is marked needs-reconnect (an alert hook).
+        self._on_needs_reconnect = on_needs_reconnect
+        # Refresh tokens rotate, so two refreshes racing on the same token would have
+        # Intuit refuse the second and cost the connection. One lock per tenant keeps
+        # them in line within this process.
+        self._locks: dict[str, threading.Lock] = {}
+        self._locks_guard = threading.Lock()
+
+    def _tenant_lock(self, tenant_id: str) -> threading.Lock:
+        with self._locks_guard:
+            return self._locks.setdefault(tenant_id, threading.Lock())
 
     @property
     def config(self) -> QboOAuthConfig:
@@ -290,44 +308,81 @@ class QboConnectService:
         """The stored connection for a tenant, or ``None`` if never connected."""
         return self._store.get(tenant_id)
 
-    def ensure_fresh(self, tenant_id: str, *, skew_seconds: int = 120) -> QboConnection | None:
+    def ensure_fresh(self, tenant_id: str, *,
+                     skew_seconds: int = REFRESH_SKEW_SECONDS) -> QboConnection | None:
         """Return a connection whose access token is valid, refreshing if needed.
 
         ``None`` if the tenant has no connection. If the access token is still
-        valid it's returned as-is. If it's near/after expiry but the refresh token
-        is still valid, we refresh (rotating the refresh token) and persist. If the
-        refresh token has itself lapsed, the connection is marked EXPIRED and
-        persisted (the owner must reconnect)."""
+        valid (with ``skew_seconds`` to spare) it's returned as-is. If it's near
+        expiry but the refresh token is still valid, we refresh (rotating the refresh
+        token) and persist. If the refresh token has itself lapsed, the connection is
+        marked EXPIRED; if Intuit refuses the refresh token, it is marked
+        NEEDS_RECONNECT. Either way it is persisted, and the owner must reconnect."""
         conn = self._store.get(tenant_id)
         if conn is None:
             return None
-        now = self._clock()
-        if conn.status is QboStatus.CONNECTED and conn.access_valid(now, skew_seconds=skew_seconds):
+        if self._is_usable(conn, skew_seconds) or conn.status is QboStatus.NEEDS_RECONNECT:
             return conn
-        if not conn.refresh_valid(now):
-            expired = QboConnection(
-                tenant_id=conn.tenant_id,
-                realm_id=conn.realm_id,
-                access_token=conn.access_token,
-                refresh_token=conn.refresh_token,
-                access_expires_at=conn.access_expires_at,
-                refresh_expires_at=conn.refresh_expires_at,
-                status=QboStatus.EXPIRED,
-                connected_at=conn.connected_at,
-            )
+        with self._tenant_lock(tenant_id):
+            # Another caller may have refreshed while this one waited for the lock.
+            current = self._store.get(tenant_id)
+            if current is None:
+                return None
+            if self._is_usable(current, skew_seconds) or current.status is QboStatus.NEEDS_RECONNECT:
+                return current
+            return self._refresh_locked(current)
+
+    def _is_usable(self, conn: QboConnection, skew_seconds: int) -> bool:
+        return (conn.status is QboStatus.CONNECTED
+                and conn.access_valid(self._clock(), skew_seconds=skew_seconds))
+
+    def _refresh_locked(self, conn: QboConnection) -> QboConnection:
+        """Refresh ``conn`` and persist the result. The caller holds the tenant lock.
+        The token Intuit returns replaces the stored refresh token, always."""
+        if not conn.refresh_valid(self._clock()):
+            expired = dataclasses.replace(conn, status=QboStatus.EXPIRED)
             self._store.save(expired)
             return expired
-        tokens = refresh_tokens(self._config, self._http, conn.refresh_token)
+        try:
+            tokens = refresh_tokens(self._config, self._http, conn.refresh_token)
+        except QboInvalidGrantError:
+            return self._mark_needs_reconnect(conn)
         refreshed = self._connection_from_tokens(
-            tenant_id, conn.realm_id, tokens, connected_at=conn.connected_at
+            conn.tenant_id, conn.realm_id, tokens, connected_at=conn.connected_at
         )
         self._store.save(refreshed)
         return refreshed
 
+    def _mark_needs_reconnect(self, conn: QboConnection) -> QboConnection:
+        marked = dataclasses.replace(conn, status=QboStatus.NEEDS_RECONNECT)
+        # Mark only the row whose refresh token Intuit refused. If it has changed since
+        # we read it, another caller rotated it and the connection is fine: keep theirs.
+        if not self._store.replace_if_refresh_token(conn.tenant_id, conn.refresh_token, marked):
+            latest = self._store.get(conn.tenant_id)
+            return latest if latest is not None else marked
+        if self._on_needs_reconnect is not None:
+            self._on_needs_reconnect(marked)
+        return marked
+
+    def _access_after_unauthorized(self, tenant_id: str, rejected: str) -> str:
+        """The access token to retry a data call with after Intuit rejected
+        ``rejected`` (a 401). Refreshes once; a caller that finds the stored token
+        already changed takes that one instead of refreshing again."""
+        with self._tenant_lock(tenant_id):
+            current = self._store.get(tenant_id)
+            if current is None or current.status is QboStatus.NEEDS_RECONNECT:
+                raise QboInvalidGrantError("QuickBooks is no longer connected; reconnect it")
+            if current.access_token != rejected:
+                return current.access_token
+            refreshed = self._refresh_locked(current)
+        if refreshed.status is not QboStatus.CONNECTED:
+            raise QboInvalidGrantError("QuickBooks needs the connection re-authorized; reconnect it")
+        return refreshed.access_token
+
     def api_client(self, tenant_id: str) -> QboApiClient | None:
         """A ready-to-use Accounting API client for a connected tenant, with a
         freshly-refreshed access token. ``None`` if the tenant isn't connected (or
-        its refresh token has lapsed → reconnect needed)."""
+        needs a reconnect: its refresh token lapsed or Intuit refused it)."""
         conn = self.ensure_fresh(tenant_id)
         if conn is None or conn.status is not QboStatus.CONNECTED:
             return None
@@ -336,6 +391,8 @@ class QboConnectService:
             api_base=self._config.api_base,
             realm_id=conn.realm_id,
             access_token=conn.access_token,
+            retry=self._retry,
+            refresh=lambda rejected: self._access_after_unauthorized(tenant_id, rejected),
         )
 
     def disconnect(self, tenant_id: str) -> bool:

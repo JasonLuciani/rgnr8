@@ -63,6 +63,17 @@ class QboOAuthError(Exception):
     """An OAuth request to Intuit failed (non-2xx, or an unparseable response)."""
 
 
+class QboInvalidGrantError(QboOAuthError):
+    """Intuit refused the refresh token (``invalid_grant``): the owner revoked the
+    app, the token expired, or it was already rotated away. No retry can fix that;
+    the owner has to reconnect."""
+
+
+class QboNetworkError(QboOAuthError):
+    """Intuit could not be reached: a connection error or a timeout. Transient, so
+    the Accounting API client retries it; no HTTP status came back."""
+
+
 @dataclass(frozen=True, slots=True)
 class QboOAuthConfig:
     """The Intuit Developer app's OAuth settings. ``client_id``/``client_secret``
@@ -104,6 +115,8 @@ class QboTokens:
 class HttpResponse:
     status: int
     body: str
+    # The Retry-After header as Intuit sent it (seconds, or an HTTP date), if any.
+    retry_after: str | None = None
 
 
 class HttpClient(Protocol):
@@ -129,9 +142,11 @@ class UrllibHttpClient:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # noqa: S310
                 return HttpResponse(status=int(resp.status), body=resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:  # non-2xx still carries a body
-            return HttpResponse(status=int(exc.code), body=exc.read().decode("utf-8", "replace"))
-        except urllib.error.URLError as exc:  # network-level failure
-            raise QboOAuthError(f"network error contacting Intuit: {exc.reason}") from exc
+            return HttpResponse(status=int(exc.code), body=exc.read().decode("utf-8", "replace"),
+                                retry_after=exc.headers.get("Retry-After"))
+        except OSError as exc:  # network-level failure, or a timeout while reading
+            reason = getattr(exc, "reason", exc)
+            raise QboNetworkError(f"network error contacting Intuit: {reason}") from exc
 
     def post(self, url: str, body: str, headers: Mapping[str, str]) -> HttpResponse:
         req = urllib.request.Request(url, data=body.encode("utf-8"), method="POST")
@@ -162,6 +177,14 @@ def authorize_url(config: QboOAuthConfig, state: str) -> str:
     return f"{AUTHORIZE_ENDPOINT}?{query}"
 
 
+def _is_invalid_grant(body: str) -> bool:
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(data, dict) and data.get("error") == "invalid_grant"
+
+
 def _post_token(config: QboOAuthConfig, http: HttpClient, form: Mapping[str, str]) -> QboTokens:
     headers = {
         "Authorization": config.basic_auth(),
@@ -170,6 +193,8 @@ def _post_token(config: QboOAuthConfig, http: HttpClient, form: Mapping[str, str
     }
     resp = http.post(TOKEN_ENDPOINT, urllib.parse.urlencode(dict(form)), headers)
     if resp.status < 200 or resp.status >= 300:
+        if _is_invalid_grant(resp.body):
+            raise QboInvalidGrantError(f"token endpoint refused the grant: {resp.body[:300]}")
         raise QboOAuthError(f"token endpoint returned {resp.status}: {resp.body[:300]}")
     try:
         data = json.loads(resp.body)
@@ -201,7 +226,9 @@ def exchange_code(config: QboOAuthConfig, http: HttpClient, code: str) -> QboTok
 def refresh_tokens(config: QboOAuthConfig, http: HttpClient, refresh_token: str) -> QboTokens:
     """Exchange a (still-valid) ``refresh_token`` for a fresh token set. Intuit
     rotates the refresh token on every use, so the *returned* refresh token must
-    replace the stored one."""
+    replace the stored one. Raises :class:`QboInvalidGrantError` when Intuit
+    refuses the token. Not retried here: a retry could reuse a token Intuit has
+    already rotated."""
     return _post_token(
         config, http, {"grant_type": "refresh_token", "refresh_token": refresh_token}
     )

@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 
-from rgnr8_qbo import QboApiError, QboOAuthError
+from rgnr8_qbo import QboApiError, QboInvalidGrantError, QboOAuthError
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +50,9 @@ def plain_qbo_error(exc: BaseException) -> str:
         said = _intuit_message(exc.body)
         return (f"QuickBooks turned the request down: {said}" if said
                 else f"QuickBooks turned the request down (error {status})")
+    if isinstance(exc, QboInvalidGrantError):
+        return ("QuickBooks no longer accepts this connection. Reconnect QuickBooks, "
+                "then try again")
     if isinstance(exc, QboOAuthError):
         return "couldn't reach QuickBooks just now. Check the connection, then try again"
     return "something went wrong reading from QuickBooks. Try again in a moment"

@@ -25,12 +25,20 @@ from typing import Mapping, Protocol
 from .secrets_cipher import NullCipher, SecretCipher
 
 
+# Refresh the access token this long before it expires, so a sync never starts
+# with a token that dies mid-run.
+REFRESH_SKEW_SECONDS = 5 * 60
+
+
 class QboStatus(str, Enum):
     CONNECTED = "connected"          # access token live or refreshable
     EXPIRED = "expired"              # refresh token lapsed → owner must reconnect
     REVOKED = "revoked"             # access revoked (by us or at Intuit)
     DISCONNECTED = "disconnected"    # never connected / owner disconnected
     ERROR = "error"                  # last operation failed
+    # Intuit refused the refresh token (invalid_grant). Persisted, so no further
+    # calls are made until the owner reconnects.
+    NEEDS_RECONNECT = "needs_reconnect"
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,7 +54,7 @@ class QboConnection:
     status: QboStatus = QboStatus.CONNECTED
     connected_at: datetime | None = None
 
-    def access_valid(self, now: datetime, *, skew_seconds: int = 120) -> bool:
+    def access_valid(self, now: datetime, *, skew_seconds: int = REFRESH_SKEW_SECONDS) -> bool:
         """Whether the access token is still usable at ``now`` (with a safety
         skew so we refresh slightly early rather than mid-request)."""
         return now + timedelta(seconds=skew_seconds) < self.access_expires_at
@@ -118,6 +126,9 @@ class ConnectionStore(Protocol):
     def get(self, tenant_id: str) -> QboConnection | None: ...
     def delete(self, tenant_id: str) -> None: ...
     def list_all(self) -> list[QboConnection]: ...
+    def replace_if_refresh_token(
+        self, tenant_id: str, expected_refresh_token: str, conn: QboConnection
+    ) -> bool: ...
 
 
 class InMemoryConnectionStore:
@@ -138,8 +149,19 @@ class InMemoryConnectionStore:
     def list_all(self) -> list[QboConnection]:
         return [self._by_tenant[k] for k in sorted(self._by_tenant)]
 
+    def replace_if_refresh_token(
+        self, tenant_id: str, expected_refresh_token: str, conn: QboConnection
+    ) -> bool:
+        current = self._by_tenant.get(tenant_id)
+        if current is None or current.refresh_token != expected_refresh_token:
+            return False
+        self._by_tenant[tenant_id] = conn
+        return True
+
 
 class _DbApiCursor(Protocol):
+    rowcount: int
+
     def execute(self, sql: str, params: object = ..., /) -> object: ...
     def fetchall(self) -> list[tuple[object, ...]]: ...
     def close(self) -> None: ...
@@ -240,6 +262,33 @@ class SqlConnectionStore:
     def list_all(self) -> list[QboConnection]:
         rows = self._rows(f"SELECT conn_json FROM {self._t} ORDER BY tenant_id", ())
         return [self._decrypt_row(str(r[0])) for r in rows]
+
+    def replace_if_refresh_token(
+        self, tenant_id: str, expected_refresh_token: str, conn: QboConnection
+    ) -> bool:
+        """Write ``conn`` only if the stored refresh token is still
+        ``expected_refresh_token``. The UPDATE is conditional on the exact row text
+        read, so a write that lands in between makes this return False rather than
+        overwrite it (the ciphertext differs on every write, so the row text is the
+        version)."""
+        p = self._ph
+        rows = self._rows(f"SELECT conn_json FROM {self._t} WHERE tenant_id={p}", (tenant_id,))
+        if not rows:
+            return False
+        raw = str(rows[0][0])
+        if self._decrypt_row(raw).refresh_token != expected_refresh_token:
+            return False
+        cur = self._conn.cursor()
+        try:
+            cur.execute(
+                f"UPDATE {self._t} SET conn_json={p} WHERE tenant_id={p} AND conn_json={p}",
+                (self._encrypt_payload(conn), tenant_id, raw),
+            )
+            won = cur.rowcount == 1
+        finally:
+            cur.close()
+        self._conn.commit()
+        return won
 
     def reencrypt_all(self) -> int:
         """Re-write every row through the current cipher — the one-shot migration
