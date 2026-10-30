@@ -1,5 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { SettingsError, mergeSettings, settingsJson } from "./settings.js";
+import { settleAccountOrigin } from "./accountOrigin.js";
 import {
   ChartEditError,
   netByAccount,
@@ -1910,6 +1911,7 @@ export class LedgerService {
   // --- accounts -------------------------------------------------------------
 
   private async listAccounts(tenant: TenantId): Promise<ServiceResponse> {
+    await this.backend.ensureAccountOrigin(tenant);
     const chart = await this.backend.chart(tenant);
     const qbo = await inParallelRun(this.backend, tenant);
     const accounts = [...chart.list()].sort((a, b) => a.code.localeCompare(b.code));
@@ -1941,6 +1943,7 @@ export class LedgerService {
   }
 
   private async createAccount(tenant: TenantId, body: string): Promise<ServiceResponse> {
+    await this.backend.ensureAccountOrigin(tenant);
     const data = parseJson(body);
     if (!data) return bad("invalid JSON body");
     const code = str(data["code"]).trim();
@@ -1976,6 +1979,7 @@ export class LedgerService {
    * The rules are in chartEdit.ts.
    */
   private async editAccount(tenant: TenantId, code: string, body: string): Promise<ServiceResponse> {
+    await this.backend.ensureAccountOrigin(tenant);
     const data = parseJson(body);
     if (!data) return bad("invalid JSON body");
     const chart = await this.backend.chart(tenant);
@@ -1997,6 +2001,7 @@ export class LedgerService {
   }
 
   private async seedAccounts(tenant: TenantId, body: string): Promise<ServiceResponse> {
+    await this.backend.ensureAccountOrigin(tenant);
     const data = parseJson(body);
     if (!data) return bad("invalid JSON body");
     const category = str(data["category"]).trim();
@@ -2952,6 +2957,9 @@ export class LedgerService {
           now,
           { chartStore: this.backend.chartStore() },
         );
+    // The go-live marked its own accounts; record that, so the backfill can't
+    // mistake accounts created since for pre-existing QuickBooks ones.
+    await settleAccountOrigin(this.backend.settings(), tenant);
     return ok({
       tenant,
       opening_entry_id: result.cutover.entry.id,

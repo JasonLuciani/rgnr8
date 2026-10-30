@@ -20,6 +20,7 @@ export {
   isSystemAccount,
   SYSTEM_SUBTYPES,
   OPENING_BALANCE_EQUITY_NAME,
+  OPENING_BALANCE_EQUITY_CODE,
   type AccountOrigin,
   type Account,
   type AccountId,

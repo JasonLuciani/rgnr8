@@ -41,29 +41,13 @@ import { BILLING_DDL } from "./billing.js";
 import { INVENTORY_DDL } from "./inventory.js";
 import { CRM_DDL } from "./crm.js";
 import { CONSOLIDATION_DDL } from "./consolidation.js";
-import { SETTINGS_DDL, SETTINGS_MIRROR_DDL } from "./settings.js";
+import { ACCOUNT_ORIGIN_FLAG_DDL, SETTINGS_DDL, SETTINGS_MIRROR_DDL } from "./settings.js";
 import { DEBT_DDL } from "./debt.js";
 import { FIXED_ASSET_DDL } from "./fixedassets.js";
 import { rlsDdl } from "./security.js";
 import { OPEN_ITEMS_DDL } from "./openItems.js";
 import { BANK_HISTORY_DDL } from "./bankHistory.js";
 import { CUTOVER_DDL } from "./cutover.js";
-
-/**
- * Accounts brought over from QuickBooks at go-live are marked `quickbooks`. The
- * go-live that did the bringing-over is identified by its opening entry, which
- * carries QuickBooks provenance and the `cutover:opening:` key. Every account of
- * such a tenant, as it stood when this migration ran, is marked. That is
- * conservative: an account RGNR8 created during the parallel run is also locked
- * until cutover, and no account is ever locked after cutover.
- */
-const ACCOUNT_ORIGIN_BACKFILL = `
-UPDATE account SET origin = 'quickbooks'
- WHERE tenant_id IN (
-   SELECT tenant_id FROM journal_entry
-    WHERE prov_source_system = 'quickbooks' AND idempotency_key LIKE 'cutover:opening:%'
- );
-`;
 
 /**
  * The ordered schema migrations. Dependency order: core ledger + chart first,
@@ -107,8 +91,11 @@ export function ledgerMigrations(opts: { enforceRls: boolean }): Migration[] {
     { version: 27, name: "cutover_record", sql: CUTOVER_DDL },
     { version: 28, name: "mirror_bank_history", sql: BANK_HISTORY_DDL },
     // Account origin (rgnr8 | quickbooks), which locks QuickBooks' chart while
-    // QuickBooks is the book of record. Adds the column, then backfills it.
-    { version: 29, name: "account_origin", sql: ACCOUNT_ORIGIN_DDL + ACCOUNT_ORIGIN_BACKFILL },
+    // QuickBooks is the book of record. Schema only: the backfill for tenants that
+    // predate it runs per tenant, under that tenant's RLS context (accountOrigin.ts).
+    // A migration has no tenant bound, and under FORCE RLS it would see no rows.
+    { version: 29, name: "account_origin", sql: ACCOUNT_ORIGIN_DDL },
+    { version: 30, name: "account_origin_backfill_flag", sql: ACCOUNT_ORIGIN_FLAG_DDL },
   ];
   // RLS policies key on every tenant table, so they migrate last.
   if (opts.enforceRls) {

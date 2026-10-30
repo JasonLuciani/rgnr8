@@ -109,6 +109,17 @@ export class PgAccountStore {
     return new ChartOfAccounts(parentsFirst(accounts));
   }
 
+  /**
+   * Mark every account the tenant has now as QuickBooks-origin. Used by the
+   * one-time origin backfill for a tenant that went live from QuickBooks before
+   * origins were recorded. Runs under the tenant's own RLS context.
+   */
+  async markAllQuickBooks(tenant: TenantId): Promise<void> {
+    await this.withTenant(tenant, async (db) => {
+      await db.query("UPDATE account SET origin = 'quickbooks' WHERE tenant_id = $1", [tenant]);
+    });
+  }
+
   /** Soft-deactivate an account (keeps history; hidden from active pickers). */
   async deactivate(tenant: TenantId, id: AccountId): Promise<void> {
     await this.withTenant(tenant, async (db) => {

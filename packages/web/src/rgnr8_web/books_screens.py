@@ -292,12 +292,13 @@ DETAIL_TYPES: dict[str, str] = {
 _LOCK_SHORT = {"quickbooks": "In QuickBooks", "system": "System account"}
 _LOCK_WHY = {
     "quickbooks": "This account is kept in QuickBooks until the cutover. Edit it there.",
-    "system": "The books depend on this account (it is a control account), so it can't be "
-              "edited here.",
+    "system": "The books depend on this account, so only its name can change here. Its type, "
+              "detail type and number stay, and it can't be made inactive.",
 }
 _LOCK_NOTE = (
-    "Some accounts can't be edited here. System accounts hold the books' control balances. "
-    "Accounts from QuickBooks are kept there until the cutover."
+    "System accounts hold the books' control balances: you can rename them, but not change "
+    "their type, detail type or number, or make them inactive. Accounts from QuickBooks are "
+    "kept there until the cutover."
 )
 
 
@@ -330,11 +331,16 @@ def _row_actions(tenant: str, a: Mapping[str, object], *, can_edit: bool) -> str
         return ""
     code = str(a.get("code"))
     locked = _locked_by(a)
-    if locked:
+    if locked == "quickbooks":
         return (f'<span class="muted" title="{_esc(_LOCK_WHY[locked])}">'
                 f"{_esc(_LOCK_SHORT[locked])}</span>")
+    # A system account can be renamed (its form is the name alone), but nothing else.
+    label = "Rename" if locked == "system" else "Edit"
     edit = (f'<a class="btn ghost" href="/t/{_esc(tenant)}/books/accounts/{_esc(code)}/edit">'
-            "Edit</a>")
+            f"{label}</a>")
+    if locked == "system":
+        return (f'<span class="muted" title="{_esc(_LOCK_WHY[locked])}">'
+                f"{_esc(_LOCK_SHORT[locked])}</span> " + edit)
     if a.get("active") is False:
         toggle_label, flag = "Reactivate", "true"
     else:
@@ -464,11 +470,22 @@ def render_account_form(
         same_type = str(account.get("type") or "")
         excluded = _descendant_codes(code, everything) | {code}
         locked = _locked_by(account)
-        if locked:
+        if locked == "quickbooks":
             body = (banners + _banner("warn", _LOCK_WHY[locked])
                     + f"<p><strong>{_esc(account_label(code, name, id_codes))}</strong> · "
                     f"{_esc(detail_type_label(subtype))}</p>"
                     f'<p><a href="/t/{_esc(tenant)}/books/accounts">Back to the chart</a></p>')
+            return _card(title, body)
+        if locked == "system":
+            # Only the name of a system account can change: the form is the name alone.
+            title = f"Rename account {code}"
+            body = (banners + _banner("warn", _LOCK_WHY["system"])
+                    + f'<form method="post" action="{_esc(action)}">'
+                    + form_section("Account", f'<div><label>Name</label><input name="name" '
+                                   f'required value="{_esc(name)}"></div>', cols="grid2")
+                    + '<p><button class="btn" type="submit">Save name</button> '
+                    f'<a class="btn ghost" href="/t/{_esc(tenant)}/books/accounts">Cancel</a></p>'
+                    "</form>")
             return _card(title, body)
 
     parents = ['<option value="">None (top level)</option>']

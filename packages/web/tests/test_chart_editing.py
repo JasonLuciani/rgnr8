@@ -76,13 +76,24 @@ def test_an_rgnr8_account_shows_edit_and_inactivate() -> None:
     assert 'name="active" value="false"' in row
 
 
-def test_a_system_account_has_no_edit_actions_and_says_why() -> None:
+def test_a_system_account_can_be_renamed_but_not_inactivated() -> None:
     html = render_chart_of_accounts("acme", CHART, can_edit=True)
     row = _row(html, "1200")
-    assert "/books/accounts/1200/edit" not in row
+    assert "/books/accounts/1200/edit" in row and "Rename" in row
     assert "/books/accounts/1200/active" not in row
+    assert "Inactivate" not in row
     assert "System account" in row
     assert 'title="The books depend on this account' in row
+
+
+def test_a_system_account_edit_form_is_the_name_alone() -> None:
+    account = next(a for a in CHART["accounts"] if a["code"] == "1200")
+    html = render_account_form("acme", CHART, account=account)
+    assert 'action="/t/acme/books/accounts/1200/edit"' in html
+    assert 'name="name" required value="Accounts Receivable"' in html
+    assert 'name="number"' not in html
+    assert 'name="subtype"' not in html
+    assert 'name="parent_code"' not in html
 
 
 def test_a_quickbooks_account_has_no_edit_actions_and_says_why() -> None:

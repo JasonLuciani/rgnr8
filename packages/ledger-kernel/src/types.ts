@@ -124,16 +124,25 @@ export const SYSTEM_SUBTYPES: readonly AccountSubtype[] = [
 
 /** The name the go-live gives the account that absorbs the conversion residual. */
 export const OPENING_BALANCE_EQUITY_NAME = "Opening Balance Equity";
+/**
+ * The code the go-live's opening-balance equity account carries by default (the
+ * web app always sends it). System accounts cannot be renumbered, so this code
+ * is a stable marker even if the account is renamed.
+ */
+export const OPENING_BALANCE_EQUITY_CODE = "3010";
 
 /**
  * Whether an account is a system account. There is no stored flag: an account is
  * system when its subtype is in {@link SYSTEM_SUBTYPES}, or when it is the
- * Opening Balance Equity account the go-live creates (matched by subtype EQUITY
- * and that name). Renaming the Opening Balance Equity account drops this match.
+ * Opening Balance Equity account the go-live creates. That account is an EQUITY
+ * account carrying {@link OPENING_BALANCE_EQUITY_CODE} (stable, because system
+ * accounts cannot be renumbered) or, for a client that chose another code, the
+ * name {@link OPENING_BALANCE_EQUITY_NAME}.
  */
-export function isSystemAccount(account: Pick<Account, "subtype" | "name">): boolean {
+export function isSystemAccount(account: Pick<Account, "subtype" | "name" | "code">): boolean {
   if (account.subtype !== undefined && SYSTEM_SUBTYPES.includes(account.subtype)) return true;
-  return account.subtype === AccountSubtype.EQUITY && account.name === OPENING_BALANCE_EQUITY_NAME;
+  if (account.subtype !== AccountSubtype.EQUITY) return false;
+  return account.code === OPENING_BALANCE_EQUITY_CODE || account.name === OPENING_BALANCE_EQUITY_NAME;
 }
 
 export interface Account {

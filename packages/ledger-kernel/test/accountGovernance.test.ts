@@ -48,14 +48,21 @@ test("a reactivated account takes postings again", async () => {
   assert.equal((await engine.post(saleCommand("10.00"), { postedAt: POST_AT })).sequence, 1);
 });
 
-test("system accounts are recognised by detail type, and by the opening-balance equity", () => {
-  assert.equal(isSystemAccount({ subtype: AccountSubtype.ACCOUNTS_RECEIVABLE, name: "Trade debtors" }), true);
-  assert.equal(isSystemAccount({ subtype: AccountSubtype.ACCOUNTS_PAYABLE, name: "AP" }), true);
-  assert.equal(isSystemAccount({ subtype: AccountSubtype.RETAINED_EARNINGS, name: "RE" }), true);
-  assert.equal(isSystemAccount({ subtype: AccountSubtype.BANK, name: "Checking" }), false);
-  assert.equal(isSystemAccount({ subtype: AccountSubtype.EQUITY, name: "Owner's Equity" }), false);
-  assert.equal(isSystemAccount({ subtype: AccountSubtype.EQUITY, name: "Opening Balance Equity" }), true);
-  assert.equal(isSystemAccount({ name: "Misc" }), false);
+test("system accounts are recognised by detail type, and by the opening-balance equity code", () => {
+  assert.equal(isSystemAccount({ code: "1200", subtype: AccountSubtype.ACCOUNTS_RECEIVABLE, name: "Trade debtors" }), true);
+  assert.equal(isSystemAccount({ code: "2000", subtype: AccountSubtype.ACCOUNTS_PAYABLE, name: "AP" }), true);
+  assert.equal(isSystemAccount({ code: "3900", subtype: AccountSubtype.RETAINED_EARNINGS, name: "RE" }), true);
+  assert.equal(isSystemAccount({ code: "1000", subtype: AccountSubtype.BANK, name: "Checking" }), false);
+  assert.equal(isSystemAccount({ code: "3000", subtype: AccountSubtype.EQUITY, name: "Owner's Equity" }), false);
+  // The go-live's equity account: stable by code, so renaming it does not unprotect it.
+  assert.equal(isSystemAccount({ code: "3010", subtype: AccountSubtype.EQUITY, name: "Opening Balance Equity" }), true);
+  assert.equal(isSystemAccount({ code: "3010", subtype: AccountSubtype.EQUITY, name: "Owner Residual" }), true);
+  // A client that chose another code is still protected by name.
+  assert.equal(isSystemAccount({ code: "3999", subtype: AccountSubtype.EQUITY, name: "Opening Balance Equity" }), true);
+  assert.equal(isSystemAccount({ code: "3999", subtype: AccountSubtype.EQUITY, name: "Owner Residual" }), false);
+  // The code only counts on an equity account.
+  assert.equal(isSystemAccount({ code: "3010", subtype: AccountSubtype.BANK, name: "Checking" }), false);
+  assert.equal(isSystemAccount({ code: "9", name: "Misc" }), false);
 });
 
 test("parentsFirst puts every parent before its children, whatever order it is given in", () => {
