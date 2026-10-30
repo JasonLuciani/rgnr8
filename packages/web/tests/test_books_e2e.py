@@ -222,6 +222,27 @@ def test_the_real_ledger_refuses_an_unbalanced_entry(ledger_service: str) -> Non
     assert "Nothing posted yet" in books.body
 
 
+def test_a_six_line_entry_with_names_posts_every_line_to_the_real_ledger(ledger_service: str) -> None:
+    base = ledger_service
+    app = _app(base, ["sixlines"])
+    _seed(base, "sixlines", "SERVICE_GENERAL")
+    r = _req(app, "sixlines", "/t/sixlines/books/entries", "POST",
+             "date=2026-08-12&memo=Month+end"
+             "&code1=1000&debit1=1,000.00&name1=Acme+Corp&memo1=Retainer"
+             "&code2=1000&debit2=500.00&code3=1000&debit3=250.00"
+             "&code4=4000&credit4=1,000.00&code5=4000&credit5=500.00&code6=4000&credit6=250.00")
+    assert r.status == 302 and "posted=" in str(r.headers.get("Location", ""))
+    entries = _service_get(base, "/t/sixlines/entries")["entries"]
+    assert len(entries) == 1
+    lines = entries[0]["lines"]
+    assert len(lines) == 6
+    assert [ln["amount_minor"] for ln in lines] == [
+        "100000", "50000", "25000", "100000", "50000", "25000"]
+    # the name rides in the line memo, since the ledger line has no party field
+    assert lines[0]["memo"] == "Acme Corp: Retainer"
+    assert all(ln["memo"] == "" for ln in lines[1:])
+
+
 def test_two_clients_books_are_isolated_through_the_running_stack(ledger_service: str) -> None:
     base = ledger_service
     app = _app(base, ["alpha", "bravo"])
@@ -988,7 +1009,7 @@ def test_1099_contractors_end_to_end_against_the_real_service(ledger_service: st
 
     for doc, party, when, amount in [
         ("B-1", "dana-ruiz-design", "2026-03-10", "4000.00"),
-        ("B-2", "sam-okonkwo", "2026-05-01", "540.00"),
+        ("B-2", "sam-okonkwo", "2026-05-01", "1940.00"),
         ("B-3", "riverside-properties", "2026-03-01", "3500.00"),
     ]:
         made = _req(app, "ten99co", "/t/ten99co/bills", "POST",
@@ -1016,9 +1037,10 @@ def test_1099_contractors_end_to_end_against_the_real_service(ledger_service: st
     # the landlord is not a contractor and never appears
     assert "Riverside Properties" not in page.body
 
-    # $60 from needing a form
+    # $60 from needing a form, against the $2,000 line for 2026
     assert "Tracked, but under the threshold" in page.body
-    assert "Sam Okonkwo" in page.body and "$540.00" in page.body and "$60.00" in page.body
+    assert "Sam Okonkwo" in page.body and "$1,940.00" in page.body and "$60.00" in page.body
+    assert "A form is required above $2,000.00" in page.body
 
     # the bank payment is a prompt, not a number folded into the total
     assert "Paid from the bank, never billed" in page.body

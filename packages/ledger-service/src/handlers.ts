@@ -437,7 +437,7 @@ function provenanceFor(source: string, date: string, at: string): Provenance {
   };
 }
 
-function accountJson(a: Account): Record<string, unknown> {
+function accountJson(a: Account, parentCode: string | null = null): Record<string, unknown> {
   return {
     code: a.code,
     name: a.name,
@@ -445,7 +445,15 @@ function accountJson(a: Account): Record<string, unknown> {
     subtype: a.subtype ?? null,
     currency: a.currency.code,
     active: a.active !== false,
+    // The parent account's code, when this is a sub-account: the screens nest on it.
+    parent_code: parentCode,
   };
+}
+
+/** The code of an account's parent, or null when it has none (or it isn't in the chart). */
+function parentCodeOf(chart: ChartOfAccounts, a: Account): string | null {
+  if (a.parentId === undefined) return null;
+  return chart.get(a.parentId)?.code ?? null;
 }
 
 function entryJson(e: PostedEntry): Record<string, unknown> {
@@ -1833,7 +1841,7 @@ export class LedgerService {
   private async listAccounts(tenant: TenantId): Promise<ServiceResponse> {
     const chart = await this.backend.chart(tenant);
     const accounts = [...chart.list()].sort((a, b) => a.code.localeCompare(b.code));
-    return ok({ tenant, accounts: accounts.map(accountJson) });
+    return ok({ tenant, accounts: accounts.map((a) => accountJson(a, parentCodeOf(chart, a))) });
   }
 
   private async createAccount(tenant: TenantId, body: string): Promise<ServiceResponse> {
@@ -2041,13 +2049,18 @@ export class LedgerService {
       in_balance: tb.inBalance,
       total_debit_minor: tb.totalDebit.minorUnits.toString(),
       total_credit_minor: tb.totalCredit.minorUnits.toString(),
-      rows: tb.rows.map((r) => ({
-        code: r.code,
-        name: r.name,
-        type: r.type,
-        debit_minor: r.debit.minorUnits.toString(),
-        credit_minor: r.credit.minorUnits.toString(),
-      })),
+      rows: tb.rows.map((r) => {
+        const account = chart.get(r.accountId);
+        return {
+          code: r.code,
+          name: r.name,
+          type: r.type,
+          subtype: r.subtype ?? null,
+          parent_code: account ? parentCodeOf(chart, account) : null,
+          debit_minor: r.debit.minorUnits.toString(),
+          credit_minor: r.credit.minorUnits.toString(),
+        };
+      }),
     });
   }
 

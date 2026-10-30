@@ -32,7 +32,7 @@ def render_pick_account(tenant: str, accounts: Mapping[str, object], *,
     rows = []
     listed = sorted((a for a in _seq(accounts.get("accounts")) if isinstance(a, Mapping)),
                     key=lambda a: account_order(a.get("code"), a.get("name"), a.get("type"),
-                                                id_codes))
+                                                id_codes, subtype=a.get("subtype")))
     for a in listed:
         subtype = str(a.get("subtype") or "")
         type_ = str(a.get("type") or "")

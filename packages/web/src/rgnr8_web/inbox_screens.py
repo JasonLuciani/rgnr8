@@ -51,7 +51,7 @@ def _account_options(accounts: Mapping[str, object], selected: str,
     out = ['<option value="">— choose an account —</option>']
     listed = sorted((a for a in _seq(accounts.get("accounts")) if isinstance(a, Mapping)),
                     key=lambda a: account_order(a.get("code"), a.get("name"), a.get("type"),
-                                                id_codes))
+                                                id_codes, subtype=a.get("subtype")))
     for a in listed:
         code = str(a.get("code"))
         if code == exclude:
