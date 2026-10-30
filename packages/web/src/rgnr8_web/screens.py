@@ -410,10 +410,12 @@ def render_close_body(board: CloseBoard, tenant: str, *, can_manage: bool, can_p
 
 
 def default_close_board(period: str) -> CloseBoard:
-    """A representative close checklist for demos/onboarding before the real
-    `@rgnr8/close` calendar is wired for a tenant."""
+    """The close checklist shown until the real `@rgnr8/close` calendar is wired
+    for a tenant. Nothing on it is marked done by default: this board has no data
+    source that proves a step happened, so every step starts open."""
     return CloseBoard(period=period, tasks=(
-        CloseTask("feeds", "Bank & card feeds imported", "done", "Bookkeeper", f"{period}-01"),
+        CloseTask("feeds", "Bank & card feeds imported", "open", "Bookkeeper", f"{period}-01",
+                  note="Not verified: this board does not read feed imports. Mark done only once the period's feeds are imported."),
         CloseTask("categorize", "All transactions categorized", "open", "Bookkeeper", f"{period}-03"),
         CloseTask("reconcile", "Bank reconciliations tie out", "open", "Bookkeeper", f"{period}-04"),
         CloseTask("payroll", "Payroll & benefits accrued", "open", "Controller", f"{period}-04"),

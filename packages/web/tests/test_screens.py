@@ -16,6 +16,7 @@ from rgnr8_web import (
     sign_jwt,
 )
 from rgnr8_web.ledger_client import LedgerClient, LedgerResponse
+from rgnr8_web.screens import default_close_board
 
 SECRET = "screens-secret"
 NOW = 1_760_000_000
@@ -191,3 +192,34 @@ def test_packages_page_unconfigured_message() -> None:
     r = _app().handle(Request("GET", "/t/acme/packages", _h("owner@acme.com")))
     assert r.status == 200 and "Financial packages" in r.body
     assert "aren't configured" in r.body  # no package reader wired in this app
+
+
+# --- the close checklist never reports a step done that nothing proves -------
+def test_default_close_board_starts_with_nothing_done() -> None:
+    board = default_close_board("2026-08")
+    assert board.done == 0 and not board.complete
+    feeds = next(t for t in board.tasks if t.key == "feeds")
+    assert feeds.status != "done"
+    assert "Not verified" in feeds.note
+
+
+def test_tenant_with_no_feeds_sees_feeds_not_done() -> None:
+    import json
+    app = _app()  # no add_close(): the tenant runs on the default board
+    state = json.loads(app.handle(Request("GET", "/api/acme/close", _h("owner@acme.com"))).body)
+    feeds = next(t for t in state["tasks"] if t["key"] == "feeds")
+    assert feeds["status"] == "open"
+    assert state["done"] == 0 and state["complete"] is False
+    r = app.handle(Request("GET", "/t/acme/close", _h("owner@acme.com")))
+    assert r.status == 200
+    assert "Not verified" in r.body
+    assert "0/5" in r.body
+
+
+def test_default_board_cannot_be_sealed_while_feeds_unverified() -> None:
+    import json
+    app = _app()
+    ho = {**_h("owner@acme.com"), "content-type": "application/json"}
+    r = app.handle(Request("POST", "/api/acme/close/publish", ho, "{}"))
+    assert r.status == 409
+    assert "every close task must be done" in json.loads(r.body)["error"]

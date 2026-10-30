@@ -107,3 +107,32 @@ test("checklist reports each gate's detail", () => {
   assert.equal(tasks.find((t) => t.id === "trial_balance")?.status, "PASSED");
   assert.equal(tasks.find((t) => t.id === "control_accounts")?.detail, "AR/AP controls tied");
 });
+
+test("zero reconciliations never passes the bank step (an empty dataset is not 'all reconciled')", () => {
+  const tasks = buildCloseChecklist({ ...cleanInputs, reconciliations: [] });
+  const bank = tasks.find((t) => t.id === "bank_reconciliations");
+  assert.equal(bank?.status, "FAILED");
+  assert.match(bank?.detail ?? "", /no bank\/card reconciliations/);
+});
+
+test("zero reconciliations blocks the close and locks nothing", () => {
+  const periods = new PeriodRegistry();
+  const pkg = closePeriod(periods, AUG, { ...cleanInputs, reconciliations: [] }, {
+    closedBy: "c", at: "2026-09-01T00:00:00Z",
+  });
+  assert.ok(!pkg.closed);
+  assert.ok(pkg.blockers.includes("All bank/card accounts reconciled"));
+  assert.ok(periods.isOpen(AUG));
+});
+
+test("zero reconciliations fails the sign-off step when sign-off is required", () => {
+  const tasks = buildCloseChecklist({ ...cleanInputs, reconciliations: [] });
+  assert.equal(tasks.find((t) => t.id === "reconciliation_signoff")?.status, "FAILED");
+});
+
+test("zero control accounts never passes the subledger step", () => {
+  const tasks = buildCloseChecklist({ ...cleanInputs, controls: [] });
+  const ctl = tasks.find((t) => t.id === "control_accounts");
+  assert.equal(ctl?.status, "FAILED");
+  assert.match(ctl?.detail ?? "", /no subledger control accounts/);
+});
