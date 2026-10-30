@@ -66,5 +66,21 @@ services:
     command: ["python", "worker.py"]
     restart: "no"
 
+  # Opt-in single-service mode: web + ledger in ONE container
+  # (deploy/Dockerfile.combined). Not started by default; run it with
+  #   docker compose --profile combined up --build db migrate web-combined
+  # It needs only the database: the ledger runs inside it on 127.0.0.1.
+  web-combined:
+    profiles: ["combined"]
+    build: { context: .., dockerfile: deploy/Dockerfile.combined }
+    env_file: .env
+    environment:
+      RGNR8_DATABASE_URL: postgresql://rgnr8:rgnr8@db:5432/rgnr8
+      RGNR8_PORT: "10000"
+    ports: ["8090:10000"]
+    depends_on:
+      db: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+
 volumes:
   rgnr8_pgdata:

@@ -18,6 +18,7 @@ through the shared redaction rule first. A secret smuggled in as
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Callable, Mapping, Protocol
 
 from .redact import DEFAULT_SECRET_PATTERNS, redact_fields
@@ -37,13 +38,25 @@ class CapturedError:
 
 
 class InMemoryErrorReporter:
-    """Records captures with redacted context; returns deterministic `err_{n}`."""
+    """Records captures with redacted context; returns deterministic `err_{n}`.
 
-    def __init__(self) -> None:
-        self.captured: list[CapturedError] = []
+    Keeps every capture by default (tests). A long-lived process passes
+    ``max_retained`` so only the most recent captures (each holding an exception
+    and its traceback, i.e. whole stack frames) stay in memory. Ids keep counting
+    up either way, so they stay unique after old captures are dropped.
+    """
+
+    def __init__(self, *, max_retained: int | None = None) -> None:
+        if max_retained is not None and max_retained < 1:
+            raise ValueError("max_retained must be positive")
+        self.captured: list[CapturedError] | deque[CapturedError] = (
+            [] if max_retained is None else deque(maxlen=max_retained)
+        )
+        self._seq = 0
 
     def capture(self, exc: BaseException, *, context: Mapping[str, object]) -> str:
-        error_id = f"err_{len(self.captured)}"
+        error_id = f"err_{self._seq}"
+        self._seq += 1
         self.captured.append(
             CapturedError(error_id, exc, redact_fields(context))
         )

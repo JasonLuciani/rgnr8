@@ -6,6 +6,8 @@ separately (see `../DEPLOYMENT.md`).
 
 ## Files
 - **Dockerfile** — serves `deploy/entry.py` under gunicorn; `/ready` health check baked in.
+- **Dockerfile.ledger** — the Node ledger service (its own Render private service by default).
+- **Dockerfile.combined** + **combined_launcher.py** — opt-in single-service mode: web + ledger in ONE container, supervised; see **SINGLE-SERVICE.md** for the design, memory numbers and the Render switch-over steps.
 - **docker-compose.yml** — Postgres + a one-shot `migrate` + `web` + a `worker`.
 - **Procfile** — `release` (migrate), `web` (gunicorn), `worker` (delivery tick) for PaaS.
 - **.env.example** — every `RGNR8_*` setting, validated at boot by `Settings.from_env`.

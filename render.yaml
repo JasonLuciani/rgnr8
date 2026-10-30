@@ -36,6 +36,10 @@ envVarGroups:
 
 services:
   # --- the ledger: private, internal-only accounting system of record ---------
+  # Optional single-service mode (deploy/Dockerfile.combined) runs this ledger
+  # inside rgnr8-web instead; see deploy/SINGLE-SERVICE.md before changing this
+  # block. Removing it from this file does NOT delete the service, and deleting
+  # the service while it is still listed here makes a sync expect it back.
   - type: pserv
     name: rgnr8-ledger
     runtime: docker

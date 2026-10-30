@@ -203,3 +203,18 @@ def test_scheme_less_ledger_url_actually_wires_a_client() -> None:
                                            "RGNR8_LEDGER_URL": "rgnr8-ledger-a1b2:8181",
                                            "RGNR8_LEDGER_TOKEN": "svc"}))
     assert app._ledger is not None
+
+
+def test_served_observability_sinks_are_bounded() -> None:
+    """The web worker lives for days; its in-memory sinks must not grow per request."""
+    from rgnr8_ops.app_factory import build_observability
+
+    _rl, _logger, metrics, errors = build_observability(
+        Settings.from_env({"RGNR8_JWT_SECRET": "x"}), clock=lambda: 0.0,
+    )
+    for _ in range(5000):
+        metrics.counter("http.requests", route="/ready").inc()
+    assert 0 < len(metrics.sink.emissions) <= 1000  # type: ignore[attr-defined]
+    for i in range(500):
+        errors.capture(RuntimeError(str(i)), context={})
+    assert 0 < len(errors.captured) <= 100  # type: ignore[attr-defined]

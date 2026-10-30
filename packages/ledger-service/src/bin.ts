@@ -2,6 +2,9 @@
  * The runnable ledger service.
  *
  *   RGNR8_LEDGER_PORT      (default 8181)
+ *   RGNR8_LEDGER_HOST      interface to bind (default: all interfaces). The
+ *                          single-container deploy sets 127.0.0.1 so the ledger
+ *                          is reachable only from the web app beside it.
  *   RGNR8_LEDGER_TOKEN     shared secret the web app presents (required in prod)
  *   DATABASE_URL           Postgres; when absent the service runs in-memory
  *                          (fine for local dev — nothing survives a restart)
@@ -27,6 +30,7 @@ import { appRoleDdl, superuserWarning } from "./security.js";
 
 async function main(): Promise<void> {
   const port = Number(process.env["RGNR8_LEDGER_PORT"] ?? 8181);
+  const host = process.env["RGNR8_LEDGER_HOST"] ?? "";
   const token = process.env["RGNR8_LEDGER_TOKEN"] ?? "";
   // Fail closed: refuse to serve with auth off unless a dev explicitly opts out.
   // Previously an empty token silently ran the ledger with NO auth at all.
@@ -87,13 +91,16 @@ async function main(): Promise<void> {
     buildVersion: process.env["RENDER_GIT_COMMIT"] ?? "",
   });
 
-  createLedgerServer(service).listen(port, () => {
+  const announce = (): void => {
     process.stdout.write(
-      `RGNR8 ledger service on :${port} — store=${databaseUrl ? "postgres" : "in-memory"}`
+      `RGNR8 ledger service on ${host}:${port} — store=${databaseUrl ? "postgres" : "in-memory"}`
       + `, serving-as=${appUrl ? "app role" : "owner"}`
       + `, auth=${token ? "on" : "OFF (dev)"}\n`,
     );
-  });
+  };
+  const server = createLedgerServer(service);
+  if (host) server.listen(port, host, announce);
+  else server.listen(port, announce);
 }
 
 void main();

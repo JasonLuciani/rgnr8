@@ -1,0 +1,65 @@
+# RGNR8 web app + ledger in ONE container (opt-in single-service deploy).
+#
+# The default deploy runs two images: deploy/Dockerfile (Python web) and
+# deploy/Dockerfile.ledger (Node ledger) as separate Render services. This image
+# runs both in one service: deploy/combined_launcher.py starts the ledger on
+# 127.0.0.1, waits for its /health, then starts gunicorn pointed at it, and exits
+# non-zero if either process dies (so Render restarts the container).
+#
+# Reversible: point the service back at deploy/Dockerfile (and RGNR8_LEDGER_URL
+# back at the ledger service) to return to two services. See deploy/README.md,
+# "Single-service mode".
+
+# --- ledger build stage: identical to deploy/Dockerfile.ledger -------------
+FROM node:20-slim AS ledger
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY scripts ./scripts
+COPY packages ./packages
+RUN npm ci
+RUN npm run build          # topological workspace build (scripts/build-ws.mjs) → dist/
+
+# --- runtime: the Python web image, plus a Node runtime for the ledger -----
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+# The node binary needs the C++ runtime; the slim Python base may not carry it.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libstdc++6 \
+ && rm -rf /var/lib/apt/lists/*
+# Same Node build the ledger image runs (a self-contained binary).
+COPY --from=ledger /usr/local/bin/node /usr/local/bin/node
+
+WORKDIR /app
+
+# Python side: exactly what deploy/Dockerfile installs and copies.
+COPY requirements.txt /app/requirements.txt
+RUN pip install -r /app/requirements.txt
+COPY packages /app/packages
+COPY deploy   /app/deploy
+
+# Ledger side: exactly what deploy/Dockerfile.ledger's runtime stage carries,
+# under /app/ledger so its node_modules/dist never mix with the Python tree.
+COPY --from=ledger /app/node_modules /app/ledger/node_modules
+COPY --from=ledger /app/package.json /app/ledger/package.json
+COPY --from=ledger /app/packages     /app/ledger/packages
+
+WORKDIR /app/deploy
+EXPOSE 10000
+
+# Readiness of the web app. /ready only answers once the launcher has seen the
+# ledger healthy (gunicorn is not started before that), and its JSON carries
+# ledger.reachable.
+HEALTHCHECK --interval=30s --timeout=3s --retries=5 \
+  CMD python -c "import urllib.request,os,sys; \
+u=f'http://127.0.0.1:{os.environ.get(\"RGNR8_PORT\") or os.environ.get(\"PORT\") or \"10000\"}/ready'; \
+sys.exit(0 if urllib.request.urlopen(u,timeout=2).status==200 else 1)"
+
+# No ENTRYPOINT on purpose: Render's "Docker Command" replaces it. Set the
+# service's Docker Command to `python combined_launcher.py` (or leave it empty).
+# One-off commands (preDeploy `python migrate.py`, a shell) run as usual and do
+# not start the ledger.
+CMD ["python", "combined_launcher.py"]

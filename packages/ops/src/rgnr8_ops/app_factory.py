@@ -19,6 +19,7 @@ from typing import Any
 from rgnr8_obs import (
     ErrorReporter,
     InMemoryErrorReporter,
+    InMemoryMetricsSink,
     MetricsRegistry,
     StreamLogSink,
     StructuredLogger,
@@ -79,6 +80,12 @@ from .onboarding import OnboardingRegistry, SqlOnboardingRegistry
 from .operator_app import OperatorApp, operator_wsgi
 from .provisioning import Provisioning, build_provisioning
 from .store import SqlFleetStore
+
+# How much in-memory observability history one web worker keeps. Nothing in the
+# served app reads these back; they exist for local debugging, so a small,
+# fixed window is plenty and keeps worker memory flat.
+_MAX_RETAINED_METRICS = 1000
+_MAX_RETAINED_ERRORS = 100
 
 
 def build_authenticator(settings: Settings, *, clock: Callable[[], int] | None = None) -> Any:
@@ -313,10 +320,16 @@ def build_observability(
     rate limiter, a structured logger (JSON to stdout), a metrics registry, and an
     error reporter — all on one injected ``clock`` so request latency is a single
     deterministic measurement. In-memory/stdout sinks here; production swaps the
-    sinks without changing this wiring."""
+    sinks without changing this wiring.
+
+    The in-memory sinks are BOUNDED: this stack lives as long as the gunicorn
+    worker, and every request (Render's /ready health checks included) emits two
+    metric tuples. Unbounded, that was a steady ~15 MB/day RSS climb."""
     logger = StructuredLogger(StreamLogSink(sys.stdout), clock=clock, service="rgnr8-web")
-    metrics = MetricsRegistry(clock=clock)
-    errors: ErrorReporter = InMemoryErrorReporter()
+    metrics = MetricsRegistry(
+        clock=clock, sink=InMemoryMetricsSink(max_emissions=_MAX_RETAINED_METRICS),
+    )
+    errors: ErrorReporter = InMemoryErrorReporter(max_retained=_MAX_RETAINED_ERRORS)
     rate_limiter = RateLimiter(
         capacity=60, refill_per_second=30, clock=clock,
         key_func=make_rate_limit_key(trust_forwarded_for=settings.trust_forwarded_for),
