@@ -8,3 +8,7 @@ __pycache__/
 
 # deploy secrets
 deploy/.env
+
+# QuickBooks raw recordings: real company data, never commit
+qbo-recordings/
+**/raw/
