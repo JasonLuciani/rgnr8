@@ -80,6 +80,12 @@ export interface AccountSettings {
   readonly mirrorRealmId: string;
   /** The go-live cutover date (YYYY-MM-DD) the opening balances were taken at; empty if none. */
   readonly cutoverDate: string;
+  /**
+   * Whether the one-time account-origin backfill has run for this tenant (see
+   * accountOrigin.ts). Internal: never offered on the wire, and every settings
+   * save carries it forward, so re-saving settings can't re-run the backfill.
+   */
+  readonly accountOriginBackfilled: boolean;
 }
 
 export type BookOfRecord = "rgnr8" | "quickbooks";
@@ -96,6 +102,7 @@ export function defaultSettings(baseCurrency = "USD"): AccountSettings {
     bookOfRecord: "rgnr8",
     mirrorRealmId: "",
     cutoverDate: "",
+    accountOriginBackfilled: false,
   };
 }
 
@@ -119,6 +126,7 @@ export function mergeSettings(
     bookOfRecord: BookOfRecord;
     mirrorRealmId: string;
     cutoverDate: string;
+    accountOriginBackfilled: boolean;
   };
   if (patch["inventory_costing_method"] !== undefined) {
     const m = String(patch["inventory_costing_method"]).trim().toUpperCase() as InventoryCostingMethod;
@@ -224,6 +232,14 @@ CREATE TABLE IF NOT EXISTS account_settings (
 `;
 
 /**
+ * The account-origin backfill flag, on the settings row. A migration of its own
+ * for the same reason as SETTINGS_MIRROR_DDL: applied migrations are never edited.
+ */
+export const ACCOUNT_ORIGIN_FLAG_DDL = `
+ALTER TABLE account_settings ADD COLUMN IF NOT EXISTS account_origin_backfilled boolean NOT NULL DEFAULT false;
+`;
+
+/**
  * The mirror binding (book of record, pinned QuickBooks company, cutover date).
  * A migration of its own: migration 20 (SETTINGS_DDL above) is already applied
  * in production, and editing an applied migration's SQL is refused at boot as
@@ -242,6 +258,22 @@ export class PgSettingsStore implements SettingsStore {
   async migrate(): Promise<void> {
     await this.pool.query(SETTINGS_DDL);
     await this.pool.query(SETTINGS_MIRROR_DDL);
+    await this.pool.query(ACCOUNT_ORIGIN_FLAG_DDL);
+  }
+
+  /**
+   * Take the tenant's settings row lock for the rest of the transaction, creating
+   * the row if it is absent. The account-origin backfill holds it so two requests
+   * can't both run it. Must be called inside a transaction (runInTransaction).
+   */
+  async lockRow(tenant: string): Promise<void> {
+    await this.tx(tenant, async (db) => {
+      await db.query(
+        "INSERT INTO account_settings (tenant_id) VALUES ($1) ON CONFLICT (tenant_id) DO NOTHING",
+        [tenant],
+      );
+      await db.query("SELECT tenant_id FROM account_settings WHERE tenant_id = $1 FOR UPDATE", [tenant]);
+    });
   }
 
   private async tx<T>(tenant: string, fn: (db: Queryable) => Promise<T>): Promise<T> {
@@ -269,7 +301,7 @@ export class PgSettingsStore implements SettingsStore {
       const res = await db.query(
         `SELECT inventory_costing_method, base_currency, multi_currency_enabled,
                 retention_audit_days, retention_soft_delete_days,
-                book_of_record, mirror_realm_id, cutover_date
+                book_of_record, mirror_realm_id, cutover_date, account_origin_backfilled
          FROM account_settings WHERE tenant_id=$1`,
         [tenant],
       );
@@ -284,6 +316,7 @@ export class PgSettingsStore implements SettingsStore {
         bookOfRecord: (String(r["book_of_record"] ?? "rgnr8") === "quickbooks" ? "quickbooks" : "rgnr8"),
         mirrorRealmId: String(r["mirror_realm_id"] ?? ""),
         cutoverDate: String(r["cutover_date"] ?? ""),
+        accountOriginBackfilled: r["account_origin_backfilled"] === true || r["account_origin_backfilled"] === "t",
       };
     });
   }
@@ -294,8 +327,8 @@ export class PgSettingsStore implements SettingsStore {
         `INSERT INTO account_settings
            (tenant_id, inventory_costing_method, base_currency, multi_currency_enabled,
             retention_audit_days, retention_soft_delete_days,
-            book_of_record, mirror_realm_id, cutover_date)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            book_of_record, mirror_realm_id, cutover_date, account_origin_backfilled)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          ON CONFLICT (tenant_id) DO UPDATE SET
            inventory_costing_method=EXCLUDED.inventory_costing_method,
            base_currency=EXCLUDED.base_currency,
@@ -304,11 +337,12 @@ export class PgSettingsStore implements SettingsStore {
            retention_soft_delete_days=EXCLUDED.retention_soft_delete_days,
            book_of_record=EXCLUDED.book_of_record,
            mirror_realm_id=EXCLUDED.mirror_realm_id,
-           cutover_date=EXCLUDED.cutover_date`,
+           cutover_date=EXCLUDED.cutover_date,
+           account_origin_backfilled=EXCLUDED.account_origin_backfilled`,
         [
           tenant, s.inventoryCostingMethod, s.baseCurrency, s.multiCurrencyEnabled,
           s.retentionAuditDays, s.retentionSoftDeleteDays,
-          s.bookOfRecord, s.mirrorRealmId, s.cutoverDate,
+          s.bookOfRecord, s.mirrorRealmId, s.cutoverDate, s.accountOriginBackfilled,
         ],
       ),
     );

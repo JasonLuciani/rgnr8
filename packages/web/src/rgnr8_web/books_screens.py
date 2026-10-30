@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 
-from .components import card
+from .components import Action, card, form_section, status_chip
 from .csp import script_open
 from .parallel_run import form_label
 from .provenance_labels import Provenance, legend as prov_legend
@@ -272,19 +272,107 @@ def _signed_balances(tb: Mapping[str, object]) -> dict[str, int]:
     return out
 
 
+# A detail type and the account type it belongs to: the ledger's own table
+# (ledger-kernel types.ts). A type is never picked on its own; the detail type
+# sets it, so the form has one choice where the ledger has two that must agree.
+DETAIL_TYPES: dict[str, str] = {
+    "BANK": "ASSET", "ACCOUNTS_RECEIVABLE": "ASSET", "UNDEPOSITED_FUNDS": "ASSET",
+    "INVENTORY": "ASSET", "OTHER_CURRENT_ASSET": "ASSET", "FIXED_ASSET": "ASSET",
+    "ACCUMULATED_DEPRECIATION": "ASSET", "OTHER_ASSET": "ASSET",
+    "ACCOUNTS_PAYABLE": "LIABILITY", "CREDIT_CARD": "LIABILITY",
+    "SALES_TAX_PAYABLE": "LIABILITY", "OTHER_CURRENT_LIABILITY": "LIABILITY",
+    "LONG_TERM_LIABILITY": "LIABILITY",
+    "EQUITY": "EQUITY", "RETAINED_EARNINGS": "EQUITY",
+    "INCOME": "REVENUE", "OTHER_INCOME": "REVENUE",
+    "EXPENSE": "EXPENSE", "COST_OF_GOODS_SOLD": "EXPENSE", "OTHER_EXPENSE": "EXPENSE",
+}
+
+# Why an account can't be edited here. The ledger enforces these; the screen only
+# hides the actions and says why, so nobody is left guessing.
+_LOCK_SHORT = {"quickbooks": "In QuickBooks", "system": "System account"}
+_LOCK_WHY = {
+    "quickbooks": "This account is kept in QuickBooks until the cutover. Edit it there.",
+    "system": "The books depend on this account, so only its name can change here. Its type, "
+              "detail type and number stay, and it can't be made inactive.",
+}
+_LOCK_NOTE = (
+    "System accounts hold the books' control balances: you can rename them, but not change "
+    "their type, detail type or number, or make them inactive. Accounts from QuickBooks are "
+    "kept there until the cutover."
+)
+
+
+def _locked_by(a: Mapping[str, object]) -> str:
+    """The ledger's answer to "can this account be edited?": "quickbooks", "system", or ""."""
+    value = a.get("locked_by")
+    return str(value) if value in _LOCK_SHORT else ""
+
+
+def _descendant_codes(code: str, listed: Sequence[Mapping[str, object]]) -> set[str]:
+    """The codes below `code` in the chart: a parent can't be its own descendant."""
+    kids: dict[str, list[str]] = {}
+    for a in listed:
+        if a.get("parent_code") is not None:
+            kids.setdefault(str(a.get("parent_code")), []).append(str(a.get("code")))
+    out: set[str] = set()
+    stack = [code]
+    while stack:
+        for child in kids.get(stack.pop(), []):
+            if child not in out:
+                out.add(child)
+                stack.append(child)
+    return out
+
+
+def _row_actions(tenant: str, a: Mapping[str, object], *, can_edit: bool) -> str:
+    """The Edit / Inactivate (or Reactivate) actions for one account, or the reason
+    there are none. Empty when the viewer can't edit the chart at all."""
+    if not can_edit:
+        return ""
+    code = str(a.get("code"))
+    locked = _locked_by(a)
+    if locked == "quickbooks":
+        return (f'<span class="muted" title="{_esc(_LOCK_WHY[locked])}">'
+                f"{_esc(_LOCK_SHORT[locked])}</span>")
+    # A system account can be renamed (its form is the name alone), but nothing else.
+    label = "Rename" if locked == "system" else "Edit"
+    edit = (f'<a class="btn ghost" href="/t/{_esc(tenant)}/books/accounts/{_esc(code)}/edit">'
+            f"{label}</a>")
+    if locked == "system":
+        return (f'<span class="muted" title="{_esc(_LOCK_WHY[locked])}">'
+                f"{_esc(_LOCK_SHORT[locked])}</span> " + edit)
+    if a.get("active") is False:
+        toggle_label, flag = "Reactivate", "true"
+    else:
+        toggle_label, flag = "Inactivate", "false"
+    toggle = (f'<form method="post" '
+              f'action="/t/{_esc(tenant)}/books/accounts/{_esc(code)}/active">'
+              f'<input type="hidden" name="active" value="{flag}">'
+              f'<button class="btn ghost" type="submit">{toggle_label}</button></form>')
+    return edit + " " + toggle
+
+
 def render_chart_of_accounts(tenant: str, data: Mapping[str, object], *,
                              id_codes: frozenset[str] = frozenset(),
-                             tb: "Mapping[str, object] | None" = None) -> str:
+                             tb: "Mapping[str, object] | None" = None,
+                             can_edit: bool = False, show_inactive: bool = False,
+                             message: str = "", error: str = "") -> str:
     """The chart in statement order, sub-accounts indented under their parent.
     `tb` is the trial balance the balance column reads; without it the column
-    says "—" rather than a balance it doesn't have."""
-    listed = [a for a in _seq(data.get("accounts")) if isinstance(a, Mapping)]
+    says "—" rather than a balance it doesn't have.
+
+    Inactive accounts are hidden unless `show_inactive`. `can_edit` (the viewer
+    may change the chart) adds New account and the per-row actions; a locked
+    account gets the reason in place of its actions."""
+    everything = [a for a in _seq(data.get("accounts")) if isinstance(a, Mapping)]
+    inactive = [a for a in everything if a.get("active") is False]
+    listed = everything if show_inactive else [a for a in everything if a.get("active") is not False]
     arranged = arrange_accounts(listed, id_codes)
     balances = _signed_balances(tb) if tb is not None else None
     ccy = str(tb.get("currency", "USD")) if tb is not None else "USD"
     sign = {kind: s for kind, _heading, s in _TYPE_ORDER}
     # A chart with no real numbers at all drops the column rather than show it empty.
-    numbers = not listed or any(account_number(a.get("code"), id_codes) for a in listed)
+    numbers = not everything or any(account_number(a.get("code"), id_codes) for a in everything)
     rows = []
     for depth, a in arranged:
         code = _esc(a.get("code"))
@@ -295,29 +383,150 @@ def render_chart_of_accounts(tenant: str, data: Mapping[str, object], *,
         else:
             amount = _num(sign.get(str(a.get("type")), 1)
                           * balances.get(str(a.get("code")), 0), ccy)
+        chip = status_chip("Inactive") if a.get("active") is False else ""
+        row_actions = _row_actions(tenant, a, can_edit=can_edit)
         rows.append(
             f"<tr>{number}"
             f'<td{_indent(depth)}><a href="/t/{_esc(tenant)}/books/accounts/{code}">'
-            f"{_esc(_link_text(a, id_codes))}</a></td>"
+            f"{_esc(_link_text(a, id_codes))}</a> {chip}</td>"
             f"<td>{_esc(_TYPE_LABEL.get(str(a.get('type')), a.get('type')))}</td>"
             f'<td class="muted">{_esc(detail_type_label(a.get("subtype")))}</td>'
-            f"{amount}</tr>"
+            f"{amount}"
+            + (f'<td class="acts">{row_actions}</td>' if can_edit else "")
+            + "</tr>"
         )
-    cols = 4 + (1 if numbers else 0) + 1
+    cols = 4 + (1 if numbers else 0) + (1 if can_edit else 0) + 1
     empty = (
         f'<tr><td colspan="{cols}" class="empty">'
         "No accounts yet — this business's chart hasn't been set up.</td></tr>"
     )
+    head_actions = '<th class="acts"></th>' if can_edit else ""
     table = (
         '<div class="table-scroll"><table><thead><tr>'
         + ("<th>No.</th>" if numbers else "")
         + '<th>Account</th><th>Type</th><th>Detail type</th><th class="num">Balance</th>'
-        "</tr></thead><tbody>"
+        + head_actions
+        + "</tr></thead><tbody>"
         + ("".join(rows) or empty)
         + "</tbody></table></div>"
     )
-    return _card(f"Chart of Accounts ({len(rows)})", table,
-                 provenance=Provenance.POSTED if balances is not None else None)
+    banners = ""
+    if message:
+        banners += _banner("good", message)
+    if error:
+        banners += _banner("warn", error)
+    note = (f'<p class="note">{_esc(_LOCK_NOTE)}</p>' if can_edit
+            and any(_locked_by(a) for a in everything) else "")
+    card_actions: list[Action] = []
+    if can_edit:
+        card_actions.append(Action("New account", href=f"/t/{tenant}/books/accounts/new", kind=""))
+    if inactive and not show_inactive:
+        card_actions.append(Action(f"Show inactive ({len(inactive)})",
+                                   href=f"/t/{tenant}/books/accounts?inactive=1"))
+    elif show_inactive:
+        card_actions.append(Action("Hide inactive", href=f"/t/{tenant}/books/accounts"))
+    return _card(f"Chart of Accounts ({len(rows)})", banners + table + note,
+                 provenance=Provenance.POSTED if balances is not None else None,
+                 actions="".join(a.html() for a in card_actions))
+
+
+def _detail_type_options(selected: str) -> str:
+    """The detail types, grouped by the type they belong to."""
+    groups = []
+    for type_ in ("ASSET", "LIABILITY", "EQUITY", "REVENUE", "EXPENSE"):
+        opts = "".join(
+            f'<option value="{st}"{" selected" if st == selected else ""}>'
+            f"{_esc(detail_type_label(st))}</option>"
+            for st in DETAIL_TYPES if DETAIL_TYPES[st] == type_
+        )
+        groups.append(f'<optgroup label="{_esc(_TYPE_LABEL[type_])}">{opts}</optgroup>')
+    return "".join(groups)
+
+
+def render_account_form(
+    tenant: str, data: Mapping[str, object], *,
+    account: "Mapping[str, object] | None" = None,
+    id_codes: frozenset[str] = frozenset(),
+    error: str = "",
+) -> str:
+    """The form for a new account (`account` is None) or for editing one. A locked
+    account gets its reason and no form: the ledger would refuse the change anyway."""
+    everything = [a for a in _seq(data.get("accounts")) if isinstance(a, Mapping)]
+    banners = _banner("warn", error) if error else ""
+    if account is None:
+        title = "New account"
+        action = f"/t/{tenant}/books/accounts"
+        code, name, subtype = "", "", ""
+        parent_code = ""
+        same_type: str | None = None
+        excluded: set[str] = set()
+    else:
+        code = str(account.get("code"))
+        title = f"Edit account {code}"
+        action = f"/t/{tenant}/books/accounts/{code}/edit"
+        name = str(account.get("name") or "")
+        subtype = str(account.get("subtype") or "")
+        parent_code = str(account.get("parent_code") or "")
+        same_type = str(account.get("type") or "")
+        excluded = _descendant_codes(code, everything) | {code}
+        locked = _locked_by(account)
+        if locked == "quickbooks":
+            body = (banners + _banner("warn", _LOCK_WHY[locked])
+                    + f"<p><strong>{_esc(account_label(code, name, id_codes))}</strong> · "
+                    f"{_esc(detail_type_label(subtype))}</p>"
+                    f'<p><a href="/t/{_esc(tenant)}/books/accounts">Back to the chart</a></p>')
+            return _card(title, body)
+        if locked == "system":
+            # Only the name of a system account can change: the form is the name alone.
+            title = f"Rename account {code}"
+            body = (banners + _banner("warn", _LOCK_WHY["system"])
+                    + f'<form method="post" action="{_esc(action)}">'
+                    + form_section("Account", f'<div><label>Name</label><input name="name" '
+                                   f'required value="{_esc(name)}"></div>', cols="grid2")
+                    + '<p><button class="btn" type="submit">Save name</button> '
+                    f'<a class="btn ghost" href="/t/{_esc(tenant)}/books/accounts">Cancel</a></p>'
+                    "</form>")
+            return _card(title, body)
+
+    parents = ['<option value="">None (top level)</option>']
+    for a in sorted(everything, key=lambda a: account_order(
+            a.get("code"), a.get("name"), a.get("type"), id_codes, subtype=a.get("subtype"))):
+        pcode = str(a.get("code"))
+        if a.get("active") is False or pcode in excluded:
+            continue
+        if same_type is not None and str(a.get("type")) != same_type:
+            continue
+        sel = " selected" if pcode == parent_code else ""
+        parents.append(f'<option value="{_esc(pcode)}"{sel}>'
+                       f"{_esc(account_label(pcode, a.get('name'), id_codes))}</option>")
+
+    number_value = f' value="{_esc(code)}"' if account is not None else ""
+    fields_1 = (
+        f'<div><label>Number</label><input name="number" required{number_value} '
+        'placeholder="e.g. 6010"></div>'
+        f'<div><label>Name</label><input name="name" required value="{_esc(name)}" '
+        'placeholder="How it reads on the books"></div>'
+    )
+    blank = "" if account is not None else (
+        '<option value="" selected disabled>Choose one</option>')
+    fields_2 = (
+        '<div><label>Detail type</label>'
+        f'<select name="subtype" required>{blank}'
+        f"{_detail_type_options(subtype)}</select></div>"
+        '<div><label>Parent account</label>'
+        f'<select name="parent_code">{"".join(parents)}</select></div>'
+    )
+    why = ("The detail type decides the account's type (asset, liability and so on). "
+           "A sub-account must have the same type as its parent.")
+    form = (
+        f'<form method="post" action="{_esc(action)}">'
+        + form_section("Account", fields_1, cols="grid2")
+        + form_section("Classification", fields_2, why=why, cols="grid2")
+        + '<p><button class="btn" type="submit">Save account</button> '
+        f'<a class="btn ghost" href="/t/{_esc(tenant)}/books/accounts">Cancel</a></p>'
+        "</form>"
+    )
+    return _card(title, banners + form)
 
 
 # --- trial balance + post-entry form -----------------------------------------

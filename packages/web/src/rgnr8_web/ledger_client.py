@@ -683,14 +683,27 @@ class LedgerClient:
         return self._call("GET", f"/t/{tenant}/aging/{side}{qs}")
 
     def create_account(
-        self, tenant: str, code: str, name: str, *, subtype: str = "", type_: str = ""
+        self, tenant: str, code: str, name: str, *, subtype: str = "", type_: str = "",
+        parent_code: str = "",
     ) -> LedgerResponse:
         payload: dict[str, object] = {"code": code, "name": name}
         if subtype:
             payload["subtype"] = subtype
         if type_:
             payload["type"] = type_
+        if parent_code:
+            payload["parent_code"] = parent_code
         return self._call("POST", f"/t/{tenant}/accounts", payload)
+
+    def update_account(self, tenant: str, code: str, changes: Mapping[str, object]) -> LedgerResponse:
+        """PATCH one account: only the fields in `changes` are changed. `number`
+        renames the account code; `subtype` and `parent_code` take null to clear.
+        The ledger decides what is allowed and says why when it is not."""
+        return self._call("PATCH", f"/t/{tenant}/accounts/{urllib.parse.quote(code, safe='')}", dict(changes))
+
+    def set_account_active(self, tenant: str, code: str, active: bool) -> LedgerResponse:
+        """Inactivate (active=False) or reactivate (active=True) one account."""
+        return self.update_account(tenant, code, {"active": active})
 
     def seed_chart(self, tenant: str, category: str, *, currency: str = "USD") -> LedgerResponse:
         return self._call(

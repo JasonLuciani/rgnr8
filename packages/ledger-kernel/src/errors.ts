@@ -30,6 +30,14 @@ export class UnknownAccountError extends LedgerError {
   }
 }
 
+/** A line names an account that has been made inactive: it keeps its history but takes no new postings. */
+export class InactiveAccountError extends LedgerError {
+  override readonly name = "InactiveAccountError";
+  constructor(readonly accountId: AccountId, code: string) {
+    super(`Account ${code} is inactive and cannot receive postings`);
+  }
+}
+
 export class LineCurrencyError extends LedgerError {
   override readonly name = "LineCurrencyError";
   constructor(readonly accountId: AccountId, message: string) {

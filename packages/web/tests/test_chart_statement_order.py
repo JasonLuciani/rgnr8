@@ -60,7 +60,9 @@ ORDER_OF_TYPES = [
 
 
 def _names(html: str) -> list[str]:
-    return re.findall(r'books/accounts/[^"]+">([^<]+)</a>', html)
+    # The chart's own account links (an href with no further path): not the
+    # "New account" action, nor an account's Edit link.
+    return re.findall(r'books/accounts/(?!new")[^"/]+">([^<]+)</a>', html)
 
 
 # --- the one sort ------------------------------------------------------------------

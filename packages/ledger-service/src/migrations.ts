@@ -23,7 +23,7 @@
 
 import { runMigrations, type Migration, type SqlExecutor } from "@rgnr8/migrations";
 import { CLOSE_STATE_MIGRATIONS, FINANCIAL_PACKAGE_MIGRATIONS } from "@rgnr8/close";
-import { ACCOUNT_DDL, CORE_DDL } from "@rgnr8/ledger-postgres";
+import { ACCOUNT_DDL, ACCOUNT_ORIGIN_DDL, CORE_DDL } from "@rgnr8/ledger-postgres";
 import { DOCUMENT_DDL } from "./documents.js";
 import { RECON_DDL } from "./reconcile.js";
 import { FEED_DDL } from "./feed.js";
@@ -41,7 +41,7 @@ import { BILLING_DDL } from "./billing.js";
 import { INVENTORY_DDL } from "./inventory.js";
 import { CRM_DDL } from "./crm.js";
 import { CONSOLIDATION_DDL } from "./consolidation.js";
-import { SETTINGS_DDL, SETTINGS_MIRROR_DDL } from "./settings.js";
+import { ACCOUNT_ORIGIN_FLAG_DDL, SETTINGS_DDL, SETTINGS_MIRROR_DDL } from "./settings.js";
 import { DEBT_DDL } from "./debt.js";
 import { FIXED_ASSET_DDL } from "./fixedassets.js";
 import { rlsDdl } from "./security.js";
@@ -90,6 +90,12 @@ export function ledgerMigrations(opts: { enforceRls: boolean }): Migration[] {
     { version: 26, name: "mirror_open_items", sql: OPEN_ITEMS_DDL },
     { version: 27, name: "cutover_record", sql: CUTOVER_DDL },
     { version: 28, name: "mirror_bank_history", sql: BANK_HISTORY_DDL },
+    // Account origin (rgnr8 | quickbooks), which locks QuickBooks' chart while
+    // QuickBooks is the book of record. Schema only: the backfill for tenants that
+    // predate it runs per tenant, under that tenant's RLS context (accountOrigin.ts).
+    // A migration has no tenant bound, and under FORCE RLS it would see no rows.
+    { version: 29, name: "account_origin", sql: ACCOUNT_ORIGIN_DDL },
+    { version: 30, name: "account_origin_backfill_flag", sql: ACCOUNT_ORIGIN_FLAG_DDL },
   ];
   // RLS policies key on every tenant table, so they migrate last.
   if (opts.enforceRls) {

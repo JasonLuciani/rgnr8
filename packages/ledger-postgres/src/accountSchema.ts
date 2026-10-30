@@ -26,6 +26,15 @@ CREATE TABLE IF NOT EXISTS account (
 CREATE INDEX IF NOT EXISTS account_parent_idx ON account (tenant_id, parent_id);
 `;
 
+/**
+ * The account's origin (`rgnr8` or `quickbooks`), added after the table existed.
+ * Its own statement so the governed migration that adds it (the ledger
+ * service's version 29) and the store's test DDL run the same SQL.
+ */
+export const ACCOUNT_ORIGIN_DDL = `
+ALTER TABLE account ADD COLUMN IF NOT EXISTS origin text NOT NULL DEFAULT 'rgnr8';
+`;
+
 export const ACCOUNT_RLS_DDL = `
 ALTER TABLE account ENABLE ROW LEVEL SECURITY;
 ALTER TABLE account FORCE ROW LEVEL SECURITY;

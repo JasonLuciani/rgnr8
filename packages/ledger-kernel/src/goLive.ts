@@ -15,6 +15,7 @@ import {
   asTenantId,
   type Account,
   type AccountId,
+  type AccountOrigin,
   type Provenance,
   type TenantId,
 } from "./types.js";
@@ -137,8 +138,20 @@ function buildGoLiveChart(request: GoLiveRequest): { chart: ChartOfAccounts; cre
   const byCode = new Map(accounts.map((a) => [a.code, a]));
   const created: Account[] = [];
 
+  // An account brought over from QuickBooks is marked so its chart stays read-only
+  // while QuickBooks is the system of record (see AccountOrigin).
+  const origin: AccountOrigin = request.sourceSystem === "quickbooks" ? "quickbooks" : "rgnr8";
   for (const src of request.sourceAccounts) {
-    if (byCode.has(src.code)) continue; // template already has it
+    const existing = byCode.get(src.code);
+    if (existing !== undefined) {
+      // The template already has this code: it is the source's account too.
+      if (origin === "quickbooks" && existing.origin !== "quickbooks") {
+        const marked: Account = { ...existing, origin };
+        accounts[accounts.indexOf(existing)] = marked;
+        byCode.set(src.code, marked);
+      }
+      continue;
+    }
     const type = src.subtype ? accountTypeOfSubtype(src.subtype) : src.type;
     if (type === undefined) {
       throw new CutoverError(`source account ${src.code} has neither a subtype nor a type`);
@@ -151,6 +164,7 @@ function buildGoLiveChart(request: GoLiveRequest): { chart: ChartOfAccounts; cre
       currency: request.currency,
       ...(src.subtype ? { subtype: src.subtype } : {}),
       active: true,
+      origin,
     };
     accounts.push(account);
     byCode.set(src.code, account);

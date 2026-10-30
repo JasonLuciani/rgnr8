@@ -17,6 +17,11 @@ export {
   asAccountId,
   asIdempotencyKey,
   asPeriodKey,
+  isSystemAccount,
+  SYSTEM_SUBTYPES,
+  OPENING_BALANCE_EQUITY_NAME,
+  OPENING_BALANCE_EQUITY_CODE,
+  type AccountOrigin,
   type Account,
   type AccountId,
   type TenantId,
@@ -34,7 +39,7 @@ export {
   type EntryStatus,
 } from "./types.js";
 
-export { ChartOfAccounts } from "./chartOfAccounts.js";
+export { ChartOfAccounts, parentsFirst } from "./chartOfAccounts.js";
 export {
   BusinessCategory,
   buildChartForCategory,
@@ -122,6 +127,7 @@ export {
   UnbalancedEntryError,
   NonPositiveAmountError,
   UnknownAccountError,
+  InactiveAccountError,
   LineCurrencyError,
   PeriodClosedError,
   DuplicateIdempotencyKeyError,

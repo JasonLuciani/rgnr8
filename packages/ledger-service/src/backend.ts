@@ -57,6 +57,7 @@ import {
 } from "./inventory.js";
 import { InMemoryCrmStore, PgCrmStore, type CrmStore } from "./crm.js";
 import { InMemorySettingsStore, PgSettingsStore, type SettingsStore } from "./settings.js";
+import { backfillAccountOrigin } from "./accountOrigin.js";
 import { InMemoryOpenItemsStore, PgOpenItemsStore, type OpenItemsStore } from "./openItems.js";
 import { InMemoryBankHistoryStore, PgBankHistoryStore, type BankHistoryStore } from "./bankHistory.js";
 import { InMemoryCutoverStore, PgCutoverStore, type CutoverStore } from "./cutover.js";
@@ -164,6 +165,12 @@ export interface LedgerBackend {
   atomicGoLive?<T>(
     run: (store: LedgerStore, periods: PeriodStore, chartStore: ChartStore) => Promise<T>,
   ): Promise<T>;
+  /**
+   * Run the one-time account-origin backfill for a tenant, if it hasn't run.
+   * Called before any chart read or write, so every chart the service sees has
+   * recorded origins. See accountOrigin.ts.
+   */
+  ensureAccountOrigin(tenant: TenantId): Promise<void>;
   /** Create/verify schema. Safe to run repeatedly. */
   migrate(): Promise<void>;
   /** A readiness probe: true when the store is reachable (for /ready). */
@@ -353,6 +360,18 @@ export class InMemoryBackend implements LedgerBackend {
     return this.closeStateStore;
   }
 
+  async ensureAccountOrigin(tenant: TenantId): Promise<void> {
+    await backfillAccountOrigin({
+      settings: this.settingsStore,
+      store: this.store(tenant),
+      markAllQuickBooks: () => {
+        const m = this.accountMap(tenant);
+        for (const [id, a] of m) m.set(id, { ...a, origin: "quickbooks" });
+        return Promise.resolve();
+      },
+    }, tenant);
+  }
+
   async migrate(): Promise<void> {
     await this.docs.migrate();
     await this.reconStore.migrate();
@@ -460,6 +479,20 @@ export class PostgresBackend implements LedgerBackend {
     this.fixedAssetStore = new PgFixedAssetStore(pool);
     this.packageStore = new SqlFinancialPackageStore(pool);
     this.closeStateStore = new SqlCloseStateStore(pool);
+  }
+
+  async ensureAccountOrigin(tenant: TenantId): Promise<void> {
+    // One transaction, holding the tenant's settings row lock: a second request
+    // waits here, then finds the flag set and does nothing.
+    await runInTransaction(this.pool, async (txPool) => {
+      const settings = new PgSettingsStore(txPool);
+      await settings.lockRow(tenant);
+      await backfillAccountOrigin({
+        settings,
+        store: new PgLedgerStore(txPool),
+        markAllQuickBooks: () => new PgAccountStore(txPool).markAllQuickBooks(tenant),
+      }, tenant);
+    });
   }
 
   async migrate(): Promise<void> {

@@ -107,6 +107,7 @@ from .csp import new_nonce as _csp_new_nonce
 from .books_screens import money as _dollars
 from .books_screens import (
     account_label,
+    render_account_form,
     render_books_home,
     render_books_statements,
     render_chart_of_accounts,
@@ -538,6 +539,13 @@ def _line_memo(name: str, memo: str) -> str:
     if name and memo:
         return f"{name}: {memo}"
     return name or memo
+
+
+def _seq_of(value: object) -> "list[dict[str, object]]":
+    """The dict rows of a ledger list, skipping anything malformed."""
+    if not isinstance(value, list):
+        return []
+    return [row for row in value if isinstance(row, dict)]
 
 
 def _qs_escape(text: str) -> str:
@@ -1891,10 +1899,33 @@ class WebApp:
                 and parts[3] == "trial-balance"):
             return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
                                  lambda t: self._books_trial_balance_page(subject, t))
+        # /t/<tenant>/books/accounts (POST) -> create an account
+        if (len(parts) == 4 and parts[0] == "t" and parts[2] == "books"
+                and parts[3] == "accounts" and req.method == "POST"):
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._books_account_create(subject, t, req.body))
+        # /t/<tenant>/books/accounts/new -> the new-account form
+        if (len(parts) == 5 and parts[0] == "t" and parts[2] == "books"
+                and parts[3] == "accounts" and parts[4] == "new" and req.method == "GET"):
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._books_account_form(subject, t, None, req.query))
+        # /t/<tenant>/books/accounts/<code>/edit -> the edit form (GET) or save it (POST)
+        if (len(parts) == 6 and parts[0] == "t" and parts[2] == "books"
+                and parts[3] == "accounts" and parts[5] == "edit"):
+            if req.method == "POST":
+                return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                     lambda t: self._books_account_edit(subject, t, parts[4], req.body))
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._books_account_form(subject, t, parts[4], req.query))
+        # /t/<tenant>/books/accounts/<code>/active (POST) -> inactivate or reactivate
+        if (len(parts) == 6 and parts[0] == "t" and parts[2] == "books"
+                and parts[3] == "accounts" and parts[5] == "active" and req.method == "POST"):
+            return self._require(subject, token_tenant, parts[1], P.POST_JOURNAL,
+                                 lambda t: self._books_account_active(subject, t, parts[4], req.body))
         # /t/<tenant>/books/accounts -> chart of accounts
         if len(parts) == 4 and parts[0] == "t" and parts[2] == "books" and parts[3] == "accounts":
             return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
-                                 lambda t: self._books_accounts_page(subject, t))
+                                 lambda t: self._books_accounts_page(subject, t, req.query))
         # /t/<tenant>/books/statements -> P&L + balance sheet from posted books
         if len(parts) == 4 and parts[0] == "t" and parts[2] == "books" and parts[3] == "statements":
             return self._require(subject, token_tenant, parts[1], P.VIEW_TRANSACTIONS,
@@ -2748,7 +2779,7 @@ class WebApp:
         return self._shell(subject, t, "books", render_trial_balance(
             t.tenant_id, res.body, id_codes=self._id_codes(t)))
 
-    def _books_accounts_page(self, subject: str, t: _Tenant) -> Response:
+    def _books_accounts_page(self, subject: str, t: _Tenant, query: "dict[str, str]") -> Response:
         if self._ledger is None:
             return self._shell(subject, t, "books", render_books_unavailable())
         res = self._ledger.accounts(t.tenant_id)
@@ -2757,9 +2788,77 @@ class WebApp:
         # The balance column reads the trial balance; if that can't be read the
         # column says so rather than the page failing.
         tb = self._ledger.trial_balance(t.tenant_id)
+        perms, _role = self._perms_role(subject, t.tenant_id)
+        can_edit = self._policy is None or Permission.POST_JOURNAL in perms
         return self._shell(subject, t, "books", render_chart_of_accounts(
             t.tenant_id, res.body, id_codes=self._id_codes(t),
-            tb=tb.body if tb.ok else None))
+            tb=tb.body if tb.ok else None, can_edit=can_edit,
+            show_inactive=query.get("inactive") == "1",
+            message=query.get("ok", ""), error=query.get("err", "")))
+
+    def _books_account_form(self, subject: str, t: _Tenant, code: "str | None",
+                            query: "dict[str, str]") -> Response:
+        if self._ledger is None:
+            return self._shell(subject, t, "books", render_books_unavailable())
+        res = self._ledger.accounts(t.tenant_id)
+        if not res.ok:
+            return self._shell(subject, t, "books", render_books_unavailable(res.error()))
+        account = None
+        if code is not None:
+            account = next((a for a in _seq_of(res.body.get("accounts"))
+                            if str(a.get("code")) == code), None)
+            if account is None:
+                return self._shell(subject, t, "books",
+                                   render_books_unavailable(f"There is no account {code} in the chart."))
+        return self._shell(subject, t, "books", render_account_form(
+            t.tenant_id, res.body, account=account, id_codes=self._id_codes(t),
+            error=query.get("err", "")))
+
+    def _books_account_create(self, subject: str, t: _Tenant, body: str) -> Response:
+        if self._ledger is None:
+            return _redirect(f"/t/{t.tenant_id}/books/accounts?err=No+ledger+service+configured")
+        data = self._form_or_json(body)
+        number = str(data.get("number", "")).strip()
+        res = self._ledger.create_account(
+            t.tenant_id, number, str(data.get("name", "")).strip(),
+            subtype=str(data.get("subtype", "")).strip(),
+            parent_code=str(data.get("parent_code", "")).strip(),
+        )
+        if not res.ok:
+            return _redirect(f"/t/{t.tenant_id}/books/accounts/new?err={_qs_escape(res.error())}")
+        return _redirect(f"/t/{t.tenant_id}/books/accounts?ok={_qs_escape(f'Added account {number}.')}")
+
+    def _books_account_edit(self, subject: str, t: _Tenant, code: str, body: str) -> Response:
+        if self._ledger is None:
+            return _redirect(f"/t/{t.tenant_id}/books/accounts?err=No+ledger+service+configured")
+        # Blank fields are kept: clearing a parent sends an empty parent_code, and
+        # that must reach the ledger rather than vanish as "not sent".
+        data: dict[str, object] = {k: v[0] for k, v in parse_qs(body, keep_blank_values=True).items()}
+        # Only the fields the form sent are changed; the ledger decides the rest.
+        changes: dict[str, object] = {}
+        if "name" in data:
+            changes["name"] = str(data["name"]).strip()
+        if "number" in data:
+            changes["number"] = str(data["number"]).strip()
+        if "subtype" in data:
+            changes["subtype"] = str(data["subtype"]).strip() or None
+        if "parent_code" in data:
+            changes["parent_code"] = str(data["parent_code"]).strip() or None
+        res = self._ledger.update_account(t.tenant_id, code, changes)
+        back = f"/t/{t.tenant_id}/books/accounts/{quote(code, safe='')}/edit"
+        if not res.ok:
+            return _redirect(f"{back}?err={_qs_escape(res.error())}")
+        return _redirect(f"/t/{t.tenant_id}/books/accounts?ok={_qs_escape(f'Saved account {code}.')}")
+
+    def _books_account_active(self, subject: str, t: _Tenant, code: str, body: str) -> Response:
+        if self._ledger is None:
+            return _redirect(f"/t/{t.tenant_id}/books/accounts?err=No+ledger+service+configured")
+        active = str(self._form_or_json(body).get("active", "")).strip().lower() == "true"
+        res = self._ledger.set_account_active(t.tenant_id, code, active)
+        if not res.ok:
+            return _redirect(f"/t/{t.tenant_id}/books/accounts?err={_qs_escape(res.error())}")
+        verb = "Reactivated" if active else "Inactivated"
+        return _redirect(f"/t/{t.tenant_id}/books/accounts?ok={_qs_escape(f'{verb} account {code}.')}")
 
     def _books_register_page(self, subject: str, t: _Tenant, code: str) -> Response:
         if self._ledger is None:

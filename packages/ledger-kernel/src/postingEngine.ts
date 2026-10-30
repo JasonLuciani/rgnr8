@@ -5,6 +5,7 @@ import { InMemoryPeriodStore } from "./periods.js";
 import { validateAndBuildLines } from "./journal.js";
 import {
   DuplicateIdempotencyKeyError,
+  InactiveAccountError,
   PeriodClosedError,
   UnknownEntryError,
 } from "./errors.js";
@@ -107,6 +108,12 @@ export class PostingEngine {
       } as PostedLine),
     );
     const memo = opts.memo ?? `Reversal of ${original.id}`;
+
+    // A reversal is a posting too: it may not put a line on an inactive account.
+    for (const l of original.lines) {
+      const account = this.coa.get(l.accountId);
+      if (account?.active === false) throw new InactiveAccountError(l.accountId, account.code);
+    }
 
     // Idempotent replay: a matching key returns the original reversal; a divergent
     // payload on the same key is a caller bug and is rejected — the same guard

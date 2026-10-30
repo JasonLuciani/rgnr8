@@ -17,7 +17,7 @@ from dataclasses import dataclass
 # The schema level this web app needs from the ledger: the highest table
 # migration in packages/ledger-service/src/migrations.ts. A test reads that file
 # and fails when a new migration lands without this being raised to match.
-EXPECTED_LEDGER_SCHEMA = 28
+EXPECTED_LEDGER_SCHEMA = 30
 
 
 @dataclass(frozen=True, slots=True)

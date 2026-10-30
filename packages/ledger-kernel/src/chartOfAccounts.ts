@@ -12,6 +12,28 @@ import { accountTypeOfSubtype, type Account, type AccountId } from "./types.js";
  * account's `active` flag (history is never removed — accounts are made inactive,
  * not deleted).
  */
+/**
+ * The accounts ordered so every parent comes before its children. A chart
+ * persisted in a database can come back in any row order (an update moves a row),
+ * and the {@link ChartOfAccounts} constructor needs each parent registered first.
+ * Accounts whose parent is missing keep their place at the end; the constructor
+ * then reports the dangling reference.
+ */
+export function parentsFirst(accounts: readonly Account[]): Account[] {
+  const byId = new Map(accounts.map((a) => [a.id, a]));
+  const placed = new Set<AccountId>();
+  const out: Account[] = [];
+  const place = (a: Account, trail: Set<AccountId>): void => {
+    if (placed.has(a.id) || trail.has(a.id)) return;
+    const parent = a.parentId !== undefined ? byId.get(a.parentId) : undefined;
+    if (parent !== undefined) place(parent, new Set([...trail, a.id]));
+    placed.add(a.id);
+    out.push(a);
+  };
+  for (const a of accounts) place(a, new Set());
+  return out;
+}
+
 export class ChartOfAccounts {
   private readonly byId = new Map<AccountId, Account>();
   private readonly byCode = new Map<string, Account>();
