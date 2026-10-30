@@ -25,26 +25,45 @@ impossible to get subtly wrong per screen.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+import re
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from html import escape
+from math import ceil
+from urllib.parse import urlencode
 
 from .provenance_labels import Provenance
 from .provenance_labels import badge as prov_badge
 
 __all__ = [
     "Action",
+    "BarSegment",
+    "Cell",
+    "Column",
+    "FilterChip",
+    "Page",
+    "SortState",
     "TimelineEntry",
     "alloc_editor",
     "card",
+    "data_table",
+    "drawer",
+    "drawer_trigger",
     "empty_row",
     "empty_state",
+    "form_shell",
     "form_section",
     "metric",
+    "money_bar",
+    "page_from_query",
     "page_header",
     "queue",
+    "sort_from_query",
+    "split_button",
+    "status",
     "status_chip",
     "timeline",
+    "visible_columns",
 ]
 
 
@@ -343,3 +362,476 @@ def timeline(entries: Sequence[TimelineEntry]) -> str:
         for e in entries
     ]
     return '<ol class="timeline">' + "".join(rows) + "</ol>"
+
+
+# === design system: tables, money bars, drawers, split buttons, status, forms ===
+#
+# Everything below is driven by query-string state, so a sorted, filtered, paged
+# or re-columned table is a plain link that can be bookmarked and shared, and
+# works with JavaScript off. Query keys used by `data_table` and `money_bar`:
+#
+#   sort=<column key>   dir=asc|desc        sort order (toggled by the header)
+#   c_<column key>=1    cols=1              the column gear (cols=1 marks a submitted gear)
+#   page=<n>                                paging
+#   <any filter key>=<value>                money bar segments and filter chips
+#
+# Callers own the business filtering and the query parsing for their own keys;
+# this module only builds links and renders.
+
+
+# --- status ------------------------------------------------------------------
+
+_TONE_GLYPH: dict[str, str] = {
+    "ok": "✓",       # ✓
+    "warn": "◆",     # ◆
+    "bad": "▲",      # ▲
+    "info": "●",     # ●
+    "neutral": "–",  # –
+}
+
+
+def _tone(tone: str) -> str:
+    """An unknown tone is neutral, never a guessed colour (see `status_chip`)."""
+    return tone if tone in _TONE_GLYPH else "neutral"
+
+
+def status(label: str, tone: str = "neutral") -> str:
+    """A status as glyph + text. Colour is the second cue, never the only one."""
+    t = _tone(tone)
+    return (
+        f'<span class="stat tone-{t}"><span aria-hidden="true">{_TONE_GLYPH[t]}</span>'
+        f" {escape(label)}</span>"
+    )
+
+
+# --- query helpers -----------------------------------------------------------
+
+
+def _link(base: str, query: Mapping[str, str] | None,
+          changes: Mapping[str, str | None] | None = None) -> str:
+    """`base` with `query` plus `changes`; a None change removes that key."""
+    merged: dict[str, str] = dict(query or {})
+    for key, value in (changes or {}).items():
+        if value is None:
+            merged.pop(key, None)
+        else:
+            merged[key] = value
+    merged = {k: v for k, v in merged.items() if v != ""}
+    qs = urlencode(merged)
+    return f"{base}?{qs}" if qs else base
+
+
+def _attr(value: str) -> str:
+    return escape(value, quote=True)
+
+
+@dataclass(frozen=True, slots=True)
+class SortState:
+    key: str
+    desc: bool = False
+
+
+def sort_from_query(query: Mapping[str, str], columns: Sequence["Column"]) -> SortState | None:
+    """The sort the query asks for, if it names a sortable column."""
+    key = query.get("sort", "")
+    if key not in {c.key for c in columns if c.sortable}:
+        return None
+    return SortState(key, desc=query.get("dir") == "desc")
+
+
+@dataclass(frozen=True, slots=True)
+class Page:
+    number: int = 1
+    size: int = 50
+
+
+def page_from_query(query: Mapping[str, str], size: int = 50) -> Page:
+    """`?page=n`, read leniently: a garbage page is page one."""
+    try:
+        number = int(query.get("page", "1"))
+    except ValueError:
+        number = 1
+    return Page(max(1, number), size)
+
+
+# --- data table --------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Column:
+    """One column of a `data_table`.
+
+    `money` implies `numeric`: the figure is right-aligned and a negative one
+    takes the shared `.neg` colour. `hidden` columns are off until the column
+    gear turns them on. `sortable` makes the header a sort link.
+    """
+
+    key: str
+    label: str
+    numeric: bool = False
+    money: bool = False
+    sortable: bool = False
+    hidden: bool = False
+
+    @property
+    def right(self) -> bool:
+        return self.numeric or self.money
+
+
+@dataclass(frozen=True, slots=True)
+class Cell:
+    """One table cell.
+
+    `text` is shown escaped. `html`, when given, is markup the caller built and
+    escaped, and it replaces `text`. `sort` is the value the column sorts by;
+    it defaults to `text`, so a money cell should carry the minor-unit integer.
+    """
+
+    text: str = ""
+    html: str = ""
+    sort: object = None
+    neg: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class FilterChip:
+    """An active filter: the query key it lives under and what to call it."""
+
+    key: str
+    label: str
+
+
+def visible_columns(columns: Sequence[Column], query: Mapping[str, str]) -> list[Column]:
+    """The columns the query shows. Without a gear submission, the non-hidden ones.
+
+    A column with no label (a row's actions, say) is not something the gear can
+    name, so it is always shown and never dropped by a submission.
+    """
+    if "cols" in query:
+        chosen = [c for c in columns if not c.label or query.get(f"c_{c.key}") == "1"]
+        if any(c.label for c in chosen):
+            return chosen
+    return [c for c in columns if not c.hidden]
+
+
+def _as_cell(value: object) -> Cell:
+    if isinstance(value, Cell):
+        return value
+    return Cell(text="" if value is None else str(value))
+
+
+def _sort_value(cell: Cell) -> tuple[int, float, str]:
+    v = cell.sort if cell.sort is not None else cell.text
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return (0, float(v), "")
+    return (1, 0.0, str(v).casefold())
+
+
+def _sorted(rows: Sequence[Mapping[str, object]], sort: SortState | None) -> list[Mapping[str, object]]:
+    if sort is None:
+        return list(rows)
+
+    def key(row: Mapping[str, object]) -> tuple[int, float, str]:
+        raw = row.get(sort.key)
+        return _sort_value(_as_cell(raw)) if raw is not None else (2, 0.0, "")
+
+    return sorted(rows, key=key, reverse=sort.desc)
+
+
+def _header(col: Column, sort: SortState | None, base: str,
+            query: Mapping[str, str]) -> str:
+    cls = ' class="num"' if col.right else ""
+    if not col.sortable:
+        return f'<th scope="col"{cls}>{escape(col.label)}</th>'
+    if sort is not None and sort.key == col.key:
+        aria = "descending" if sort.desc else "ascending"
+        glyph = "▼" if sort.desc else "▲"  # ▼ / ▲
+        nxt = "asc" if sort.desc else "desc"
+    else:
+        aria = "none"
+        glyph = "↕"  # ↕
+        nxt = "asc"
+    href = _link(base, query, {"sort": col.key, "dir": nxt, "page": None})
+    return (
+        f'<th scope="col"{cls} aria-sort="{aria}">'
+        f'<a class="dt-sort" href="{_attr(href)}">{escape(col.label)} '
+        f'<span aria-hidden="true">{glyph}</span></a></th>'
+    )
+
+
+def _chips(filters: Sequence[FilterChip], base: str, query: Mapping[str, str]) -> str:
+    if not filters:
+        return ""
+    items = []
+    for f in filters:
+        remove = _link(base, query, {f.key: None, "page": None})
+        items.append(
+            f'<span class="dt-chip">{escape(f.label)} '
+            f'<a href="{_attr(remove)}" aria-label="Remove filter {_attr(f.label)}">×</a></span>'
+        )
+    clear_changes: dict[str, str | None] = {f.key: None for f in filters}
+    clear_changes["page"] = None
+    clear = _link(base, query, clear_changes)
+    return (
+        '<div class="dt-chips" role="group" aria-label="Active filters">'
+        + "".join(items)
+        + f'<a class="dt-clear" href="{_attr(clear)}">Clear all</a></div>'
+    )
+
+
+def _gear(columns: Sequence[Column], shown: Sequence[Column], base: str,
+          query: Mapping[str, str]) -> str:
+    """The column menu: a disclosure of checkboxes that submits a GET form.
+
+    The form carries the rest of the query (sort, filters) back as hidden
+    fields and drops paging, since a different column set can change the pages.
+    """
+    keep = {k: v for k, v in query.items()
+            if k not in ("page", "cols") and not k.startswith("c_")}
+    hidden = "".join(
+        f'<input type="hidden" name="{_attr(k)}" value="{_attr(v)}">' for k, v in keep.items()
+    )
+    on = {c.key for c in shown}
+    boxes = "".join(
+        f'<label class="rg-check"><input type="checkbox" name="c_{_attr(c.key)}" value="1"'
+        f'{" checked" if c.key in on else ""}> {escape(c.label)}</label>'
+        for c in columns if c.label
+    )
+    return (
+        '<details class="dt-gear"><summary>Columns</summary>'
+        f'<form method="get" action="{_attr(base)}" class="dt-gear-form">{hidden}'
+        '<input type="hidden" name="cols" value="1">'
+        f'<div class="dt-gear-list">{boxes}</div>'
+        '<button class="btn ghost" type="submit">Show these columns</button></form></details>'
+    )
+
+
+def data_table(
+    columns: Sequence[Column],
+    rows: Sequence[Mapping[str, object]],
+    *,
+    sort: SortState | None = None,
+    filters: Sequence[FilterChip] = (),
+    page: Page | None = None,
+    empty: str = "Nothing to show yet.",
+    empty_how: str = "",
+    totals: Mapping[str, object] | None = None,
+    base: str = "",
+    query: Mapping[str, str] | None = None,
+    gear: bool = True,
+) -> str:
+    """A table with server-side sort, paging, filter chips and a column gear.
+
+    `rows` maps column key to a `Cell` (or plain text). Sorting happens here, on
+    `Cell.sort`, before paging, so the caller passes rows in any order. `base`
+    is the path the links point at and `query` is the request's query string;
+    every link keeps the rest of that query, so sort, filters and columns
+    survive a click. `totals`, when given, is a footer keyed by column; the
+    first column is labelled "Total" unless it has its own entry.
+    """
+    q: dict[str, str] = dict(query or {})
+    shown = visible_columns(columns, q)
+    ordered = _sorted(rows, sort)
+    size = page.size if page is not None else max(1, len(ordered))
+
+    pages = max(1, ceil(len(ordered) / size))
+    number = min(max(1, page.number if page is not None else 1), pages)
+    start = (number - 1) * size
+    window = ordered[start:start + size]
+
+    head = "".join(_header(c, sort, base, q) for c in shown)
+
+    body_rows: list[str] = []
+    for row in window:
+        tds = []
+        for col in shown:
+            cell = _as_cell(row.get(col.key))
+            text = cell.html or escape(cell.text)
+            classes = []
+            if col.right:
+                classes.append("num")
+            if cell.neg or (col.money and cell.text.startswith("-")):
+                classes.append("neg")
+            cls = f' class="{" ".join(classes)}"' if classes else ""
+            tds.append(f"<td{cls}>{text}</td>")
+        body_rows.append("<tr>" + "".join(tds) + "</tr>")
+
+    if not window:
+        actions: tuple[Action, ...] = ()
+        if filters:
+            clear_changes: dict[str, str | None] = {f.key: None for f in filters}
+            clear_changes["page"] = None
+            actions = (Action("Clear filters", href=_link(base, q, clear_changes)),)
+        how = empty_how or ("Clear the filter to see every row." if filters else "")
+        body_rows.append(
+            f'<tr><td class="empty" colspan="{max(1, len(shown))}">'
+            f"{empty_state(empty, how=how, actions=actions)}</td></tr>"
+        )
+
+    foot = ""
+    if totals is not None:
+        cells = []
+        for i, col in enumerate(shown):
+            if col.key in totals:
+                tc = _as_cell(totals[col.key])
+                text = tc.html or escape(tc.text)
+            elif i == 0:
+                text = "Total"
+            else:
+                text = ""
+            cls = ' class="num"' if col.right else ""
+            cells.append(f"<td{cls}>{text}</td>")
+        foot = f'<tfoot><tr class="dt-total">{"".join(cells)}</tr></tfoot>'
+
+    pager = ""
+    if pages > 1:
+        last_shown = min(start + size, len(ordered))
+        prev_page = str(number - 1) if number - 1 > 1 else None
+        prev = (f'<a href="{_attr(_link(base, q, {"page": prev_page}))}">‹ Previous</a>'
+                if number > 1 else '<span class="dt-dis" aria-disabled="true">‹ Previous</span>')
+        nxt = (f'<a href="{_attr(_link(base, q, {"page": str(number + 1)}))}">Next ›</a>'
+               if number < pages else '<span class="dt-dis" aria-disabled="true">Next ›</span>')
+        pager = (
+            '<nav class="dt-pager" aria-label="Pages">'
+            f"<span>Showing {start + 1}–{last_shown} of {len(ordered)}</span>{prev}"
+            f"<span>Page {number} of {pages}</span>{nxt}</nav>"
+        )
+
+    toolbar_bits = _chips(filters, base, q)
+    if gear and any(c.label for c in columns):
+        toolbar_bits += _gear(columns, shown, base, q)
+    toolbar = f'<div class="dt-bar">{toolbar_bits}</div>' if toolbar_bits else ""
+
+    return (
+        toolbar
+        + '<div class="table-scroll"><table><thead><tr>' + head + "</tr></thead>"
+        + "<tbody>" + "".join(body_rows) + "</tbody>" + foot + "</table></div>"
+        + pager
+    )
+
+
+# --- money bar ---------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class BarSegment:
+    """One bucket of a money bar: what it is, how much, how many, and its tone."""
+
+    key: str
+    label: str
+    amount: str
+    count: int
+    tone: str = "neutral"
+
+
+def money_bar(
+    segments: Sequence[BarSegment],
+    *,
+    base: str = "",
+    query: Mapping[str, str] | None = None,
+    param: str = "status",
+    unit: tuple[str, str] = ("item", "items"),
+    label: str = "Filter by status",
+) -> str:
+    """Buckets that each filter the table below them.
+
+    Each segment links to the same page with `param` set to its key, and
+    clicking the active segment clears it. The active one carries
+    `aria-current` and a visible "Showing" marker, not only a colour.
+    """
+    q: dict[str, str] = dict(query or {})
+    active = q.get(param, "")
+    cells = []
+    for seg in segments:
+        on = seg.key == active
+        href = _link(base, q, {param: None if on else seg.key, "page": None})
+        t = _tone(seg.tone)
+        noun = unit[0] if seg.count == 1 else unit[1]
+        neg = " neg" if seg.amount.startswith("-") else ""
+        aria = ' aria-current="true"' if on else ""
+        marker = '<span class="mb-on">Showing</span>' if on else ""
+        cells.append(
+            f'<a class="mb-seg tone-{t}{" on" if on else ""}" href="{_attr(href)}"{aria}>'
+            f'<span class="mb-label">{escape(seg.label)}</span>'
+            f'<span class="mb-amt{neg}">{escape(seg.amount)}</span>'
+            f'<span class="mb-count">{seg.count} {noun}</span>{marker}</a>'
+        )
+    return f'<nav class="money-bar" aria-label="{_attr(label)}">' + "".join(cells) + "</nav>"
+
+
+# --- drawer ------------------------------------------------------------------
+
+_ID_RE = re.compile(r"^[A-Za-z][\w-]*$")
+
+
+def drawer(id: str, title: str, body: str) -> str:
+    """A side panel that is hidden until its link is followed.
+
+    It uses the `:target` pattern: `drawer_trigger(id, ...)` links to `#id`, the
+    browser targets the panel, and the Close link goes back to `#`. No script is
+    involved, so it works under the CSP as it stands and from the keyboard.
+    """
+    if not _ID_RE.match(id):
+        raise ValueError(f"drawer id must be a plain token, got {id!r}")
+    did = _attr(id)
+    return (
+        f'<aside class="drawer" id="{did}" aria-labelledby="{did}-title" tabindex="-1">'
+        '<div class="drawer-panel"><div class="drawer-head">'
+        f'<h2 id="{did}-title">{escape(title)}</h2>'
+        '<a class="btn ghost" href="#">Close</a></div>'
+        f'<div class="drawer-body">{body}</div></div></aside>'
+    )
+
+
+def drawer_trigger(id: str, label: str, *, kind: str = "ghost") -> str:
+    """The link that opens `drawer(id, ...)`."""
+    if not _ID_RE.match(id):
+        raise ValueError(f"drawer id must be a plain token, got {id!r}")
+    return Action(label, href=f"#{id}", kind=kind).html()
+
+
+# --- split button ------------------------------------------------------------
+
+
+def split_button(primary: Action, more: Sequence[Action] = ()) -> str:
+    """The main action, with a disclosure of related ones beside it."""
+    if not more:
+        return primary.html()
+    items = "".join(f'<div class="split-item">{a.html()}</div>' for a in more)
+    return (
+        '<div class="split">' + primary.html()
+        + '<details class="split-more">'
+        + f'<summary class="btn ghost" aria-label="More actions for {_attr(primary.label)}">▾</summary>'
+        + f'<div class="split-menu">{items}</div></details></div>'
+    )
+
+
+# --- form shell --------------------------------------------------------------
+
+
+def form_shell(
+    title: str,
+    body: str,
+    *,
+    primary: Action,
+    secondary: Sequence[Action] = (),
+    aside: str = "",
+    sub: str = "",
+    action: str = "",
+) -> str:
+    """The one layout for a transaction form: header, body, a sticky footer.
+
+    The footer holds `secondary` (for example Save and new, Cancel) and then
+    `primary` (Save) on the right. `body` holds the field grids and must not
+    contain its own submit button. `aside` is optional side notes, shown
+    under the body on a narrow screen.
+    """
+    side = f'<aside class="form-aside">{aside}</aside>' if aside else ""
+    foot = "".join(a.html() for a in secondary) + primary.html()
+    return (
+        f'<form class="form-shell" method="post" action="{_attr(action)}">'
+        + page_header(title, sub=sub)
+        + f'<div class="form-grid"><div class="form-body">{body}</div>{side}</div>'
+        + f'<div class="form-foot"><div class="acts">{foot}</div></div>'
+        + "</form>"
+    )
