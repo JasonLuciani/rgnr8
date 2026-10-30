@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { InMemoryBackend, LedgerService, type ServiceResponse } from "../src/index.js";
+import { businessToday } from "../src/cutover.js";
 
 /**
  * "Today" is the business's date, which the web app works out in the company's
@@ -75,4 +76,13 @@ test("a cutover on a month-end the business has not finished is blocked", async 
 
   const onServerUtc = blockers(await plan({ cutover_date: "2026-10-31" }));
   assert.ok(!onServerUtc.some((b) => b.includes("hasn't ended yet")), onServerUtc.join(" | "));
+});
+
+test("a claimed today more than a day from the server's UTC date is ignored", () => {
+  assert.equal(businessToday("2026-10-31", NOW), "2026-10-31"); // Denver, a day behind UTC
+  assert.equal(businessToday("2026-11-02", NOW), "2026-11-02"); // a zone a day ahead
+  assert.equal(businessToday("2026-12-31", NOW), "2026-11-01"); // can't skip to a month that hasn't ended
+  assert.equal(businessToday("2026-10-01", NOW), "2026-11-01");
+  assert.equal(businessToday("2026-02-31", NOW), "2026-11-01"); // not a real date
+  assert.equal(businessToday("", NOW), "2026-11-01");
 });

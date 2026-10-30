@@ -64,6 +64,7 @@ import {
   CutoverError,
   backOutCutover,
   backoutBlocker,
+  businessToday,
   executeCutover,
   planCutover,
   planJson,
@@ -2711,7 +2712,7 @@ export class LedgerService {
     let overdueTotal = 0n;
     // The business's working date comes from the web app (its company time
     // zone). Without it the server's UTC date is the only one there is.
-    const asOf = /^\d{4}-\d{2}-\d{2}$/.test(today) ? today : this.opts.now().slice(0, 10);
+    const asOf = businessToday(today, this.opts.now());
     for (const d of docs) {
       const open = BigInt(d.openMinor);
       openTotal += open;
