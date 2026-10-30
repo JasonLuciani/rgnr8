@@ -988,7 +988,7 @@ def test_1099_contractors_end_to_end_against_the_real_service(ledger_service: st
 
     for doc, party, when, amount in [
         ("B-1", "dana-ruiz-design", "2026-03-10", "4000.00"),
-        ("B-2", "sam-okonkwo", "2026-05-01", "540.00"),
+        ("B-2", "sam-okonkwo", "2026-05-01", "1940.00"),
         ("B-3", "riverside-properties", "2026-03-01", "3500.00"),
     ]:
         made = _req(app, "ten99co", "/t/ten99co/bills", "POST",
@@ -1016,9 +1016,10 @@ def test_1099_contractors_end_to_end_against_the_real_service(ledger_service: st
     # the landlord is not a contractor and never appears
     assert "Riverside Properties" not in page.body
 
-    # $60 from needing a form
+    # $60 from needing a form, against the $2,000 line for 2026
     assert "Tracked, but under the threshold" in page.body
-    assert "Sam Okonkwo" in page.body and "$540.00" in page.body and "$60.00" in page.body
+    assert "Sam Okonkwo" in page.body and "$1,940.00" in page.body and "$60.00" in page.body
+    assert "A form is required above $2,000.00" in page.body
 
     # the bank payment is a prompt, not a number folded into the total
     assert "Paid from the bank, never billed" in page.body
