@@ -36,6 +36,8 @@ class Permission(str, Enum):
     POST_JOURNAL = "post_journal"       # post an entry to the general ledger
     MANAGE_CLOSE = "manage_close"       # advance close-calendar tasks
     PUBLISH_CLOSE = "publish_close"     # seal the immutable financial package
+    # seal over a failed close check that is empty or unreconciled (never the trial balance)
+    OVERRIDE_CLOSE_GATE = "override_close_gate"
     MANAGE_CONNECTORS = "manage_connectors"  # connect/reconnect bank/payroll/QBO
     # administration
     MANAGE_SUBSCRIPTIONS = "manage_subscriptions"  # briefing recipients
@@ -81,6 +83,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
         Permission.POST_JOURNAL,
         Permission.MANAGE_CLOSE,
         Permission.PUBLISH_CLOSE,
+        Permission.OVERRIDE_CLOSE_GATE,
         Permission.MANAGE_CONNECTORS,
         Permission.MANAGE_SUBSCRIPTIONS,
         Permission.MANAGE_USERS,
@@ -99,6 +102,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
         Permission.POST_JOURNAL,
         Permission.MANAGE_CLOSE,
         Permission.PUBLISH_CLOSE,
+        Permission.OVERRIDE_CLOSE_GATE,
         Permission.MANAGE_SUBSCRIPTIONS,
         # a controller can configure the account and its integrations, but
         # erasing a client's data is reserved to the owner.

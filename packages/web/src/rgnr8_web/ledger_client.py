@@ -269,10 +269,13 @@ class LedgerClient:
         controls: list[dict[str, object]] | None = None,
         reconciliations: list[dict[str, object]] | None = None,
         require_signoff: bool = False,
+        override_reason: str | None = None,
     ) -> LedgerResponse:
         """Seal a period through the ledger's authoritative close state machine:
         it builds the package from the books, runs the gate, and only on pass
-        locks the period and persists the immutable package."""
+        locks the period and persists the immutable package. `override_reason`
+        seals over failed empty/unreconciled checks (the caller must already have
+        checked the override permission); the ledger still refuses the trial balance."""
         payload: dict[str, object] = {
             "from": frm, "to": to, "published_by": published_by,
         }
@@ -286,6 +289,9 @@ class LedgerClient:
             payload["reconciliations"] = reconciliations
         if require_signoff:
             payload["require_signoff"] = True
+        if override_reason is not None:
+            payload["override"] = True
+            payload["override_reason"] = override_reason
         return self._call("POST", f"/t/{tenant}/close/publish", payload)
 
     def request_reopen(

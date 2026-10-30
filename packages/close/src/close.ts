@@ -39,19 +39,39 @@ export interface ClosePackage {
   readonly blockers: readonly string[];
 }
 
+/**
+ * The checks an authorized person may override when they failed for being
+ * empty or unreconciled (no reconciliations or control accounts on record, an
+ * out-of-balance account, or a subledger that does not tie). The trial balance
+ * is deliberately absent: an unbalanced ledger is never a judgment call.
+ */
+export const OVERRIDABLE_CHECK_IDS: readonly string[] = [
+  "bank_reconciliations",
+  "reconciliation_signoff",
+  "control_accounts",
+];
+
+export function isOverridableCheck(id: string): boolean {
+  return OVERRIDABLE_CHECK_IDS.includes(id);
+}
+
 /** Build the close checklist from the period's control results. */
 export function buildCloseChecklist(inputs: CloseGateInputs): CloseTask[] {
   const tasks: CloseTask[] = [];
 
+  // An empty input list proves nothing, so it never passes: "0 accounts
+  // reconciled" is not "all accounts reconciled".
   const notClean = inputs.reconciliations.filter((r) => r.status !== "BALANCED");
   tasks.push({
     id: "bank_reconciliations",
     label: "All bank/card accounts reconciled",
-    status: notClean.length === 0 ? "PASSED" : "FAILED",
+    status: inputs.reconciliations.length > 0 && notClean.length === 0 ? "PASSED" : "FAILED",
     detail:
-      notClean.length === 0
-        ? `${inputs.reconciliations.length} account(s) reconciled`
-        : `out of balance: ${notClean.map((r) => r.accountId).join(", ")}`,
+      inputs.reconciliations.length === 0
+        ? "no bank/card reconciliations supplied for this period"
+        : notClean.length === 0
+          ? `${inputs.reconciliations.length} account(s) reconciled`
+          : `out of balance: ${notClean.map((r) => r.accountId).join(", ")}`,
   });
 
   if (inputs.requireSignOff) {
@@ -59,11 +79,13 @@ export function buildCloseChecklist(inputs: CloseGateInputs): CloseTask[] {
     tasks.push({
       id: "reconciliation_signoff",
       label: "Reconciliations signed off by reviewer",
-      status: unsigned.length === 0 ? "PASSED" : "FAILED",
+      status: inputs.reconciliations.length > 0 && unsigned.length === 0 ? "PASSED" : "FAILED",
       detail:
-        unsigned.length === 0
-          ? "all reconciliations signed"
-          : `unsigned: ${unsigned.map((r) => r.accountId).join(", ")}`,
+        inputs.reconciliations.length === 0
+          ? "no reconciliations to sign off"
+          : unsigned.length === 0
+            ? "all reconciliations signed"
+            : `unsigned: ${unsigned.map((r) => r.accountId).join(", ")}`,
     });
   }
 
@@ -71,9 +93,13 @@ export function buildCloseChecklist(inputs: CloseGateInputs): CloseTask[] {
   tasks.push({
     id: "control_accounts",
     label: "Subledger control accounts tie to the GL",
-    status: drifted.length === 0 ? "PASSED" : "FAILED",
+    status: inputs.controls.length > 0 && drifted.length === 0 ? "PASSED" : "FAILED",
     detail:
-      drifted.length === 0 ? "AR/AP controls tied" : `drift: ${drifted.map((c) => c.name).join(", ")}`,
+      inputs.controls.length === 0
+        ? "no subledger control accounts supplied for this period"
+        : drifted.length === 0
+          ? "AR/AP controls tied"
+          : `drift: ${drifted.map((c) => c.name).join(", ")}`,
   });
 
   tasks.push({

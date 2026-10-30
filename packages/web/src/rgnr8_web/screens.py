@@ -305,6 +305,24 @@ class CloseTask:
 
 
 @dataclass(frozen=True, slots=True)
+class GateCheck:
+    """A close-gate check that failed on the last publish attempt."""
+    id: str
+    label: str
+    detail: str
+    overridable: bool  # empty/unreconciled checks only; the trial balance never is
+
+
+@dataclass(frozen=True, slots=True)
+class CloseOverrideRecord:
+    """A seal made over failed checks: who, when, why, and which checks."""
+    by: str
+    at: str
+    reason: str
+    checks: tuple[str, ...]  # the overridden check labels
+
+
+@dataclass(frozen=True, slots=True)
 class CloseBoard:
     period: str  # "2026-08"
     tasks: tuple[CloseTask, ...] = ()
@@ -312,6 +330,10 @@ class CloseBoard:
     #: Who last advanced a close task — passed to the authoritative publish as
     #: the "preparer" so separation of duties (preparer != publisher) is live.
     prepared_by: str = ""
+    #: The failed gate checks from the last refused publish (empty when none).
+    gate_failures: tuple[GateCheck, ...] = ()
+    #: Set when the period was sealed over failed checks.
+    override: CloseOverrideRecord | None = None
 
     @property
     def total(self) -> int:
@@ -339,10 +361,13 @@ class CloseBoard:
         return replace(self, tasks=tasks)
 
 
-def render_close_body(board: CloseBoard, tenant: str, *, can_manage: bool, can_publish: bool) -> str:
+def render_close_body(board: CloseBoard, tenant: str, *, can_manage: bool, can_publish: bool,
+                      can_override: bool = False, override_roles: str = "") -> str:
     """The month-end close checklist inside the shell. `can_manage` (MANAGE_CLOSE)
     toggles the advance controls; `can_publish` (PUBLISH_CLOSE) gates the seal.
-    Sealing is only offered once every task is done — the publish gate."""
+    Sealing is only offered once every task is done — the publish gate.
+    `can_override` (OVERRIDE_CLOSE_GATE) lets a blocked close be sealed over its
+    overridable checks with a written reason; `override_roles` names who can."""
     pct = round(board.done * 100 / board.total) if board.total else 0
     rows = ""
     for t in board.tasks:
@@ -375,8 +400,40 @@ def render_close_body(board: CloseBoard, tenant: str, *, can_manage: bool, can_p
             seal = '<span class="muted">Ready to seal — an owner, controller, or accountant must publish.</span>'
         else:
             seal = '<span class="muted">Finish every task to seal the period.</span>'
+    # The gate block: what the last publish refused, and who may override it.
+    override_note = ""
+    if board.sealed and board.override is not None:
+        ov = board.override
+        override_note = (
+            f'<div class="banner warn">Overridden by {escape(ov.by)}: {escape(ov.reason)}'
+            f'<br><span class="small">{escape(ov.at)} · checks overridden: {escape("; ".join(ov.checks))}</span></div>')
+    gate_block = ""
+    if board.gate_failures and not board.sealed:
+        items = "".join(
+            f"<li><strong>{escape(c.label)}</strong> — {escape(c.detail)}"
+            + ("" if c.overridable else " <em>(cannot be overridden)</em>") + "</li>"
+            for c in board.gate_failures)
+        if any(not c.overridable for c in board.gate_failures):
+            note = ("The trial balance does not tie. An unbalanced ledger cannot be sealed over, "
+                    "by anyone; fix the entries first.")
+            form = ""
+        elif can_override:
+            note = ("These checks are empty or unreconciled. You can seal over them; your name, the time, "
+                    "your reason, and the checks are recorded on the period.")
+            form = ('<label class="small muted" for="overrideReason">Reason (required)</label>'
+                    '<textarea id="overrideReason" rows="2" '
+                    'placeholder="e.g. August bank statement arrives Monday; balance confirmed with the bank"></textarea>'
+                    '<div><button id="overrideBtn" type="button" class="btn" '
+                    'data-action="publishOverride">Override and close</button></div>')
+        else:
+            note = (f"Sealing over these checks needs the override permission. "
+                    f"{escape(override_roles) or 'An owner or controller'} can override.")
+            form = ""
+        gate_block = (f'<div class="card"><h3>Close is blocked</h3>'
+                      f'<ul class="small">{items}</ul>'
+                      f'<p class="muted small">{note}</p>{form}</div>')
     err_block = ('<div id="rgErr" class="banner warn" role="alert" style="display:none;margin:12px 0"></div>'
-                 if (can_manage or can_publish) else "")
+                 if (can_manage or can_publish or can_override) else "")
     js = f"""{script_open()}
       const T={tenant!r};
       function rgErr(m){{ var b=document.getElementById('rgErr'); if(b){{ b.textContent=m||''; b.style.display=m?'block':'none'; }} }}
@@ -386,7 +443,12 @@ def render_close_body(board: CloseBoard, tenant: str, *, can_manage: bool, can_p
         rgErr(''); rgBusy(ctl, true, label);
         try{{
           const r = await post(u,b);
-          if(!r.ok){{ rgErr('Could not complete that action (HTTP '+r.status+').'); rgBusy(ctl, false); return; }}
+          if(!r.ok){{
+            // A refused publish that carries the failed checks: reload so the gate block shows them.
+            let j=null; try{{ j = await r.json(); }}catch(e){{ j=null; }}
+            if(j && j.checks){{ location.reload(); return; }}
+            rgErr((j && j.error) || ('Could not complete that action (HTTP '+r.status+').')); rgBusy(ctl, false); return;
+          }}
           location.reload();
         }} catch(e){{ rgErr('Network error — please try again.'); rgBusy(ctl, false); }}
       }}
@@ -394,15 +456,22 @@ def render_close_body(board: CloseBoard, tenant: str, *, can_manage: bool, can_p
       function reopen(ctl,id){{ return run(ctl, 'Saving…', '/api/'+T+'/close', {{id,status:'open'}}); }}
       function publish(ctl){{ if(!confirm('Seal '+T+' and publish the financial package? This is permanent and cannot be undone.')) return;
         return run(ctl, 'Sealing…', '/api/'+T+'/close/publish', {{}}); }}
-    </script>""" if (can_manage or can_publish) else ""
+      function publishOverride(ctl){{
+        var f=document.getElementById('overrideReason'); var reason=((f&&f.value)||'').trim();
+        if(!reason){{ rgErr('Enter a reason before overriding the close gate.'); if(f) f.focus(); return; }}
+        if(!confirm('Seal '+T+' over the failed checks and publish the financial package? Your reason and the checks you override are recorded. This is permanent and cannot be undone.')) return;
+        return run(ctl, 'Sealing…', '/api/'+T+'/close/publish', {{override:true, override_reason:reason}}); }}
+    </script>""" if (can_manage or can_publish or can_override) else ""
     return f"""<h1>Month-end close</h1>
     <p class="sub">{escape(board.period)} · the checklist that has to clear before the books are sealed</p>
     <div class="banner {banner_cls}">{banner}</div>
+    {override_note}
     {err_block}
     <div class="card"><div class="row" style="justify-content:space-between"><span class="muted small" >Progress</span>
       <span class="muted small" >{board.done}/{board.total}</span></div>
       <div class="bar" style="margin-top:6px"><span style="width:{pct}%"></span></div></div>
     <table><thead><tr><th>Task</th><th>Owner</th><th>Due</th><th>Status</th><th></th></tr></thead><tbody>{rows}</tbody></table>
+    {gate_block}
     <div style="margin-top:16px">{card("Seal the period",
         '<p class="muted small" style="margin:0">Publishing writes the immutable financial package.</p>',
         actions=seal)}</div>
@@ -410,10 +479,12 @@ def render_close_body(board: CloseBoard, tenant: str, *, can_manage: bool, can_p
 
 
 def default_close_board(period: str) -> CloseBoard:
-    """A representative close checklist for demos/onboarding before the real
-    `@rgnr8/close` calendar is wired for a tenant."""
+    """The close checklist shown until the real `@rgnr8/close` calendar is wired
+    for a tenant. Nothing on it is marked done by default: this board has no data
+    source that proves a step happened, so every step starts open."""
     return CloseBoard(period=period, tasks=(
-        CloseTask("feeds", "Bank & card feeds imported", "done", "Bookkeeper", f"{period}-01"),
+        CloseTask("feeds", "Bank & card feeds imported", "open", "Bookkeeper", f"{period}-01",
+                  note="Not verified: this board does not read feed imports. Mark done only once the period's feeds are imported."),
         CloseTask("categorize", "All transactions categorized", "open", "Bookkeeper", f"{period}-03"),
         CloseTask("reconcile", "Bank reconciliations tie out", "open", "Bookkeeper", f"{period}-04"),
         CloseTask("payroll", "Payroll & benefits accrued", "open", "Controller", f"{period}-04"),
