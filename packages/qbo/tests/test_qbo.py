@@ -458,7 +458,7 @@ def test_api_client_query_builds_url_and_auth() -> None:
     assert company.name == "Sandbox Co"
     url, _body, headers = http.calls[0]
     assert url.startswith("https://sandbox-quickbooks.api.intuit.com/v3/company/R9/query?")
-    assert "minorversion=65" in url
+    assert "minorversion=75" in url
     assert "from+CompanyInfo" in url or "from%20CompanyInfo" in url
     assert headers["Authorization"] == "Bearer tok-abc"
     assert company.fiscal_year_start_month is None   # QuickBooks didn't say

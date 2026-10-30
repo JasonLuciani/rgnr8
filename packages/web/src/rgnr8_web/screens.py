@@ -591,6 +591,8 @@ _QBO_STATUS_UI: dict[str, tuple[str, str]] = {
     "connected": ("good", "Connected"),
     "expired": ("warn", "Reconnect needed — the QuickBooks authorization expired"),
     "revoked": ("warn", "Access was revoked — reconnect to resume syncing"),
+    "needs_reconnect": ("warn", "Reconnect needed — QuickBooks no longer accepts this connection, "
+                                "so RGNR8 has stopped syncing until you reconnect"),
     "disconnected": ("", "Not connected"),
     "error": ("warn", "Last sync hit an error — reconnect if it persists"),
 }
@@ -649,9 +651,12 @@ def render_connect_page(
             f'<button class="btn ghost" type="submit">Disconnect</button></form>'
         )
     else:
+        # Intuit refused or lapsed the connection: the same OAuth route, labelled as
+        # what it is for the owner.
+        lapsed = status in ("needs_reconnect", "expired", "revoked")
         action = (
             f'<a class="btn" style="text-decoration:none" href="{connect_href}">'
-            f'Connect QuickBooks</a>'
+            f'{"Reconnect QuickBooks" if lapsed else "Connect QuickBooks"}</a>'
         )
 
     # sync result banner
