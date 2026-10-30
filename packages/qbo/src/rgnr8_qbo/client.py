@@ -269,6 +269,12 @@ class QboApiClient:
             resp = self._get_with_retry(url)
         return resp
 
+    def get_url(self, url: str) -> HttpResponse:
+        """One GET of an absolute Accounting API URL, with this client's pacing,
+        retries and 401 refresh, returned raw (status and body as received). For
+        callers that keep the response body, such as the recorder."""
+        return self._get(url)
+
     def query(self, sql: str) -> dict[str, object]:
         """Run an Accounting API query; return the ``QueryResponse`` object."""
         q = urllib.parse.urlencode({"query": sql, "minorversion": self.minor_version})
