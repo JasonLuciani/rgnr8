@@ -15,6 +15,9 @@ from urllib.parse import quote
 
 from .attachment_screens import attachment_link
 from .books_screens import _card, _esc, _minor, _num, _seq, money
+from .components import BarSegment, Cell, Column, FilterChip
+from .components import data_table, money_bar, page_from_query, sort_from_query
+from .components import status as status_tag
 from .parallel_run import form_label
 from .provenance_labels import Provenance
 from .provenance_labels import legend as prov_legend
@@ -28,18 +31,32 @@ def _banner(kind: str, text: str) -> str:
     return f'<div class="banner {kind}">{_esc(text)}</div>'
 
 
-_STATUS_STYLE = {
-    "OPEN": ("Open", "var(--rg-muted)"),
-    "PARTIAL": ("Part paid", "var(--rg-watch,#b8860b)"),
-    "PAID": ("Paid", "var(--rg-sage)"),
+# The status a document shows, and the tone that goes with it (glyph and word
+# carry the meaning; the tone only tints them).
+_STATUS_LABEL = {
+    "OPEN": ("Open", "neutral"),
+    "PARTIAL": ("Part paid", "warn"),
+    "PAID": ("Paid", "ok"),
 }
 
+# The money bar's buckets. A document is overdue when it has an open balance past
+# its due date, not yet due when it has an open balance that is still current,
+# and paid when nothing is open. Keys are the `status=` query values.
+_BUCKETS = ("overdue", "open", "paid")
 
-def _status_chip(status: object, overdue: bool) -> str:
-    label, color = _STATUS_STYLE.get(str(status), (str(status), "var(--rg-muted)"))
-    if overdue and str(status) != "PAID":
-        label, color = "Overdue", "var(--rg-risk,#b4462f)"
-    return f'<span style="color:{color};font-weight:700;font-size:12px">{_esc(label)}</span>'
+
+def _bucket(d: Mapping[str, object], today: str) -> str:
+    if (_minor(d.get("open_minor")) or 0) <= 0 or str(d.get("status")) == "PAID":
+        return "paid"
+    return "overdue" if str(d.get("due_date")) < today else "open"
+
+
+def _status_cell(d: Mapping[str, object], today: str) -> Cell:
+    if _bucket(d, today) == "overdue":
+        label, tone = "Overdue", "bad"
+    else:
+        label, tone = _STATUS_LABEL.get(str(d.get("status")), (str(d.get("status")), "neutral"))
+    return Cell(text=label, html=status_tag(label, tone), sort=label)
 
 
 def _party_names(parties: Mapping[str, object]) -> dict[str, str]:
@@ -170,6 +187,7 @@ def render_documents(
     banks: "tuple[tuple[str, str], ...]" = (),
     credit_accounts: "tuple[tuple[str, str], ...]" = (),
     control_codes: frozenset[str] = frozenset(),
+    query: Mapping[str, str] | None = None,
 ) -> str:
     """The invoices or bills list, with totals, plus the create/collect forms.
 
@@ -188,15 +206,37 @@ def render_documents(
     title = "Invoices" if is_ar else "Bills"
     names = _party_names(parties)
 
-    rows = []
+    base = f"/t/{tenant}/{kind}"
+    q = {k: v for k, v in (query or {}).items() if k not in ("ok", "err")}
+    unit = ("invoice", "invoices") if is_ar else ("bill", "bills")
+    labels = {"overdue": "Overdue", "open": "Not yet due", "paid": "Paid"}
+
+    columns = (
+        Column("doc", "Invoice" if is_ar else "Bill", sortable=True),
+        Column("party", who, sortable=True),
+        Column("date", "Date", sortable=True),
+        Column("due", "Due", sortable=True),
+        Column("total", "Total", money=True, sortable=True),
+        Column("open", "Open", money=True, sortable=True),
+        Column("status", "Status", sortable=True),
+        Column("files", ""),
+        Column("actions", ""),
+    )
+
+    rows: list[tuple[str, dict[str, Cell]]] = []
+    # bucket -> [amount in minor units, document count]
+    sums: dict[str, list[int]] = {b: [0, 0] for b in labels}
     for d in _seq(docs.get("documents")):
         if not isinstance(d, Mapping):
             continue
         doc_id = _esc(d.get("id"))
         doc_path = _esc(quote(str(d.get("id") or ""), safe=""))
         open_minor = _minor(d.get("open_minor")) or 0
-        overdue = open_minor > 0 and str(d.get("due_date")) < today
         party = names.get(str(d.get("party_id")), str(d.get("party_id")))
+        bucket = _bucket(d, today)
+        amount = (_minor(d.get("total_minor")) or 0) if bucket == "paid" else open_minor
+        sums[bucket][0] += amount
+        sums[bucket][1] += 1
         pay_cell = ""
         if can_post and open_minor > 0:
             pay_cell = (
@@ -210,26 +250,43 @@ def render_documents(
                 f'<button class="btn" style="padding:6px 12px;margin:0" type="submit">'
                 f'{"Collect" if is_ar else "Pay"}</button></form>'
             )
-        rows.append(
-            f"<tr><td><strong>{doc_id}</strong><br>"
-            f'<span class="muted">{_esc(d.get("memo"))}</span>{_tax_note(d)}</td>'
-            f"<td>{_esc(party)}</td><td>{_esc(d.get('date'))}</td>"
-            f"<td>{_esc(d.get('due_date'))}</td>"
-            f"{_num(d.get('total_minor'))}{_num(d.get('open_minor'))}"
-            f"<td>{_status_chip(d.get('status'), overdue)}</td>"
-            f"<td>{_paperclip(tenant, kind, d, attachment_counts)}</td>"
-            f"<td>{pay_cell}{_adjust_controls(tenant, kind, d, can_post, credit_accounts, control_codes)}</td></tr>"
-        )
+        row = {
+            "doc": Cell(text=str(d.get("id") or ""), sort=str(d.get("id") or ""),
+                        html=(f"<strong>{doc_id}</strong><br>"
+                              f'<span class="muted">{_esc(d.get("memo"))}</span>{_tax_note(d)}')),
+            "party": Cell(text=party),
+            "date": Cell(text=str(d.get("date") or "")),
+            "due": Cell(text=str(d.get("due_date") or "")),
+            "total": Cell(text=money(d.get("total_minor")), sort=_minor(d.get("total_minor")) or 0),
+            "open": Cell(text=money(d.get("open_minor")), sort=open_minor),
+            "status": _status_cell(d, today),
+            "files": Cell(html=_paperclip(tenant, kind, d, attachment_counts)),
+            "actions": Cell(html=pay_cell + _adjust_controls(
+                tenant, kind, d, can_post, credit_accounts, control_codes)),
+        }
+        rows.append((bucket, row))
 
-    empty = (
-        f'<tr><td colspan="9" class="empty">'
-        f"No {title.lower()} yet.</td></tr>"
+    active = q.get("status", "")
+    chips: list[FilterChip] = []
+    if active in labels:
+        chips = [FilterChip("status", f"Status: {labels[active]}")]
+    shown = [row for bucket, row in rows if not chips or bucket == active]
+
+    segments = (
+        BarSegment("overdue", "Overdue", money(sums["overdue"][0]), sums["overdue"][1], "bad"),
+        BarSegment("open", "Not yet due", money(sums["open"][0]), sums["open"][1], "info"),
+        BarSegment("paid", "Paid", money(sums["paid"][0]), sums["paid"][1], "ok"),
     )
-    table = (
-        '<div class="table-scroll"><table><thead><tr>'
-        f"<th>{'Invoice' if is_ar else 'Bill'}</th><th>{who}</th><th>Date</th><th>Due</th>"
-        '<th class="num">Total</th><th class="num">Open</th><th>Status</th>'
-        "<th></th><th></th></tr></thead><tbody>" + ("".join(rows) or empty) + "</tbody></table></div>"
+    table = money_bar(segments, base=base, query=q, param="status", unit=unit,
+                      label="Filter by status") + data_table(
+        columns, shown,
+        sort=sort_from_query(q, columns),
+        filters=chips,
+        page=page_from_query(q),
+        empty=(f"No {title.lower()} match this filter." if chips
+               else f"No {title.lower()} yet."),
+        base=base,
+        query=q,
     )
 
     head = ""
@@ -244,7 +301,7 @@ def render_documents(
         f'<p class="sub">{"Owed to you" if is_ar else "You owe"}: '
         f"<strong>{money(outstanding)}</strong>"
         + (
-            f' · <span style="color:var(--rg-risk,#b4462f)">overdue {money(overdue_total)}</span>'
+            f' · <span class="neg">overdue {money(overdue_total)}</span>'
             if (_minor(overdue_total) or 0) > 0
             else ""
         )

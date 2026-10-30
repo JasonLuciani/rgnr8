@@ -273,6 +273,82 @@ _SHELL_CSS = f"""<style>
   .rg-check{{display:flex;gap:10px;align-items:flex-start;margin:10px 0;font:400 14px/1.4 var(--rg-sans);
     letter-spacing:0;text-transform:none;color:var(--rg-ink)}}
   .rg-check input{{width:auto;margin-top:3px}}
+  /* --- design system (components.data_table, money_bar, drawer, split_button,
+     status, form_shell). Every rule here is named by a component; a call site
+     never needs an inline style to get one of these. --- */
+  .dt-bar{{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;margin:0 0 10px}}
+  .dt-chips{{display:flex;flex-wrap:wrap;gap:6px;align-items:center}}
+  .dt-chip{{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:var(--rg-ink);
+    background:var(--rg-ivory);border:1px solid var(--rg-line);border-radius:var(--rg-pill);padding:3px 4px 3px 11px}}
+  .dt-chip a{{color:var(--rg-muted);text-decoration:none;font-size:15px;line-height:1;padding:0 6px;border-radius:var(--rg-pill)}}
+  .dt-chip a:hover{{color:var(--rg-risk)}}
+  .dt-clear{{font-size:12.5px;font-weight:600}}
+  .dt-sort{{color:inherit;text-decoration:none;display:inline-flex;gap:4px;align-items:center;white-space:nowrap}}
+  .dt-sort:hover{{color:var(--rg-forest);text-decoration:underline}}
+  .dt-sort span{{font-size:10px}}
+  th[aria-sort]{{color:var(--rg-ink-2)}}
+  .dt-chip a:focus-visible,.dt-clear:focus-visible,.dt-sort:focus-visible,.dt-gear>summary:focus-visible,
+  .mb-seg:focus-visible,.drawer a:focus-visible,.split-more>summary:focus-visible{{outline:2px solid var(--rg-sage);outline-offset:2px}}
+  .dt-gear{{position:relative;margin-left:auto}}
+  .dt-gear>summary{{cursor:pointer;font:600 13px/1.4 var(--rg-sans);color:var(--rg-accent-deep);list-style:none;padding:4px 2px}}
+  .dt-gear>summary::-webkit-details-marker{{display:none}}
+  .dt-gear-form{{position:absolute;right:0;top:calc(100% + 6px);z-index:20;min-width:230px;margin:0;padding:12px 14px;
+    background:var(--rg-paper);border:1px solid var(--rg-line);border-radius:var(--rg-radius);box-shadow:var(--rg-shadow)}}
+  .dt-gear-list{{display:grid;gap:2px;margin-bottom:10px}}
+  .dt-gear-list .rg-check{{margin:4px 0}}
+  .dt-total td{{font-weight:700}}
+  .dt-pager{{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;justify-content:flex-end;font-size:13px;
+    color:var(--rg-muted);margin-top:10px}}
+  .dt-pager a{{font-weight:600}}
+  .dt-dis{{opacity:.45}}
+  .money-bar{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:0 0 14px}}
+  .mb-seg{{display:flex;flex-direction:column;gap:2px;padding:10px 14px;background:var(--rg-paper);color:var(--rg-ink);
+    text-decoration:none;border:1px solid var(--rg-line);border-top:3px solid var(--rg-line);border-radius:var(--rg-radius);
+    box-shadow:var(--rg-shadow)}}
+  .mb-seg:hover{{border-color:var(--rg-sage)}}
+  .mb-seg.tone-ok{{border-top-color:var(--rg-pos)}}
+  .mb-seg.tone-warn{{border-top-color:var(--rg-watch)}}
+  .mb-seg.tone-bad{{border-top-color:var(--rg-risk)}}
+  .mb-seg.tone-info{{border-top-color:var(--rg-accent-deep)}}
+  .mb-seg.on{{border-color:var(--rg-forest);box-shadow:inset 0 0 0 1px var(--rg-forest),var(--rg-shadow)}}
+  .mb-label{{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--rg-muted)}}
+  .mb-amt{{font-size:18px;font-weight:700;font-variant-numeric:tabular-nums}}
+  .mb-count{{font-size:12px;color:var(--rg-muted)}}
+  .mb-on{{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--rg-forest);margin-top:3px}}
+  .drawer{{display:none;position:fixed;inset:0;z-index:60;background:rgba(14,36,30,.32);justify-content:flex-end}}
+  .drawer:target{{display:flex}}
+  .drawer-panel{{width:min(460px,100%);height:100%;overflow-y:auto;background:var(--rg-paper);box-shadow:var(--rg-shadow);
+    padding:18px 20px 28px}}
+  .drawer-head{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}}
+  .drawer-head h2{{margin:0;font:600 16px/1.2 var(--rg-sans)}}
+  .split{{display:inline-flex;align-items:stretch;position:relative}}
+  .split>.btn:first-child{{border-top-right-radius:0;border-bottom-right-radius:0}}
+  .split-more{{position:relative}}
+  .split-more>summary{{list-style:none;display:flex;align-items:center;cursor:pointer;height:100%;
+    border-radius:0 10px 10px 0;padding:10px 11px}}
+  .split-more>summary::-webkit-details-marker{{display:none}}
+  .split-menu{{position:absolute;right:0;top:calc(100% + 6px);z-index:20;display:grid;gap:4px;min-width:200px;padding:6px;
+    background:var(--rg-paper);border:1px solid var(--rg-line);border-radius:var(--rg-radius);box-shadow:var(--rg-shadow)}}
+  .split-menu .btn{{width:100%;justify-content:flex-start}}
+  .split-item{{display:block}}
+  .drawer-body{{font-size:14px}}
+  .stat{{display:inline-flex;align-items:center;gap:6px;font-weight:700;font-size:12.5px;white-space:nowrap}}
+  .stat.tone-ok{{color:var(--rg-pos)}}
+  .stat.tone-warn{{color:var(--rg-watch)}}
+  .stat.tone-bad{{color:var(--rg-risk)}}
+  .stat.tone-info{{color:var(--rg-accent-deep)}}
+  .stat.tone-neutral{{color:var(--rg-muted)}}
+  .form-shell{{display:block;margin:0}}
+  .form-grid{{display:grid;grid-template-columns:minmax(0,1fr) 240px;gap:18px;align-items:start}}
+  .form-body{{min-width:0}}
+  .form-aside{{font-size:13px;color:var(--rg-muted);border-left:1px solid var(--rg-line);padding-left:16px}}
+  .form-foot{{position:sticky;bottom:0;z-index:10;margin-top:18px;padding:12px 0;background:var(--rg-paper);
+    border-top:1px solid var(--rg-line)}}
+  .form-foot .acts{{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:9px}}
+  @media(max-width:640px){{
+    .form-grid{{grid-template-columns:minmax(0,1fr)}}
+    .form-aside{{border-left:0;padding-left:0}}
+  }}
 </style>"""
 
 _ASSIGNABLE_ROLES = [r for r in Role if not r.is_platform]
