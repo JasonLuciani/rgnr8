@@ -179,6 +179,62 @@ jobs:
         if: always()
         run: docker compose -f deploy/docker-compose.yml down -v
 
+  combined-image-smoke:
+    name: Single-container (web + ledger) image smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Write a test .env for the stack
+        run: |
+          cat > deploy/.env <<'ENV'
+          RGNR8_AUTH_MODE=hs256
+          RGNR8_JWT_SECRET=ci-jwt-secret
+          RGNR8_SESSION_SECRET=ci-session-secret
+          RGNR8_LEDGER_TOKEN=ci-ledger-token
+          ENV
+      - name: Build and boot db + migrate + web-combined
+        run: docker compose -f deploy/docker-compose.yml --profile combined up -d --build db migrate web-combined
+      - name: /ready answers with the in-container ledger reachable and no skew
+        run: |
+          for i in $(seq 1 40); do
+            if curl -fsS http://localhost:8090/ready >/tmp/ready.json 2>/dev/null \
+               && python3 -c "import json,sys;
+          r=json.load(open('/tmp/ready.json'));
+          sys.exit(0 if (r.get('ledger') or {}).get('reachable') and r.get('ledger_skew') is None else 1)"; then
+              cat /tmp/ready.json; exit 0
+            fi
+            sleep 3
+          done
+          cat /tmp/ready.json 2>/dev/null; echo "combined image never became ready"; exit 1
+      - name: The ledger is bound to loopback only
+        run: >-
+          docker compose -f deploy/docker-compose.yml --profile combined exec -T web-combined
+          python -c "import socket,sys;
+          s=socket.socket(); s.settimeout(2);
+          ip=socket.gethostbyname(socket.gethostname());
+          sys.exit(1 if s.connect_ex((ip, 8181))==0 else 0)"
+      - name: Killing the ledger takes the container down (Render then restarts it)
+        run: |
+          set -euo pipefail
+          dc() { docker compose -f deploy/docker-compose.yml --profile combined "$@"; }
+          dc exec -T web-combined python -c "import os,signal;
+          [os.kill(int(p), signal.SIGKILL) for p in os.listdir('/proc') if p.isdigit()
+           and int(p) != os.getpid()
+           and open(f'/proc/{p}/cmdline','rb').read().startswith(b'node')]"
+          for i in $(seq 1 20); do
+            state=$(docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' "$(dc ps -aq web-combined)")
+            echo "web-combined: $state"
+            case "$state" in exited\ 0) exit 1;; exited*) exit 0;; esac
+            sleep 1
+          done
+          echo "container did not exit after the ledger died"; exit 1
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose -f deploy/docker-compose.yml --profile combined logs --tail=200
+      - name: Tear down
+        if: always()
+        run: docker compose -f deploy/docker-compose.yml --profile combined down -v
+
   dependency-audit:
     name: Dependency audit (blocking on high+)
     runs-on: ubuntu-latest
